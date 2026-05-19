@@ -109,7 +109,3 @@ src/datosgobdo_mcp/
 ## Licencia
 
 MIT — Alberto Castillo Aroca
-
-## Archivos legacy (JS)
-
-La versión inicial en JavaScript queda en `index.js`, `tools.js`, `ckan.js`, `package.json`. Pueden borrarse — todo está reescrito en Python.
