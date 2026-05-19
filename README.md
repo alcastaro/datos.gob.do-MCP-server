@@ -99,10 +99,10 @@ This MCP is inspired by [`datagouv-mcp`](https://github.com/datagouv/datagouv-mc
 
 ### Option A — Via `uvx` from PyPI (recommended)
 
-Once published to PyPI (see [Releases](https://pypi.org/project/datosgobdo-mcp/)):
+Package: [`dominican-open-data-mcp`](https://pypi.org/project/dominican-open-data-mcp/) (entry-point binary keeps the short name `datosgobdo-mcp`):
 
 ```bash
-uvx datosgobdo-mcp
+uvx --from dominican-open-data-mcp datosgobdo-mcp
 ```
 
 `uvx` downloads the package, creates an isolated venv, and runs the server. First run takes a few seconds; subsequent runs are instant.

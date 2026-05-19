@@ -97,7 +97,15 @@ Este MCP está inspirado en [`datagouv-mcp`](https://github.com/datagouv/datagou
 
 ## Instalación y configuración
 
-### Opción A — Vía `uvx` desde GitHub (recomendado, cero clone manual)
+### Opción A — Vía `uvx` desde PyPI (recomendado)
+
+Paquete: [`dominican-open-data-mcp`](https://pypi.org/project/dominican-open-data-mcp/) (el binario del entry-point mantiene el nombre corto `datosgobdo-mcp`):
+
+```bash
+uvx --from dominican-open-data-mcp datosgobdo-mcp
+```
+
+### Opción A-bis — Vía `uvx` desde GitHub (versión dev más reciente)
 
 Requisito previo: [`uv`](https://docs.astral.sh/uv/) instalado. En macOS:
 

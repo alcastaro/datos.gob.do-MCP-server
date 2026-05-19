@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "datosgobdo-mcp"
+name = "dominican-open-data-mcp"
 version = "0.1.0"
-description = "Servidor MCP para datos.gob.do — datos abiertos de la República Dominicana (CKAN 2.11)"
+description = "MCP server for datos.gob.do — Dominican Republic open government data portal (CKAN 2.11)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.alcastaro/datos.gob.do-MCP-server",
-  "description": "MCP server for datos.gob.do — Dominican Republic open government data portal (CKAN 2.11). Exposes search, browse, and CSV/XLSX preview of 1000+ datasets from 266 government institutions.",
+  "description": "MCP server for datos.gob.do — Dominican Republic open government data (CKAN 2.11).",
   "version": "0.1.0",
   "repository": {
     "url": "https://github.com/alcastaro/datos.gob.do-MCP-server",
@@ -11,7 +11,7 @@
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
-      "identifier": "datosgobdo-mcp",
+      "identifier": "dominican-open-data-mcp",
       "version": "0.1.0",
       "transport": {
         "type": "stdio"
