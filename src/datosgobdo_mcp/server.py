@@ -6,6 +6,8 @@ Compatible con Claude Desktop, Claude Code y cualquier cliente MCP.
 
 from __future__ import annotations
 
+import logging
+import sys
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -13,6 +15,15 @@ from pydantic import Field
 
 from . import ckan
 from .preview import preview_resource_data
+
+# Per MCP spec: stdio servers MUST NOT write to stdout (interferes with protocol).
+# stderr is captured by the host and surfaced in Claude Desktop's mcp-server-*.log.
+logging.basicConfig(
+    stream=sys.stderr,
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("datosgobdo-mcp")
 
 mcp = FastMCP("datosgobdo-mcp")
 
@@ -240,9 +251,24 @@ async def get_site_stats() -> dict:
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 
+def _tool_count() -> int | None:
+    """Best-effort count of registered tools (uses private FastMCP attr)."""
+    try:
+        return len(mcp._tool_manager._tools)  # type: ignore[attr-defined]
+    except Exception:
+        return None
+
+
 def main() -> None:
+    logger.info("datosgobdo-mcp starting (CKAN endpoint: %s)", ckan.BASE_URL)
+    count = _tool_count()
+    if count is not None:
+        logger.info("Registered %d tools", count)
     try:
         mcp.run()
+    except Exception:
+        logger.exception("Fatal error in MCP server")
+        raise
     finally:
         import asyncio
 
@@ -250,6 +276,7 @@ def main() -> None:
             asyncio.run(ckan.close_client())
         except RuntimeError:
             pass
+        logger.info("datosgobdo-mcp shut down")
 
 
 if __name__ == "__main__":
