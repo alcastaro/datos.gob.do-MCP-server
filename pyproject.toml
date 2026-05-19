@@ -35,8 +35,9 @@ dependencies = [
 datosgobdo-mcp = "datosgobdo_mcp.server:main"
 
 [project.urls]
-Homepage = "https://datos.gob.do"
-Repository = "https://github.com/alcastaro/datosgobdo-mcp"
+Homepage = "https://github.com/alcastaro/datos.gob.do-MCP-server"
+Repository = "https://github.com/alcastaro/datos.gob.do-MCP-server"
+Portal = "https://datos.gob.do"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/datosgobdo_mcp"]

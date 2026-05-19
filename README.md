@@ -1,132 +1,144 @@
+<!-- mcp-name: io.github.alcastaro/datos.gob.do-MCP-server -->
+
+**[English](README.md) · [Español](README.es.md)**
+
+---
+
 # datosgobdo-mcp
 
-**Servidor [Model Context Protocol](https://modelcontextprotocol.io) que expone los datos abiertos de la República Dominicana ([datos.gob.do](https://datos.gob.do)) como herramientas consumibles por cualquier asistente de IA.**
+**A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes the Dominican Republic's open government data ([datos.gob.do](https://datos.gob.do)) as tools consumable by any AI assistant.**
 
-Convierte el portal oficial de datos abiertos del Estado dominicano en una integración nativa para Claude Desktop, Claude Code, Cursor, ChatGPT Desktop o cualquier cliente compatible con MCP. Permite que el modelo busque, lea, analice y previsualice los 1,053+ datasets publicados por las 266 instituciones gubernamentales dominicanas, todo desde una conversación.
-
----
-
-## ¿Qué problema resuelve?
-
-[datos.gob.do](https://datos.gob.do) publica miles de archivos CSV, XLSX y JSON con información pública: nóminas, presupuestos, estadísticas de seguridad, indicadores de salud, datos electorales, etc. Hoy esa información es accesible solo a quien sabe navegar el portal CKAN y descargar archivos manualmente.
-
-Este MCP cierra esa brecha. Cualquier persona puede preguntarle a su asistente:
-
-- *"¿Cuánto gasta el Poder Judicial en remuneraciones?"*
-- *"Compará el presupuesto aprobado vs. ejecutado de FONDOMARENA en los últimos tres años."*
-- *"Listame las 10 instituciones que más datos publican."*
-- *"¿Qué columnas tiene el dataset de robos del Ministerio de Interior?"*
-
-…y el modelo, sin que el usuario tenga que escribir código, navegar a URLs ni descargar archivos, ejecuta las consultas reales contra el portal, baja los datos, los parsea y los analiza.
-
-## ¿Para quién es?
-
-- **Periodistas de datos** que quieren explorar fuentes oficiales sin escribir scrapers.
-- **Investigadores y académicos** que necesitan acceso programático a datos del Estado dominicano.
-- **Activistas de transparencia y sociedad civil** que monitorean ejecución presupuestaria, contrataciones, gestión pública.
-- **Desarrolladores y científicos de datos** que prototipan dashboards o análisis sobre datos públicos.
-- **Funcionarios públicos** que quieren consultar lo que su propia institución (u otras) ya publica.
-- **Cualquiera con curiosidad cívica** sobre cómo opera el gobierno.
-
-## ¿Qué es MCP?
-
-[Model Context Protocol](https://modelcontextprotocol.io) es un estándar abierto (creado por Anthropic, adoptado por OpenAI y otros) que permite a los modelos de lenguaje conectarse de forma segura a fuentes de datos y herramientas externas. Un "servidor MCP" expone una colección de funciones tipadas; el modelo decide cuándo invocarlas, con qué argumentos, y cómo combinar los resultados.
-
-Este proyecto es un servidor MCP especializado en `datos.gob.do`.
-
-## ¿Qué es datos.gob.do?
-
-Es el portal oficial de datos abiertos del Gobierno dominicano, administrado por la Oficina Gubernamental de Tecnologías de la Información y Comunicación (OGTIC). Corre sobre **CKAN 2.11.3**, el mismo software de gestión de datos abiertos que usan portales como data.gov (EEUU), data.gov.uk y muchos gobiernos latinoamericanos.
-
-A mayo de 2026 contiene aproximadamente:
-
-- **1,053 datasets** publicados
-- **266 organizaciones** publicadoras (ministerios, alcaldías, organismos autónomos, etc.)
-- **11 categorías temáticas** (Economía, Salud, Educación, Gestión Pública…)
-- **852 etiquetas**
-
-Cada dataset agrupa uno o varios "recursos" (archivos descargables) en formatos como CSV, XLSX, ODS, PDF o JSON.
-
-Este MCP está inspirado en [`datagouv-mcp`](https://github.com/datagouv/datagouv-mcp) (Francia), pero datos.gob.do corre una plataforma distinta (CKAN, no udata), así que la implementación es propia.
+It turns the official Dominican open-data portal into a native integration for Claude Desktop, Claude Code, Cursor, ChatGPT Desktop or any MCP-compatible client. The model can search, read, analyze, and preview the 1,053+ datasets published by the country's 266 government institutions, all from within a conversation.
 
 ---
 
-## Herramientas (tools) expuestas
+## What problem does it solve?
 
-12 funciones tipadas, organizadas en cuatro grupos:
+[datos.gob.do](https://datos.gob.do) publishes thousands of CSV, XLSX, and JSON files with public data: payrolls, budgets, crime statistics, health indicators, electoral data, and more. Today that information is only accessible to people who know how to navigate the CKAN portal and download files manually.
 
-### Descubrimiento
+This MCP closes that gap. Anyone can ask their assistant:
 
-| Tool | Qué hace |
-|---|---|
-| `search_datasets` | Busca datasets por palabra clave, organización, tag o grupo. Filtros combinables, paginación. |
-| `get_dataset` | Devuelve metadatos completos de un dataset: título, descripción, licencia, autor, y la lista completa de sus recursos con URLs de descarga directa. |
-| `list_recent_datasets` | Datasets ordenados por fecha de última modificación. Útil para monitorear actualizaciones del portal. |
-| `get_site_stats` | Conteos globales del portal (totales de datasets, organizaciones, grupos, tags). |
+- *"How much does the Judicial Branch spend on salaries?"*
+- *"Compare FONDOMARENA's approved vs. executed budget over the last three years."*
+- *"List the 10 institutions that publish the most data."*
+- *"What columns does the Ministry of Interior's vehicle-theft dataset have?"*
 
-### Recursos (archivos)
+…and the model — without the user having to write code, navigate URLs, or download files — runs the actual queries against the portal, downloads the data, parses it, and analyzes it.
 
-| Tool | Qué hace |
-|---|---|
-| `get_resource` | Metadatos de un recurso individual (URL, formato, tamaño, fecha). |
-| `search_resources` | Busca recursos por nombre. |
-| `download_resource_preview` | **Baja un archivo y devuelve las primeras N filas con sus columnas.** Funciona con CSV, TSV, XLSX, XLS y JSON. Cliente-side parsing porque el portal no tiene DataStore. Tope de 5 MB. |
+## Who is it for?
 
-### Catálogo
+- **Data journalists** wanting to explore official sources without writing scrapers.
+- **Researchers and academics** needing programmatic access to Dominican government data.
+- **Transparency activists and civil society** monitoring budget execution, procurement, and public administration.
+- **Developers and data scientists** prototyping dashboards or analyses on public data.
+- **Public officials** wanting to query what their own (or other) institutions already publish.
+- **Anyone with civic curiosity** about how the government operates.
 
-| Tool | Qué hace |
-|---|---|
-| `list_organizations` | Todas las instituciones que publican, con conteo de datasets de cada una. |
-| `get_organization` | Detalle de una institución (descripción, número de datasets, URL). |
-| `list_groups` | Categorías temáticas con conteo de datasets. |
-| `list_tags` | Etiquetas disponibles, opcionalmente filtradas por prefijo. |
+## What is MCP?
 
-### Autocompletado
+[Model Context Protocol](https://modelcontextprotocol.io) is an open standard (created by Anthropic, adopted by OpenAI and others) that lets language models connect securely to external data sources and tools. An "MCP server" exposes a collection of typed functions; the model decides when to invoke them, with what arguments, and how to combine the results.
 
-| Tool | Qué hace |
-|---|---|
-| `autocomplete` | Resuelve nombres parciales para datasets, organizaciones, grupos o tags. Útil cuando el usuario solo da nombre parcial — el modelo lo usa internamente para encontrar slugs exactos. |
+This project is an MCP server specialized in `datos.gob.do`.
+
+## What is datos.gob.do?
+
+The official open-data portal of the Dominican government, operated by OGTIC (the country's IT and communications office). It runs on **CKAN 2.11.3**, the same open-data software used by portals like data.gov (USA), data.gov.uk, and many other Latin American governments.
+
+As of May 2026 it contains approximately:
+
+- **1,053 datasets** published
+- **266 organizations** publishing (ministries, municipalities, autonomous agencies, etc.)
+- **11 thematic categories** (Economy, Health, Education, Public Management…)
+- **852 tags**
+
+Each dataset bundles one or more "resources" (downloadable files) in formats such as CSV, XLSX, ODS, PDF, or JSON.
+
+This MCP is inspired by [`datagouv-mcp`](https://github.com/datagouv/datagouv-mcp) (France), but datos.gob.do runs a different platform (CKAN, not udata), so the implementation is its own.
 
 ---
 
-## Instalación y configuración
+## Tools exposed
 
-### Opción A — Vía `uvx` desde GitHub (recomendado, cero clone manual)
+12 typed functions, grouped into four categories:
 
-Requisito previo: [`uv`](https://docs.astral.sh/uv/) instalado. En macOS:
+### Discovery
+
+| Tool | What it does |
+|---|---|
+| `search_datasets` | Search datasets by keyword, organization, tag, or group. Combinable filters, pagination. |
+| `get_dataset` | Return full metadata for a dataset: title, description, license, author, and the complete list of its resources with direct download URLs. |
+| `list_recent_datasets` | Datasets sorted by most-recent modification. Useful for monitoring portal updates. |
+| `get_site_stats` | Portal-wide counts (totals of datasets, organizations, groups, tags). |
+
+### Resources (files)
+
+| Tool | What it does |
+|---|---|
+| `get_resource` | Metadata for a single resource (URL, format, size, date). |
+| `search_resources` | Search resources by name. |
+| `download_resource_preview` | **Download a file and return the first N rows with their columns.** Works with CSV, TSV, XLSX, XLS, and JSON. Client-side parsing because the portal has no DataStore. 5 MB cap. |
+
+### Catalog
+
+| Tool | What it does |
+|---|---|
+| `list_organizations` | All publishing institutions, with a dataset count per institution. |
+| `get_organization` | Detail for a single institution (description, dataset count, URL). |
+| `list_groups` | Thematic categories with dataset counts. |
+| `list_tags` | Available tags, optionally filtered by prefix. |
+
+### Autocomplete
+
+| Tool | What it does |
+|---|---|
+| `autocomplete` | Resolve partial names for datasets, organizations, groups, or tags. Useful when the user only gives a partial name — the model uses it internally to find exact slugs. |
+
+---
+
+## Installation and configuration
+
+### Option A — Via `uvx` from PyPI (recommended)
+
+Once published to PyPI (see [Releases](https://pypi.org/project/datosgobdo-mcp/)):
+
+```bash
+uvx datosgobdo-mcp
+```
+
+`uvx` downloads the package, creates an isolated venv, and runs the server. First run takes a few seconds; subsequent runs are instant.
+
+### Option B — Via `uvx` from GitHub (latest dev version)
+
+```bash
+uvx --from git+https://github.com/alcastaro/datos.gob.do-MCP-server.git datosgobdo-mcp
+```
+
+Prerequisite: [`uv`](https://docs.astral.sh/uv/) installed. On macOS:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Luego configurar el cliente MCP. El comando es siempre el mismo:
-
-```
-uvx --from git+https://github.com/alcastaro/datos.gob.do-MCP-server.git datosgobdo-mcp
-```
-
-`uvx` clona el repo a `~/.cache/uv/`, crea un venv aislado, instala las dependencias y arranca el servidor. La primera vez tarda unos segundos; subsiguientes son instantáneas.
-
-### Opción B — Clone local (para desarrollo)
+### Option C — Local clone (for development)
 
 ```bash
 git clone https://github.com/alcastaro/datos.gob.do-MCP-server.git
 cd datos.gob.do-MCP-server
 uv sync
-uv run datosgobdo-mcp   # arranca el servidor en stdio (Ctrl+C para salir)
+uv run datosgobdo-mcp   # starts the server on stdio (Ctrl+C to exit)
 ```
 
-> **Nota macOS:** evitá clonar dentro de `~/Library/CloudStorage/GoogleDrive-*` o similares. macOS bloquea la ejecución de binarios desde paths sincronizados con cloud (TCC restriction). Usá `~/code/` o equivalente.
+> **macOS note:** avoid cloning inside `~/Library/CloudStorage/GoogleDrive-*` or similar paths. macOS blocks executing binaries from cloud-synced paths (TCC restriction). Use `~/code/` or equivalent.
 
-### Configuración en Claude Desktop
+### Claude Desktop configuration
 
-Editar `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
 ```json
 {
   "mcpServers": {
     "datosgobdo": {
-      "command": "/Users/TU_USUARIO/.local/bin/uvx",
+      "command": "/Users/YOUR_USERNAME/.local/bin/uvx",
       "args": [
         "--from",
         "git+https://github.com/alcastaro/datos.gob.do-MCP-server.git",
@@ -137,98 +149,98 @@ Editar `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 }
 ```
 
-Reiniciar Claude Desktop completamente (Cmd+Q, no solo cerrar la ventana). Settings → Developer → Local MCP servers debería mostrar `datosgobdo` en estado **running**.
+Restart Claude Desktop completely (Cmd+Q, not just closing the window). Settings → Developer → Local MCP servers should show `datosgobdo` in **running** state.
 
-### Configuración en Claude Code
+### Claude Code configuration
 
 ```bash
 claude mcp add datosgobdo -- uvx --from git+https://github.com/alcastaro/datos.gob.do-MCP-server.git datosgobdo-mcp
 ```
 
-### Configuración en Cursor / otros clientes
+### Cursor / other clients
 
-Mismo principio: registrar `uvx` como comando con los args `--from git+... datosgobdo-mcp`. Consultar la documentación específica de cada cliente para la ubicación del archivo de configuración.
+Same principle: register `uvx` as the command with `--from git+... datosgobdo-mcp` as args. Consult each client's docs for the location of its configuration file.
 
 ---
 
-## Ejemplos de uso
+## Usage examples
 
-Una vez configurado, podés pedirle al modelo:
+Once configured, you can ask the model:
 
-### Exploración básica
+### Basic exploration
 
-> *Usá el MCP datosgobdo y dime cuántos datasets hay en el portal datos.gob.do.*
+> *Use the datosgobdo MCP and tell me how many datasets are on the datos.gob.do portal.*
 
-→ Invoca `get_site_stats`. Respuesta: 1,053 datasets, 266 organizaciones.
+→ Invokes `get_site_stats`. Reply: 1,053 datasets, 266 organizations.
 
-### Búsqueda con análisis
+### Search with analysis
 
-> *Buscá los 5 datasets más relevantes sobre presupuesto en datos.gob.do y resumime de qué institución es cada uno.*
+> *Find the 5 most relevant datasets about budget on datos.gob.do and summarize which institution publishes each one.*
 
-→ Invoca `search_datasets(query="presupuesto", limit=5)` y el modelo redacta el resumen.
+→ Invokes `search_datasets(query="presupuesto", limit=5)` and the model writes the summary.
 
-### Resolución de nombres + detalle
+### Name resolution + detail
 
-> *Encontrá el slug del Ministerio de Hacienda y dime cuántos datasets tiene publicados.*
+> *Find the slug for the Ministry of Finance and tell me how many datasets it has published.*
 
 → `autocomplete(kind="organization", query="hacienda")` → `get_organization(id="ministerio-de-hacienda")`.
 
-### Análisis de datos reales
+### Real data analysis
 
-> *Mostrame las primeras 20 filas del CSV de presupuesto del Poder Judicial y dime cuáles son las tres partidas más grandes.*
+> *Show me the first 20 rows of the Judicial Branch budget CSV and tell me the three largest line items.*
 
-→ `search_datasets(query="poder judicial")` → `get_dataset("presupuesto-poder-judicial")` → `download_resource_preview(url=..., format="csv", rows=20)` → el modelo identifica las partidas mayores.
+→ `search_datasets(query="poder judicial")` → `get_dataset("presupuesto-poder-judicial")` → `download_resource_preview(url=..., format="csv", rows=20)` → the model identifies the largest items.
 
-### Monitoreo
+### Monitoring
 
-> *Listame los 10 datasets que se actualizaron más recientemente en el portal.*
+> *List the 10 most recently updated datasets on the portal.*
 
 → `list_recent_datasets(limit=10)`.
 
 ---
 
-## Arquitectura
+## Architecture
 
 ```
 src/datosgobdo_mcp/
-  server.py        FastMCP server + definiciones de tools (Pydantic typed)
-  ckan.py          Cliente CKAN: requests, Solr escaping, formatters
-  preview.py       Descarga capada de archivos + parsers CSV/XLSX/JSON
+  server.py        FastMCP server + tool definitions (Pydantic typed)
+  ckan.py          CKAN client: requests, Solr escaping, formatters
+  preview.py       Capped file download + parsers for CSV/XLSX/JSON
 ```
 
-### Decisiones de diseño
+### Design decisions
 
-- **FastMCP en lugar del SDK low-level**: tools como funciones decoradas con `@mcp.tool()` + tipos Pydantic. Menos boilerplate, validación automática de argumentos.
-- **`httpx.AsyncClient` reutilizado**: una sola conexión persistente, sin overhead de TCP handshake en cada request.
-- **Solr escape**: los filtros `fq` de CKAN usan sintaxis Solr/Lucene. Valores user-supplied pasan por `_escape_solr()` que escapa los 13 caracteres reservados (`+ - & | ! ( ) { } [ ] ^ " ~ * ? : \ /`). Sin esto, un tag con comilla rompería la query.
-- **Truncado defensivo**: descripciones largas (algunas instituciones publican 5+ KB de texto por org) se truncan a 300 chars en respuestas de listado. Sin esto, una sola consulta podría quemar miles de tokens del contexto del modelo.
-- **`list_recent_datasets` reorientado**: la API CKAN expone `recently_changed_packages_activity_list` pero devuelve "actividades" con metadatos crudos sin hidratar — el modelo recibiría `{object_id: "uuid", activity_type: "changed package"}` sin saber qué dataset es. Usamos `package_search?sort=metadata_modified+desc` para devolver datasets ya formateados en una sola llamada.
-- **DataStore no disponible**: el portal datos.gob.do no tiene la extensión DataStore instalada, así que no hay endpoint `datastore_search` ni queries SQL sobre el contenido de los recursos. La solución es `download_resource_preview`: bajamos el archivo (tope 5 MB) y lo parseamos del lado cliente con `csv` (stdlib) u `openpyxl`. Suficiente para que el modelo entienda la estructura.
-- **Fallback de encoding**: muchos archivos publicados están en CP1252 o Latin-1 (no UTF-8). El parser intenta UTF-8 → UTF-8-sig → Latin-1 → CP1252 → UTF-8 con `errors=replace`.
-- **Logging a stderr**: per [MCP debugging guide](https://modelcontextprotocol.io/docs/tools/debugging), los servidores stdio nunca deben escribir a stdout (rompe el protocolo). Todo log va a stderr y es capturado por el cliente en `~/Library/Logs/Claude/mcp-server-datosgobdo.log` (macOS).
+- **FastMCP instead of the low-level SDK**: tools are functions decorated with `@mcp.tool()` and typed via Pydantic. Less boilerplate, automatic argument validation.
+- **Reused `httpx.AsyncClient`**: a single persistent connection, no TCP-handshake overhead per request.
+- **Solr escaping**: CKAN `fq` filters use Solr/Lucene syntax. User-supplied values go through `_escape_solr()`, which escapes the 13 reserved characters (`+ - & | ! ( ) { } [ ] ^ " ~ * ? : \ /`). Without this, a tag containing a quote would break the query.
+- **Defensive truncation**: long descriptions (some institutions publish 5+ KB of text per organization) are truncated to 300 chars in list responses. Without this, a single call could burn thousands of tokens of model context.
+- **`list_recent_datasets` reoriented**: CKAN's API exposes `recently_changed_packages_activity_list`, but it returns "activities" with raw, un-hydrated metadata — the model would receive `{object_id: "uuid", activity_type: "changed package"}` with no way to know which dataset it refers to. We use `package_search?sort=metadata_modified+desc` to return already-formatted datasets in a single call.
+- **DataStore not available**: the datos.gob.do portal does not have the DataStore extension installed, so there is no `datastore_search` endpoint or SQL queries against resource contents. The workaround is `download_resource_preview`: we download the file (5 MB cap) and parse it client-side with `csv` (stdlib) or `openpyxl`. Enough for the model to understand the structure.
+- **Encoding fallback**: many published files are in CP1252 or Latin-1 (not UTF-8). The parser tries UTF-8 → UTF-8-sig → Latin-1 → CP1252 → UTF-8 with `errors=replace`.
+- **stderr logging**: per the [MCP debugging guide](https://modelcontextprotocol.io/docs/tools/debugging), stdio servers must never write to stdout (it breaks the protocol). All logs go to stderr and are captured by the client in `~/Library/Logs/Claude/mcp-server-datosgobdo.log` (macOS).
 
-### Stack técnico
+### Technical stack
 
-- [`mcp`](https://pypi.org/project/mcp/) — Python SDK oficial de Anthropic (FastMCP)
-- [`httpx`](https://www.python-httpx.org/) — cliente HTTP asíncrono
-- [`openpyxl`](https://openpyxl.readthedocs.io/) — lectura de XLSX en streaming read-only
-- `csv`, `json` — stdlib para los otros formatos
-
----
-
-## Limitaciones conocidas
-
-- **Sin queries SQL** sobre el contenido de recursos: el portal no tiene DataStore. Workaround: `download_resource_preview` + análisis hecho por el modelo.
-- **Preview limitado a 5 MB**: archivos más grandes se truncan. Suficiente para entender estructura, no para análisis estadístico completo.
-- **Sin soporte de ODS y PDF en preview**: solo CSV, TSV, XLSX, XLS y JSON. Archivos ODS y PDF se exponen con su URL de descarga directa.
-- **Solo lectura**: el MCP no escribe en el portal (no hay autenticación, no expone endpoints `package_create`, `resource_create`, etc.). Por diseño.
-- **Encodings raros**: ya hay fallback (UTF-8 → CP1252), pero archivos con encoding exótico pueden mostrar caracteres rotos.
+- [`mcp`](https://pypi.org/project/mcp/) — Anthropic's official Python SDK (FastMCP)
+- [`httpx`](https://www.python-httpx.org/) — async HTTP client
+- [`openpyxl`](https://openpyxl.readthedocs.io/) — read-only streaming XLSX reader
+- `csv`, `json` — stdlib for other formats
 
 ---
 
-## Desarrollo
+## Known limitations
 
-### Setup local
+- **No SQL queries** against resource contents: the portal has no DataStore. Workaround: `download_resource_preview` + analysis by the model.
+- **Preview limited to 5 MB**: larger files are truncated. Enough to understand structure, not for full statistical analysis.
+- **No ODS or PDF support in preview**: only CSV, TSV, XLSX, XLS, and JSON. ODS and PDF files are exposed via their direct download URL.
+- **Read-only**: the MCP does not write to the portal (no authentication, no `package_create`, `resource_create` endpoints, etc.). By design.
+- **Exotic encodings**: a fallback exists (UTF-8 → CP1252), but files with unusual encoding may show broken characters.
+
+---
+
+## Development
+
+### Local setup
 
 ```bash
 git clone https://github.com/alcastaro/datos.gob.do-MCP-server.git
@@ -236,36 +248,36 @@ cd datos.gob.do-MCP-server
 uv sync
 ```
 
-### Probar con el MCP Inspector
+### Test with the MCP Inspector
 
-[MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) es la herramienta oficial para testear servidores MCP de forma aislada:
+[MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) is the official tool for testing MCP servers in isolation:
 
 ```bash
 npx @modelcontextprotocol/inspector uv run datosgobdo-mcp
 ```
 
-Abre `http://localhost:6274` con form-builder para invocar tools manualmente y ver request/response JSON crudo.
+Opens `http://localhost:6274` with a form builder to invoke tools manually and see raw request/response JSON.
 
 ### Logs
 
-En Claude Desktop (macOS): `tail -f ~/Library/Logs/Claude/mcp-server-datosgobdo.log`
+In Claude Desktop (macOS): `tail -f ~/Library/Logs/Claude/mcp-server-datosgobdo.log`
 
-El servidor loguea a stderr:
-- Startup (endpoint, número de tools registradas)
-- Errores fatales con traceback completo
+The server logs to stderr:
+- Startup (endpoint, number of registered tools)
+- Fatal errors with full traceback
 - Shutdown
 
-### Iteración
+### Iteration
 
-Cuando edites código:
+When you edit code:
 
-1. Commit + push a `main` en GitHub.
-2. Limpiar cache de `uvx` para forzar refresh: `uv cache clean datosgobdo-mcp`.
-3. Reiniciar el cliente MCP.
+1. Commit + push to `main` on GitHub.
+2. Clear the `uvx` cache to force a refresh: `uv cache clean datosgobdo-mcp`.
+3. Restart the MCP client.
 
-O para iteración rápida, configurar el cliente para apuntar a tu clone local en vez del repo de GitHub: `command: /ruta/al/clone/.venv/bin/datosgobdo-mcp`.
+For faster iteration, configure the client to point to your local clone instead of the GitHub repo: `command: /path/to/clone/.venv/bin/datosgobdo-mcp`.
 
-### Tests manuales contra API real
+### Manual tests against the live API
 
 ```bash
 uv run python -c "
@@ -278,28 +290,28 @@ asyncio.run(ckan.close_client())
 
 ---
 
-## Contribuir
+## Contributing
 
-Pull requests bienvenidos. Áreas de mejora obvias:
+Pull requests welcome. Obvious areas for improvement:
 
-- Tests automatizados con `pytest-httpx` (mockear CKAN).
-- Tool `summarize_csv` con estadísticas agregadas (count, min, max, distinct values por columna).
-- Soporte de preview para ODS y Parquet.
-- Cache local de respuestas frecuentes (organizaciones, grupos, tags cambian poco).
-- Tool `find_dataset_about` que combine `autocomplete` + `search_datasets` con ranking semántico.
+- Automated tests with `pytest-httpx` (mocking CKAN).
+- `summarize_csv` tool with aggregate statistics (count, min, max, distinct values per column).
+- Preview support for ODS and Parquet.
+- Local cache of frequent responses (organizations, groups, tags change rarely).
+- `find_dataset_about` tool that combines `autocomplete` + `search_datasets` with semantic ranking.
 
 ---
 
-## Créditos
+## Credits
 
-Desarrollado por **Alberto Castillo Aroca** ([@alcastaro](https://github.com/alcastaro)) con contribuciones de **Juana Casique** ([@juanacasique](https://github.com/juanacasique)).
+Developed by **Alberto Castillo Aroca** ([@alcastaro](https://github.com/alcastaro)) with contributions from **Juana Casique** ([@juanacasique](https://github.com/juanacasique)).
 
-Datos publicados por las instituciones del Estado dominicano vía [datos.gob.do](https://datos.gob.do), portal administrado por OGTIC.
+Data published by the institutions of the Dominican State via [datos.gob.do](https://datos.gob.do), a portal operated by OGTIC.
 
-Inspirado en [`datagouv-mcp`](https://github.com/datagouv/datagouv-mcp) (Etalab, Gobierno de Francia).
+Inspired by [`datagouv-mcp`](https://github.com/datagouv/datagouv-mcp) (Etalab, Government of France).
 
-## Licencia
+## License
 
-MIT. Ver [LICENSE](LICENSE) si existe, o asumir términos estándar MIT.
+MIT. See [LICENSE](LICENSE) if present, otherwise assume standard MIT terms.
 
-Los datos accedidos a través de este MCP están sujetos a la licencia con la que cada institución dominicana los publica en datos.gob.do (típicamente **Open Data Commons Open Database License — ODbL**).
+Data accessed through this MCP is subject to the license under which each Dominican institution publishes it on datos.gob.do (typically **Open Data Commons Open Database License — ODbL**).
