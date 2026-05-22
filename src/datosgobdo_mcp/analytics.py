@@ -1,67 +1,95 @@
-"""Analytics tools backed by DuckDB.
+"""Analytics tools backed by DuckDB with persistent Parquet cache.
 
-v0.2 introduces:
-    - get_resource_schema: column names + inferred types + sample values
-    - summarize_resource: row count, null rates, distinct counts, top values
+v0.2 introduced get_resource_schema + summarize_resource using one-shot
+in-memory DuckDB connections.
 
-These tools fetch the file once into a temp path, register it with DuckDB,
-and run aggregate queries server-side. No raw rows hit the LLM context.
+v0.3 adds:
+    - Parquet on-disk cache keyed by URL + last_modified/ETag (cache.py).
+    - aggregate_resource: typed GROUP BY / aggregation without SQL.
+    - filter_resource: typed WHERE / SELECT / ORDER BY without SQL.
+    - All analytics tools now go through ensure_cached() so repeated calls
+      against the same resource skip re-downloading.
 
-v0.3 will wrap these with a persistent cache layer.
+v0.4 will add raw query_resource + XLSX/ODS analytics.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import re
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import duckdb
 import httpx
 
+from .cache import LocalDiskCache, build_cache_key, get_cache
 from .download import (
     ANALYTICS_MAX_BYTES,
     classify_format,
-    download_capped,
     download_to_file,
-    normalize_format,
 )
 
-# How many rows to sample for type inference + previews inside profile.
+logger = logging.getLogger(__name__)
+
 SCHEMA_SAMPLE_ROWS = 1000
 SUMMARIZE_MAX_TOP_N = 50
+FILTER_MAX_LIMIT = 1000
+AGGREGATE_MAX_LIMIT = 1000
 
-# DuckDB CSV read settings — let it auto-detect everything; fall back to
-# explicit options on failure.
-_CSV_AUTODETECT = "AUTO_DETECT=TRUE, IGNORE_ERRORS=TRUE"
+# Identifier guard: only word chars + dot + space (for column names like
+# "Sueldo Bruto" or "data.column"). We always pass identifiers through
+# double-quote escaping anyway; this is the second line of defense.
+_IDENT_OK = re.compile(r'^[\w .\-À-ſ]+$', re.UNICODE)
+
+ALLOWED_AGG_FNS = {
+    "count", "count_distinct", "sum", "avg", "mean", "median",
+    "min", "max", "stddev", "variance",
+}
+
+ALLOWED_OPS = {
+    "=", "!=", "<>", "<", "<=", ">", ">=",
+    "in", "not_in", "contains", "starts_with", "ends_with",
+    "is_null", "is_not_null",
+}
 
 
 class AnalyticsError(RuntimeError):
     pass
 
 
+def _quote_ident(name: str) -> str:
+    """Quote a column identifier safely. Rejects anything with quotes."""
+    if not _IDENT_OK.match(name):
+        raise AnalyticsError(f"Invalid column identifier: {name!r}")
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _quote_literal(value: Any) -> str:
+    """Quote a value as a SQL literal. Caller picks the type via the operator."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        return str(value)
+    s = str(value)
+    return "'" + s.replace("'", "''") + "'"
+
+
 def _new_con() -> duckdb.DuckDBPyConnection:
-    """Per-call in-memory DuckDB connection. v0.3 will swap for cached one."""
     con = duckdb.connect(":memory:")
-    # Make sure httpfs and excel readers are available; loading is cheap.
-    try:
-        con.execute("INSTALL httpfs; LOAD httpfs;")
-    except duckdb.Error:
-        pass
-    try:
-        con.execute("INSTALL excel; LOAD excel;")
-    except duckdb.Error:
-        pass
+    for ext in ("httpfs", "excel"):
+        try:
+            con.execute(f"INSTALL {ext}; LOAD {ext};")
+        except duckdb.Error:
+            pass
     return con
 
 
 def _normalize_csv_encoding(path: Path) -> Path:
-    """If CSV is non-UTF-8, transcode it to a sibling UTF-8 file.
-
-    DuckDB's read_csv assumes UTF-8. Files in CP1252/Latin-1 get their header
-    row mangled, breaking column detection. We sniff the first chunk and, if
-    needed, rewrite the file as UTF-8 next to the original.
-    """
     from .download import _detect_encoding
 
     with path.open("rb") as f:
@@ -70,11 +98,10 @@ def _normalize_csv_encoding(path: Path) -> Path:
     if enc in ("utf-8", "utf-8-sig", "ascii"):
         return path
     utf8_path = path.with_suffix(path.suffix + ".utf8")
-    # Stream-transcode to avoid loading the whole file into memory.
     with path.open("rb") as src, utf8_path.open("wb") as dst:
         decoder_buf = b""
         while True:
-            chunk = src.read(1 << 20)  # 1 MB
+            chunk = src.read(1 << 20)
             if not chunk:
                 break
             decoder_buf += chunk
@@ -82,7 +109,6 @@ def _normalize_csv_encoding(path: Path) -> Path:
                 text = decoder_buf.decode(enc)
                 decoder_buf = b""
             except UnicodeDecodeError as e:
-                # Split at last valid boundary, keep tail for next loop.
                 text = decoder_buf[: e.start].decode(enc, errors="replace")
                 decoder_buf = decoder_buf[e.start :]
             dst.write(text.encode("utf-8"))
@@ -91,53 +117,11 @@ def _normalize_csv_encoding(path: Path) -> Path:
     return utf8_path
 
 
-def _table_from_file(
-    con: duckdb.DuckDBPyConnection,
-    file_path: Path,
-    fmt: str,
-) -> None:
-    """Register file at file_path as DuckDB view named `data`."""
-    if fmt in ("csv", "tsv"):
-        # Pre-transcode non-UTF-8 files so DuckDB can detect headers properly.
-        usable = _normalize_csv_encoding(file_path)
-        p = str(usable).replace("'", "''")
-        con.execute(
-            f"CREATE OR REPLACE VIEW data AS "
-            f"SELECT * FROM read_csv_auto('{p}', SAMPLE_SIZE=-1, IGNORE_ERRORS=TRUE)"
-        )
-    elif fmt in ("xlsx", "xls", "xlsm"):
-        p = str(file_path).replace("'", "''")
-        con.execute(f"CREATE OR REPLACE VIEW data AS SELECT * FROM read_xlsx('{p}')")
-    elif fmt == "json":
-        p = str(file_path).replace("'", "''")
-        con.execute(
-            f"CREATE OR REPLACE VIEW data AS SELECT * FROM read_json_auto('{p}')"
-        )
-    else:
-        raise AnalyticsError(f"Format '{fmt}' not supported by analytics engine")
-
-
-async def _fetch_to_temp(url: str, fmt: str) -> tuple[Path, int, bool]:
-    """Download URL to a temp file. Returns (path, bytes, truncated)."""
-    suffix = "." + fmt if fmt else ""
-    fd, tmp_path = tempfile.mkstemp(prefix="dgd-", suffix=suffix)
-    Path(tmp_path).touch()
-    import os
-
-    os.close(fd)
-    path = Path(tmp_path)
-    bytes_written, truncated = await download_to_file(
-        url, path, max_bytes=ANALYTICS_MAX_BYTES
-    )
-    return path, bytes_written, truncated
-
-
 def _safe_unlink(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
     except Exception:
         pass
-    # Also remove the transcoded sidecar if we created one.
     sidecar = path.with_suffix(path.suffix + ".utf8")
     try:
         sidecar.unlink(missing_ok=True)
@@ -145,69 +129,154 @@ def _safe_unlink(path: Path) -> None:
         pass
 
 
+# ─── Cache layer ──────────────────────────────────────────────────────────────
+
+
+async def _head_metadata(url: str) -> tuple[str | None, str | None]:
+    """Fetch ETag + Last-Modified via HEAD. Used as cache version tag."""
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=15.0,
+            headers={"User-Agent": "datosgobdo-mcp/0.3"},
+        ) as client:
+            r = await client.head(url)
+            return r.headers.get("etag"), r.headers.get("last-modified")
+    except httpx.HTTPError:
+        return None, None
+
+
+async def ensure_cached(
+    url: str,
+    fmt: str,
+    cache: LocalDiskCache | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """Make sure the resource is in cache as Parquet. Return (parquet_path, meta).
+
+    Cold path: download → transcode → write Parquet via DuckDB.
+    Warm path: just bump access time and return cached path.
+    """
+    cache = cache or get_cache()
+    etag, last_mod = await _head_metadata(url)
+    key = build_cache_key(url, etag=etag, last_modified=last_mod)
+    cached = cache.get(key)
+    if cached is not None:
+        logger.info("cache HIT key=%s size=%d", key, cached.stat().st_size)
+        return cached, {"cache": "hit", "key": key}
+
+    logger.info("cache MISS key=%s — downloading %s", key, url)
+    # Cold: download into a temp file, then convert to Parquet at cache path.
+    fd, tmp_path = tempfile.mkstemp(prefix="dgd-dl-", suffix="." + fmt)
+    import os
+
+    os.close(fd)
+    raw = Path(tmp_path)
+    try:
+        bytes_written, truncated = await download_to_file(
+            url, raw, max_bytes=ANALYTICS_MAX_BYTES
+        )
+        if bytes_written == 0:
+            raise AnalyticsError("Downloaded zero bytes")
+
+        usable = _normalize_csv_encoding(raw) if fmt in ("csv", "tsv") else raw
+        parquet_path = cache.put_path(key)
+
+        con = _new_con()
+        try:
+            src = str(usable).replace("'", "''")
+            dst = str(parquet_path).replace("'", "''")
+            if fmt in ("csv", "tsv"):
+                con.execute(
+                    f"COPY (SELECT * FROM read_csv_auto('{src}', "
+                    f"SAMPLE_SIZE=-1, IGNORE_ERRORS=TRUE)) "
+                    f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+                )
+            elif fmt in ("xlsx", "xls", "xlsm"):
+                con.execute(
+                    f"COPY (SELECT * FROM read_xlsx('{src}')) "
+                    f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+                )
+            elif fmt == "json":
+                con.execute(
+                    f"COPY (SELECT * FROM read_json_auto('{src}')) "
+                    f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+                )
+            else:
+                raise AnalyticsError(f"Format '{fmt}' not supported")
+        finally:
+            con.close()
+
+        cache.finalize(key)
+        logger.info(
+            "cache STORE key=%s parquet=%d source=%d",
+            key,
+            parquet_path.stat().st_size,
+            bytes_written,
+        )
+        return parquet_path, {
+            "cache": "miss",
+            "key": key,
+            "source_bytes": bytes_written,
+            "source_truncated": truncated,
+            "parquet_bytes": parquet_path.stat().st_size,
+        }
+    finally:
+        _safe_unlink(raw)
+
+
+def _open_view(con: duckdb.DuckDBPyConnection, parquet: Path) -> None:
+    p = str(parquet).replace("'", "''")
+    con.execute(f"CREATE OR REPLACE VIEW data AS SELECT * FROM read_parquet('{p}')")
+
+
+# ─── Public analytics tools ───────────────────────────────────────────────────
+
+
 async def get_resource_schema(
     url: str,
     fmt: str | None,
     sample_rows: int = SCHEMA_SAMPLE_ROWS,
 ) -> dict[str, Any]:
-    """Return column names, inferred types, and a small value sample per column.
-
-    Cheap reconnaissance step before deciding which tool to call next.
-    """
     kind = classify_format(fmt)
     if kind is None:
         return {"error": f"Format '{fmt}' not supported"}
-
-    path: Path | None = None
     try:
-        path, n_bytes, truncated = await _fetch_to_temp(url, kind)
-        con = _new_con()
-        _table_from_file(con, path, kind)
+        parquet, meta = await ensure_cached(url, kind)
+    except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
+        return {"error": f"Could not load resource: {e}"}
 
-        # Column metadata via DESCRIBE.
+    con = _new_con()
+    try:
+        _open_view(con, parquet)
         described = con.execute("DESCRIBE data").fetchall()
         columns_meta = [
             {"name": row[0], "type": row[1], "nullable": row[2] == "YES"}
             for row in described
         ]
-
-        # Row count (may be partial if file was truncated).
         row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]
 
-        # Per-column small sample of distinct non-null values.
-        col_names = [c["name"] for c in columns_meta]
-        samples: dict[str, list[Any]] = {}
         n = min(int(sample_rows), 1000)
-        for cname in col_names:
-            quoted = '"' + cname.replace('"', '""') + '"'
+        for col in columns_meta:
+            quoted = _quote_ident(col["name"])
             try:
                 vals = con.execute(
                     f"SELECT DISTINCT {quoted} FROM data "
                     f"WHERE {quoted} IS NOT NULL LIMIT 5"
                 ).fetchall()
-                samples[cname] = [v[0] for v in vals]
+                col["sample_values"] = [v[0] for v in vals]
             except duckdb.Error:
-                samples[cname] = []
-
-        for col in columns_meta:
-            col["sample_values"] = samples.get(col["name"], [])
-
-        return {
-            "source_url": url,
-            "format": kind,
-            "bytes_downloaded": n_bytes,
-            "download_truncated": truncated,
-            "row_count_in_download": row_count,
-            "column_count": len(columns_meta),
-            "columns": columns_meta,
-        }
-    except duckdb.Error as e:
-        return {"error": f"DuckDB error: {e}"}
-    except httpx.HTTPError as e:
-        return {"error": f"Network error downloading resource: {e}"}
+                col["sample_values"] = []
     finally:
-        if path is not None:
-            _safe_unlink(path)
+        con.close()
+
+    return {
+        "source_url": url,
+        "format": kind,
+        "cache": meta,
+        "row_count": row_count,
+        "column_count": len(columns_meta),
+        "columns": columns_meta,
+    }
 
 
 def _column_stats(
@@ -216,21 +285,12 @@ def _column_stats(
     col_type: str,
     top_n: int,
 ) -> dict[str, Any]:
-    quoted = '"' + col_name.replace('"', '""') + '"'
+    quoted = _quote_ident(col_name)
     type_lower = col_type.lower()
     is_numeric = any(
         t in type_lower
-        for t in (
-            "int",
-            "double",
-            "float",
-            "decimal",
-            "numeric",
-            "real",
-            "hugeint",
-            "bigint",
-            "smallint",
-        )
+        for t in ("int", "double", "float", "decimal", "numeric", "real",
+                  "hugeint", "bigint", "smallint")
     )
     is_temporal = any(t in type_lower for t in ("date", "time", "timestamp"))
 
@@ -266,7 +326,6 @@ def _column_stats(
         except duckdb.Error:
             pass
 
-    # Top values: useful for low-cardinality columns regardless of type.
     if distinct <= max(top_n * 10, 100):
         try:
             rows = con.execute(
@@ -286,45 +345,291 @@ async def summarize_resource(
     fmt: str | None,
     max_categorical_top_n: int = 10,
 ) -> dict[str, Any]:
-    """Auto-generated profile of a resource.
-
-    Returns row count, per-column type/nulls/distinct/min/max/mean/top-values.
-    Designed to give the LLM enough context to decide which aggregations or
-    filters to apply next, without sending raw rows.
-    """
     kind = classify_format(fmt)
     if kind is None:
         return {"error": f"Format '{fmt}' not supported"}
+    try:
+        parquet, meta = await ensure_cached(url, kind)
+    except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
+        return {"error": f"Could not load resource: {e}"}
 
     top_n = min(max(int(max_categorical_top_n), 1), SUMMARIZE_MAX_TOP_N)
-
-    path: Path | None = None
+    con = _new_con()
     try:
-        path, n_bytes, truncated = await _fetch_to_temp(url, kind)
-        con = _new_con()
-        _table_from_file(con, path, kind)
-
+        _open_view(con, parquet)
         described = con.execute("DESCRIBE data").fetchall()
         columns_meta = [{"name": row[0], "type": row[1]} for row in described]
         row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]
-
         column_stats = [
             _column_stats(con, c["name"], c["type"], top_n) for c in columns_meta
         ]
-
-        return {
-            "source_url": url,
-            "format": kind,
-            "bytes_downloaded": n_bytes,
-            "download_truncated": truncated,
-            "row_count_in_download": row_count,
-            "column_count": len(columns_meta),
-            "columns": column_stats,
-        }
-    except duckdb.Error as e:
-        return {"error": f"DuckDB error: {e}"}
-    except httpx.HTTPError as e:
-        return {"error": f"Network error downloading resource: {e}"}
     finally:
-        if path is not None:
-            _safe_unlink(path)
+        con.close()
+
+    return {
+        "source_url": url,
+        "format": kind,
+        "cache": meta,
+        "row_count": row_count,
+        "column_count": len(columns_meta),
+        "columns": column_stats,
+    }
+
+
+# ─── Filter and aggregate ─────────────────────────────────────────────────────
+
+
+Op = Literal[
+    "=", "!=", "<>", "<", "<=", ">", ">=",
+    "in", "not_in", "contains", "starts_with", "ends_with",
+    "is_null", "is_not_null",
+]
+
+
+def _build_filter_clause(f: dict[str, Any]) -> str:
+    col = f.get("col")
+    op = f.get("op", "=")
+    val = f.get("val")
+    if not isinstance(col, str):
+        raise AnalyticsError("filter.col must be a string")
+    if op not in ALLOWED_OPS:
+        raise AnalyticsError(f"Operator not allowed: {op}")
+    q = _quote_ident(col)
+    if op in ("is_null",):
+        return f"{q} IS NULL"
+    if op in ("is_not_null",):
+        return f"{q} IS NOT NULL"
+    if op == "in":
+        if not isinstance(val, list) or not val:
+            raise AnalyticsError("'in' requires non-empty list")
+        joined = ", ".join(_quote_literal(v) for v in val)
+        return f"{q} IN ({joined})"
+    if op == "not_in":
+        if not isinstance(val, list) or not val:
+            raise AnalyticsError("'not_in' requires non-empty list")
+        joined = ", ".join(_quote_literal(v) for v in val)
+        return f"{q} NOT IN ({joined})"
+    if op == "contains":
+        if not isinstance(val, str):
+            raise AnalyticsError("'contains' requires string val")
+        esc = val.replace("'", "''").replace("%", r"\%").replace("_", r"\_")
+        return f"{q} ILIKE '%' || '{esc}' || '%' ESCAPE '\\'"
+    if op == "starts_with":
+        if not isinstance(val, str):
+            raise AnalyticsError("'starts_with' requires string val")
+        esc = val.replace("'", "''").replace("%", r"\%").replace("_", r"\_")
+        return f"{q} ILIKE '{esc}%' ESCAPE '\\'"
+    if op == "ends_with":
+        if not isinstance(val, str):
+            raise AnalyticsError("'ends_with' requires string val")
+        esc = val.replace("'", "''").replace("%", r"\%").replace("_", r"\_")
+        return f"{q} ILIKE '%{esc}' ESCAPE '\\'"
+    # Comparison ops.
+    cmp_op = "<>" if op == "!=" else op
+    return f"{q} {cmp_op} {_quote_literal(val)}"
+
+
+def _build_where(filters: list[dict] | None) -> str:
+    if not filters:
+        return ""
+    parts = [_build_filter_clause(f) for f in filters]
+    return "WHERE " + " AND ".join(parts)
+
+
+def _build_order_by(order_by: list[dict] | None) -> str:
+    if not order_by:
+        return ""
+    parts = []
+    for ob in order_by:
+        col = ob.get("col")
+        direction = (ob.get("dir") or "asc").lower()
+        if direction not in ("asc", "desc"):
+            raise AnalyticsError(f"Invalid order direction: {direction}")
+        parts.append(f"{_quote_ident(col)} {direction.upper()}")
+    return "ORDER BY " + ", ".join(parts)
+
+
+def _build_agg_expr(agg: dict) -> str:
+    col = agg.get("col")
+    fn = (agg.get("fn") or "").lower()
+    alias = agg.get("alias") or f"{fn}_{col or 'all'}"
+    if fn not in ALLOWED_AGG_FNS:
+        raise AnalyticsError(f"Aggregation not allowed: {fn}")
+    if fn == "count" and col in (None, "*"):
+        expr = "COUNT(*)"
+    elif fn == "count":
+        expr = f"COUNT({_quote_ident(col)})"
+    elif fn == "count_distinct":
+        if col is None:
+            raise AnalyticsError("count_distinct requires col")
+        expr = f"COUNT(DISTINCT {_quote_ident(col)})"
+    elif fn in ("avg", "mean"):
+        expr = f"AVG({_quote_ident(col)})"
+    elif fn == "median":
+        expr = f"MEDIAN({_quote_ident(col)})"
+    elif fn in ("sum", "min", "max", "stddev", "variance"):
+        sql_fn = "STDDEV" if fn == "stddev" else ("VAR_SAMP" if fn == "variance" else fn.upper())
+        expr = f"{sql_fn}({_quote_ident(col)})"
+    else:
+        raise AnalyticsError(f"Unhandled fn: {fn}")
+    return f"{expr} AS {_quote_ident(alias)}"
+
+
+async def filter_resource(
+    url: str,
+    fmt: str | None,
+    filters: list[dict] | None = None,
+    columns: list[str] | None = None,
+    order_by: list[dict] | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Typed WHERE/SELECT/ORDER BY/LIMIT against a cached resource."""
+    kind = classify_format(fmt)
+    if kind is None:
+        return {"error": f"Format '{fmt}' not supported"}
+    try:
+        parquet, meta = await ensure_cached(url, kind)
+    except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
+        return {"error": f"Could not load resource: {e}"}
+
+    limit = min(max(int(limit), 1), FILTER_MAX_LIMIT)
+    offset = max(int(offset), 0)
+
+    con = _new_con()
+    try:
+        _open_view(con, parquet)
+        select_clause = "*"
+        if columns:
+            select_clause = ", ".join(_quote_ident(c) for c in columns)
+        try:
+            where = _build_where(filters)
+            order = _build_order_by(order_by)
+        except AnalyticsError as e:
+            return {"error": str(e)}
+
+        sql = (
+            f"SELECT {select_clause} FROM data "
+            f"{where} {order} LIMIT {limit} OFFSET {offset}"
+        ).strip()
+        try:
+            rs = con.execute(sql)
+        except duckdb.Error as e:
+            return {"error": f"DuckDB: {e}", "sql": sql}
+        col_names = [d[0] for d in rs.description]
+        rows = rs.fetchall()
+        # Estimate total matching rows (separate count query).
+        try:
+            total = con.execute(
+                f"SELECT COUNT(*) FROM data {where}".strip()
+            ).fetchone()[0]
+        except duckdb.Error:
+            total = None
+
+    finally:
+        con.close()
+
+    return {
+        "source_url": url,
+        "format": kind,
+        "cache": meta,
+        "matching_rows_total": total,
+        "rows_returned": len(rows),
+        "columns": col_names,
+        "limit": limit,
+        "offset": offset,
+        "rows": [list(r) for r in rows],
+    }
+
+
+async def aggregate_resource(
+    url: str,
+    fmt: str | None,
+    aggregations: list[dict],
+    group_by: list[str] | None = None,
+    filters: list[dict] | None = None,
+    having: list[dict] | None = None,
+    order_by: list[dict] | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Typed GROUP BY + aggregations + optional HAVING."""
+    kind = classify_format(fmt)
+    if kind is None:
+        return {"error": f"Format '{fmt}' not supported"}
+    if not aggregations:
+        return {"error": "aggregations cannot be empty"}
+    try:
+        parquet, meta = await ensure_cached(url, kind)
+    except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
+        return {"error": f"Could not load resource: {e}"}
+
+    limit = min(max(int(limit), 1), AGGREGATE_MAX_LIMIT)
+
+    con = _new_con()
+    try:
+        _open_view(con, parquet)
+        try:
+            agg_parts = [_build_agg_expr(a) for a in aggregations]
+        except AnalyticsError as e:
+            return {"error": str(e)}
+
+        group_parts: list[str] = []
+        if group_by:
+            try:
+                group_parts = [_quote_ident(c) for c in group_by]
+            except AnalyticsError as e:
+                return {"error": str(e)}
+
+        select_clause = ", ".join([*group_parts, *agg_parts])
+        try:
+            where = _build_where(filters)
+            order = _build_order_by(order_by)
+        except AnalyticsError as e:
+            return {"error": str(e)}
+        group_clause = "GROUP BY " + ", ".join(group_parts) if group_parts else ""
+
+        # HAVING uses the same filter syntax but column refs are agg aliases.
+        having_clause = ""
+        if having:
+            try:
+                # HAVING refers to aliases which are valid identifiers — same path.
+                having_clause = "HAVING " + " AND ".join(
+                    _build_filter_clause(h) for h in having
+                )
+            except AnalyticsError as e:
+                return {"error": str(e)}
+
+        sql = (
+            f"SELECT {select_clause} FROM data {where} {group_clause} "
+            f"{having_clause} {order} LIMIT {limit}"
+        ).strip()
+        try:
+            rs = con.execute(sql)
+        except duckdb.Error as e:
+            return {"error": f"DuckDB: {e}", "sql": sql}
+        col_names = [d[0] for d in rs.description]
+        rows = rs.fetchall()
+    finally:
+        con.close()
+
+    return {
+        "source_url": url,
+        "format": kind,
+        "cache": meta,
+        "groups_returned": len(rows),
+        "columns": col_names,
+        "limit": limit,
+        "rows": [list(r) for r in rows],
+    }
+
+
+# ─── Cache management tool ────────────────────────────────────────────────────
+
+
+def get_cache_stats() -> dict[str, Any]:
+    return get_cache().stats()
+
+
+def clear_cache() -> dict[str, Any]:
+    removed = get_cache().clear()
+    return {"removed_entries": removed}

@@ -14,8 +14,14 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 from . import ckan
-from .analytics import get_resource_schema as _get_resource_schema
-from .analytics import summarize_resource as _summarize_resource
+from .analytics import (
+    aggregate_resource as _aggregate_resource,
+    clear_cache as _clear_cache,
+    filter_resource as _filter_resource,
+    get_cache_stats as _get_cache_stats,
+    get_resource_schema as _get_resource_schema,
+    summarize_resource as _summarize_resource,
+)
 from .preview import preview_resource_data
 
 # Per MCP spec: stdio servers MUST NOT write to stdout (interferes with protocol).
@@ -238,6 +244,144 @@ async def summarize_resource(
     return await _summarize_resource(
         url=url, fmt=format, max_categorical_top_n=max_categorical_top_n
     )
+
+
+@mcp.tool()
+async def filter_resource(
+    url: Annotated[
+        str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
+    ],
+    format: Annotated[
+        str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
+    ],
+    filters: Annotated[
+        list[dict] | None,
+        Field(
+            description=(
+                "Optional list of filter conditions, AND-combined. Each item is "
+                "{col, op, val}. Valid ops: =, !=, <, <=, >, >=, in, not_in, "
+                "contains, starts_with, ends_with, is_null, is_not_null. "
+                'Example: [{"col":"Año","op":"=","val":2026},{"col":"Mes","op":"=","val":"Abril"}].'
+            )
+        ),
+    ] = None,
+    columns: Annotated[
+        list[str] | None,
+        Field(description="Columns to SELECT. None = all columns."),
+    ] = None,
+    order_by: Annotated[
+        list[dict] | None,
+        Field(
+            description=(
+                'List of {col, dir} where dir is "asc" or "desc". '
+                'Example: [{"col":"Sueldo Bruto","dir":"desc"}].'
+            )
+        ),
+    ] = None,
+    limit: Annotated[
+        int, Field(description="Max rows to return (1-1000).", ge=1, le=1000)
+    ] = 100,
+    offset: Annotated[
+        int, Field(description="Rows to skip (for paginating).", ge=0)
+    ] = 0,
+) -> dict:
+    """Run a typed WHERE/SELECT/ORDER BY/LIMIT against a cached resource.
+
+    First call downloads the file (up to 100 MB) and caches it as Parquet at
+    ~/.cache/datosgobdo-mcp/. Subsequent calls hit cache (<1s). Returns
+    requested columns + matching rows (capped at limit) plus the total count
+    of matching rows. Use this when you need actual records, not aggregates.
+    """
+    return await _filter_resource(
+        url=url,
+        fmt=format,
+        filters=filters,
+        columns=columns,
+        order_by=order_by,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@mcp.tool()
+async def aggregate_resource(
+    url: Annotated[
+        str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
+    ],
+    format: Annotated[
+        str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
+    ],
+    aggregations: Annotated[
+        list[dict],
+        Field(
+            description=(
+                "List of {col, fn, alias}. Valid fns: count, count_distinct, "
+                "sum, avg, mean, median, min, max, stddev, variance. col=null "
+                "or col='*' means COUNT(*). "
+                'Example: [{"col":null,"fn":"count","alias":"empleados"},'
+                '{"col":"Sueldo Bruto","fn":"sum","alias":"masa_salarial"}].'
+            )
+        ),
+    ],
+    group_by: Annotated[
+        list[str] | None,
+        Field(description='Columns to GROUP BY. Example: ["Estatus","Mes"].'),
+    ] = None,
+    filters: Annotated[
+        list[dict] | None,
+        Field(description="Same syntax as filter_resource.filters. Applied before grouping."),
+    ] = None,
+    having: Annotated[
+        list[dict] | None,
+        Field(
+            description=(
+                "Post-aggregation filter on aggregation aliases. "
+                'Example: [{"col":"empleados","op":">","val":10}].'
+            )
+        ),
+    ] = None,
+    order_by: Annotated[
+        list[dict] | None,
+        Field(description="Same syntax as filter_resource.order_by. Refs aggregation aliases or group cols."),
+    ] = None,
+    limit: Annotated[
+        int, Field(description="Max groups to return (1-1000).", ge=1, le=1000)
+    ] = 100,
+) -> dict:
+    """Run GROUP BY + aggregations against a cached resource without writing SQL.
+
+    Typed wrapper that builds safe DuckDB queries from JSON. Example usage:
+    \"How many employees by status in April 2026?\" →
+        aggregations=[{col: null, fn: count, alias: empleados}],
+        group_by=["Estatus"],
+        filters=[{col:"Año",op:"=",val:2026},{col:"Mes",op:"=",val:"Abril"}],
+        order_by=[{col:"empleados",dir:"desc"}].
+
+    First call downloads + caches the file. Subsequent calls reuse the cache.
+    Returns one row per group with the aggregation values.
+    """
+    return await _aggregate_resource(
+        url=url,
+        fmt=format,
+        aggregations=aggregations,
+        group_by=group_by,
+        filters=filters,
+        having=having,
+        order_by=order_by,
+        limit=limit,
+    )
+
+
+@mcp.tool()
+def get_cache_stats() -> dict:
+    """Return on-disk Parquet cache stats: entry count, total bytes, max bytes."""
+    return _get_cache_stats()
+
+
+@mcp.tool()
+def clear_cache() -> dict:
+    """Remove all cached Parquet files. Returns the count removed."""
+    return _clear_cache()
 
 
 # ─── Organizaciones ───────────────────────────────────────────────────────────
