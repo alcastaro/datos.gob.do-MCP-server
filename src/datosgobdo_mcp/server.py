@@ -20,6 +20,7 @@ from .analytics import (
     filter_resource as _filter_resource,
     get_cache_stats as _get_cache_stats,
     get_resource_schema as _get_resource_schema,
+    query_resource as _query_resource,
     summarize_resource as _summarize_resource,
 )
 from .preview import preview_resource_data
@@ -370,6 +371,49 @@ async def aggregate_resource(
         order_by=order_by,
         limit=limit,
     )
+
+
+@mcp.tool()
+async def query_resource(
+    url: Annotated[
+        str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
+    ],
+    format: Annotated[
+        str,
+        Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, xls, json, ods."),
+    ],
+    sql: Annotated[
+        str,
+        Field(
+            description=(
+                "Read-only SQL query against table 'data'. Only SELECT/WITH "
+                "allowed; DDL/DML rejected. The query is wrapped in "
+                "'SELECT * FROM (<your sql>) LIMIT <limit>' so a row cap is "
+                "always enforced. "
+                "Example: \"SELECT Estatus, COUNT(*) c FROM data WHERE Año=2026 "
+                "AND Mes='Abril' GROUP BY Estatus ORDER BY c DESC\""
+            )
+        ),
+    ],
+    limit: Annotated[
+        int, Field(description="Hard cap on returned rows (1-1000).", ge=1, le=1000)
+    ] = 200,
+) -> dict:
+    """Run an ad-hoc read-only SQL query against a cached resource via DuckDB.
+
+    Power-user escape hatch when filter_resource / aggregate_resource don't
+    cover the case. The cached resource is exposed as the view 'data'.
+    Supports CSV, TSV, XLSX, XLS, JSON, and ODS (auto-converted to CSV).
+
+    Safety:
+      - Only SELECT/WITH statements (CTEs allowed).
+      - Multi-statement queries blocked.
+      - Keywords INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/COPY/EXPORT/IMPORT/
+        TRUNCATE/GRANT/REVOKE/PRAGMA/SET/LOAD/INSTALL/ATTACH/DETACH/VACUUM/
+        ANALYZE rejected outright.
+      - Row cap always applied via outer wrapper.
+    """
+    return await _query_resource(url=url, fmt=format, sql=sql, limit=limit)
 
 
 @mcp.tool()

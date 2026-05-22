@@ -55,6 +55,17 @@ ALLOWED_OPS = {
     "is_null", "is_not_null",
 }
 
+# Raw SQL hatch: reject anything that isn't strictly a read-only SELECT/WITH.
+# Multiple statements forbidden; DDL/DML forbidden.
+_SQL_FORBIDDEN = re.compile(
+    r"\b(insert|update|delete|drop|create|alter|attach|detach|copy|export|"
+    r"import|truncate|grant|revoke|pragma|set|load|install|"
+    r"vacuum|analyze)\b",
+    re.IGNORECASE,
+)
+_SQL_ALLOWED_START = re.compile(r"^\s*(with|select)\b", re.IGNORECASE)
+SQL_MAX_LIMIT = 1000
+
 
 class AnalyticsError(RuntimeError):
     pass
@@ -146,6 +157,45 @@ async def _head_metadata(url: str) -> tuple[str | None, str | None]:
         return None, None
 
 
+def _ods_to_csv(src: Path) -> Path:
+    """Convert ODS to CSV (first sheet only) using odfpy. Returns sibling .csv path.
+
+    DuckDB has no native ODS reader as of 1.x. We extract once on cold-path
+    download so Parquet conversion can proceed via the CSV pipeline.
+    """
+    try:
+        from odf.opendocument import load
+        from odf.table import Table, TableRow, TableCell
+        from odf.text import P
+    except ImportError as e:
+        raise AnalyticsError(f"odfpy not installed: {e}") from e
+
+    doc = load(str(src))
+    tables = doc.spreadsheet.getElementsByType(Table)
+    if not tables:
+        raise AnalyticsError("ODS file has no tables")
+    table = tables[0]
+    csv_path = src.with_suffix(src.suffix + ".csv")
+    import csv as _csv
+
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
+        writer = _csv.writer(f)
+        for row in table.getElementsByType(TableRow):
+            cells = row.getElementsByType(TableCell)
+            out_row: list[str] = []
+            for cell in cells:
+                # Handle repeated columns.
+                repeated = int(cell.getAttribute("numbercolumnsrepeated") or 1)
+                paragraphs = cell.getElementsByType(P)
+                text = "".join(str(p) for p in paragraphs)
+                out_row.extend([text] * repeated)
+            # Trim trailing empty repeats that pad the row.
+            while out_row and out_row[-1] == "":
+                out_row.pop()
+            writer.writerow(out_row)
+    return csv_path
+
+
 async def ensure_cached(
     url: str,
     fmt: str,
@@ -178,25 +228,34 @@ async def ensure_cached(
         if bytes_written == 0:
             raise AnalyticsError("Downloaded zero bytes")
 
-        usable = _normalize_csv_encoding(raw) if fmt in ("csv", "tsv") else raw
+        # ODS path: convert to CSV first, then run the CSV pipeline.
+        effective_fmt = fmt
+        if fmt == "ods":
+            raw_csv = _ods_to_csv(raw)
+            raw = raw_csv  # so cleanup gets both via sidecar suffix path
+            effective_fmt = "csv"
+
+        usable = (
+            _normalize_csv_encoding(raw) if effective_fmt in ("csv", "tsv") else raw
+        )
         parquet_path = cache.put_path(key)
 
         con = _new_con()
         try:
             src = str(usable).replace("'", "''")
             dst = str(parquet_path).replace("'", "''")
-            if fmt in ("csv", "tsv"):
+            if effective_fmt in ("csv", "tsv"):
                 con.execute(
                     f"COPY (SELECT * FROM read_csv_auto('{src}', "
                     f"SAMPLE_SIZE=-1, IGNORE_ERRORS=TRUE)) "
                     f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
                 )
-            elif fmt in ("xlsx", "xls", "xlsm"):
+            elif effective_fmt in ("xlsx", "xls", "xlsm"):
                 con.execute(
                     f"COPY (SELECT * FROM read_xlsx('{src}')) "
                     f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
                 )
-            elif fmt == "json":
+            elif effective_fmt == "json":
                 con.execute(
                     f"COPY (SELECT * FROM read_json_auto('{src}')) "
                     f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
@@ -619,6 +678,80 @@ async def aggregate_resource(
         "groups_returned": len(rows),
         "columns": col_names,
         "limit": limit,
+        "rows": [list(r) for r in rows],
+    }
+
+
+# ─── Raw SQL escape hatch ─────────────────────────────────────────────────────
+
+
+def _validate_sql(sql: str) -> str:
+    """Reject anything that isn't a single read-only SELECT/WITH statement.
+
+    DuckDB's parser would otherwise happily run DDL on the in-memory connection
+    (the underlying file is read-only, but the in-memory view could be replaced
+    or new tables created). We also strip semicolons to prevent multi-statement
+    injection.
+    """
+    s = sql.strip().rstrip(";").strip()
+    if not s:
+        raise AnalyticsError("Empty SQL")
+    if ";" in s:
+        raise AnalyticsError("Multiple statements are not allowed; use a single SELECT")
+    if not _SQL_ALLOWED_START.match(s):
+        raise AnalyticsError("SQL must start with SELECT or WITH")
+    if _SQL_FORBIDDEN.search(s):
+        raise AnalyticsError("SQL contains a forbidden keyword (DDL/DML disallowed)")
+    return s
+
+
+async def query_resource(
+    url: str,
+    fmt: str | None,
+    sql: str,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Run an ad-hoc read-only SQL query against a cached resource.
+
+    The cached resource is available as the table/view named `data`. Only
+    SELECT/WITH statements are allowed; DDL, DML, COPY, PRAGMA, INSTALL, LOAD,
+    ATTACH, etc. are blocked. The query is wrapped to enforce a hard row
+    limit even if the user didn't include LIMIT.
+    """
+    kind = classify_format(fmt)
+    if kind is None:
+        return {"error": f"Format '{fmt}' not supported"}
+    try:
+        cleaned = _validate_sql(sql)
+    except AnalyticsError as e:
+        return {"error": str(e)}
+    try:
+        parquet, meta = await ensure_cached(url, kind)
+    except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
+        return {"error": f"Could not load resource: {e}"}
+
+    limit = min(max(int(limit), 1), SQL_MAX_LIMIT)
+    wrapped = f"SELECT * FROM ({cleaned}) AS _user_q LIMIT {limit}"
+
+    con = _new_con()
+    try:
+        _open_view(con, parquet)
+        try:
+            rs = con.execute(wrapped)
+        except duckdb.Error as e:
+            return {"error": f"DuckDB: {e}", "sql": wrapped}
+        col_names = [d[0] for d in rs.description]
+        rows = rs.fetchall()
+    finally:
+        con.close()
+
+    return {
+        "source_url": url,
+        "format": kind,
+        "cache": meta,
+        "sql_executed": wrapped,
+        "rows_returned": len(rows),
+        "columns": col_names,
         "rows": [list(r) for r in rows],
     }
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dominican-open-data-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "MCP server for datos.gob.do — Dominican Republic open government data portal (CKAN 2.11)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,6 +31,7 @@ dependencies = [
     "openpyxl>=3.1",
     "duckdb>=1.0",
     "chardet>=5.2",
+    "odfpy>=1.4",
 ]
 
 [project.scripts]
