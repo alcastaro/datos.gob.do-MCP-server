@@ -14,6 +14,8 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 from . import ckan
+from .analytics import get_resource_schema as _get_resource_schema
+from .analytics import summarize_resource as _summarize_resource
 from .preview import preview_resource_data
 
 # Per MCP spec: stdio servers MUST NOT write to stdout (interferes with protocol).
@@ -137,8 +139,8 @@ async def download_resource_preview(
         str,
         Field(
             description=(
-                "URL directa al archivo (campo 'url' del recurso). "
-                "Soporta CSV, TSV, XLSX, JSON."
+                "Direct URL to the file (CKAN resource 'url' field). "
+                "Supports CSV, TSV, XLSX, JSON."
             )
         ),
     ],
@@ -146,23 +148,96 @@ async def download_resource_preview(
         str,
         Field(
             description=(
-                "Formato declarado en CKAN (campo 'format'). "
-                "Acepta: csv, tsv, xlsx, xls, json."
+                "Format declared in CKAN ('format' field). "
+                "Accepts: csv, tsv, xlsx, xls, json."
             )
         ),
     ],
     rows: Annotated[
         int,
-        Field(description="Filas a devolver (1-200). Default 20.", ge=1, le=200),
+        Field(description="Rows to return (1-200). Default 20.", ge=1, le=200),
     ] = 20,
+    sample: Annotated[
+        Literal["head", "tail", "random"],
+        Field(
+            description=(
+                "Which slice to return: 'head' (first N), 'tail' (last N of "
+                "downloaded portion), or 'random' (uniform sample). For large "
+                "files, prefer summarize_resource or aggregate_resource."
+            )
+        ),
+    ] = "head",
 ) -> dict:
-    """Baja un recurso y devuelve las primeras N filas con sus columnas.
+    """Download a resource and return N rows with their column headers.
 
-    El portal datos.gob.do no tiene DataStore (no hay SQL), así que esta tool descarga
-    el archivo y lo parsea cliente-side. Tope de 5MB para evitar archivos enormes.
-    Útil para ver la estructura real de los datos antes de bajar el archivo completo.
+    The datos.gob.do portal has no DataStore (no SQL), so this tool downloads
+    the file and parses it client-side. 5 MB cap to avoid huge files. Useful
+    for inspecting the structure of the data before deciding how to query it.
+    For analytical queries on big files, use get_resource_schema +
+    summarize_resource (v0.2) or aggregate_resource (v0.3+).
     """
-    return await preview_resource_data(url=url, fmt=format, rows=rows)
+    return await preview_resource_data(url=url, fmt=format, rows=rows, sample=sample)
+
+
+@mcp.tool()
+async def get_resource_schema(
+    url: Annotated[
+        str,
+        Field(description="Direct URL to the file (CKAN resource 'url' field)."),
+    ],
+    format: Annotated[
+        str,
+        Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json."),
+    ],
+    sample_rows: Annotated[
+        int,
+        Field(
+            description="Distinct values per column to include as samples (1-1000).",
+            ge=1,
+            le=1000,
+        ),
+    ] = 1000,
+) -> dict:
+    """Return column names, inferred types, and sample values for a resource.
+
+    Cheap reconnaissance step. Downloads file (up to 100 MB), opens it in
+    DuckDB, and runs DESCRIBE + per-column DISTINCT sampling. Does NOT return
+    raw rows. Use this before summarize_resource or aggregate_resource so the
+    model knows column names and types.
+    """
+    return await _get_resource_schema(url=url, fmt=format, sample_rows=sample_rows)
+
+
+@mcp.tool()
+async def summarize_resource(
+    url: Annotated[
+        str,
+        Field(description="Direct URL to the file (CKAN resource 'url' field)."),
+    ],
+    format: Annotated[
+        str,
+        Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json."),
+    ],
+    max_categorical_top_n: Annotated[
+        int,
+        Field(
+            description="Top-N most-frequent values per categorical column (1-50).",
+            ge=1,
+            le=50,
+        ),
+    ] = 10,
+) -> dict:
+    """Auto-generated profile: row count, types, nulls, distinct, min/max/mean, top values.
+
+    Downloads file (up to 100 MB), runs DuckDB COUNT/DISTINCT/AGG queries per
+    column. Returns one compact dict per column with stats. The model uses this
+    to decide which filters and aggregations to apply next, without any raw
+    rows in its context. For columns with many distinct values (e.g. names),
+    'top_values' is omitted; only counts are returned.
+    """
+    return await _summarize_resource(
+        url=url, fmt=format, max_categorical_top_n=max_categorical_top_n
+    )
 
 
 # ─── Organizaciones ───────────────────────────────────────────────────────────
