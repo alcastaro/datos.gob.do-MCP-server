@@ -42,7 +42,9 @@ AGGREGATE_MAX_LIMIT = 1000
 # Identifier guard: only word chars + dot + space (for column names like
 # "Sueldo Bruto" or "data.column"). We always pass identifiers through
 # double-quote escaping anyway; this is the second line of defense.
-_IDENT_OK = re.compile(r'^[\w .\-À-ſ]+$', re.UNICODE)
+# We explicitly forbid SQL-comment sequences and statement terminators.
+_IDENT_OK = re.compile(r'^[\w .À-ſ]+$', re.UNICODE)
+_IDENT_FORBIDDEN_SUBSTR = ("--", "/*", "*/", ";")
 
 ALLOWED_AGG_FNS = {
     "count", "count_distinct", "sum", "avg", "mean", "median",
@@ -72,9 +74,21 @@ class AnalyticsError(RuntimeError):
 
 
 def _quote_ident(name: str) -> str:
-    """Quote a column identifier safely. Rejects anything with quotes."""
-    if not _IDENT_OK.match(name):
+    """Quote a column identifier safely.
+
+    Two layers of defence:
+        1. Allowlist regex on chars (letters, digits, underscore, dot, space,
+           Latin-1/extended accents).
+        2. Denylist of forbidden substrings (--, /*, */, ;) so a name that
+           somehow passes the regex still can't smuggle SQL syntax.
+
+    Anything that fails either check raises AnalyticsError.
+    """
+    if not name or not _IDENT_OK.match(name):
         raise AnalyticsError(f"Invalid column identifier: {name!r}")
+    for bad in _IDENT_FORBIDDEN_SUBSTR:
+        if bad in name:
+            raise AnalyticsError(f"Forbidden substring in identifier: {name!r}")
     return '"' + name.replace('"', '""') + '"'
 
 

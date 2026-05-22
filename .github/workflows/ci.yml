@@ -24,19 +24,24 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
-      - name: Install dependencies
-        run: uv sync --python ${{ matrix.python-version }}
+      - name: Install dependencies (with dev extras)
+        run: uv sync --python ${{ matrix.python-version }} --extra dev
 
       - name: Verify package imports
         run: |
           uv run --python ${{ matrix.python-version }} python -c "
-          from datosgobdo_mcp import server, ckan, preview
+          from datosgobdo_mcp import server, ckan, preview, analytics, cache, download
           assert hasattr(server, 'mcp')
           assert hasattr(server, 'main')
           assert callable(ckan.search_datasets)
           assert callable(preview.preview_resource_data)
+          assert callable(analytics.aggregate_resource)
+          assert callable(analytics.query_resource)
           print('OK: all modules import cleanly')
           "
+
+      - name: Run pytest (hermetic, no network)
+        run: uv run --python ${{ matrix.python-version }} pytest -v
 
       - name: Verify entry point script
         run: |
