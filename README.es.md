@@ -76,7 +76,21 @@ Este MCP está inspirado en [`datagouv-mcp`](https://github.com/datagouv/datagou
 |---|---|
 | `get_resource` | Metadatos de un recurso individual (URL, formato, tamaño, fecha). |
 | `search_resources` | Busca recursos por nombre. |
-| `download_resource_preview` | **Baja un archivo y devuelve las primeras N filas con sus columnas.** Funciona con CSV, TSV, XLSX, XLS y JSON. Cliente-side parsing porque el portal no tiene DataStore. Tope de 5 MB. |
+| `download_resource_preview` | Baja un archivo y devuelve N filas. CSV, TSV, XLSX, XLS, JSON. Tope de 5 MB. Modos: head / tail / random. |
+
+### Analytics (v0.2+)
+
+Capa analítica con DuckDB sobre cache persistente en Parquet. Primera llamada por recurso descarga + cachea (hasta 100 MB). Llamadas siguientes son sub-segundo.
+
+| Tool | Qué hace |
+|---|---|
+| `get_resource_schema` | Nombres de columnas, tipos inferidos, valores de muestra por columna. Paso de reconocimiento barato. |
+| `summarize_resource` | Perfil automático: row count, nulls/distinct por columna, min/max/mean en numéricas, top-N valores en categóricas. |
+| `filter_resource` | WHERE / SELECT / ORDER BY / LIMIT tipados. Ops: `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in`, `contains`, `starts_with`, `ends_with`, `is_null`, `is_not_null`. |
+| `aggregate_resource` | GROUP BY + agregaciones + HAVING + ORDER BY tipados. Fns: `count`, `count_distinct`, `sum`, `avg`, `mean`, `median`, `min`, `max`, `stddev`, `variance`. |
+| `query_resource` | Escape hatch para power users: SQL read-only contra tabla `data`. Solo SELECT/WITH; DDL/DML/COPY/PRAGMA/ATTACH/LOAD rechazados. |
+| `get_cache_stats` | Stats del cache Parquet en disco. |
+| `clear_cache` | Borra todo el cache. |
 
 ### Catálogo
 

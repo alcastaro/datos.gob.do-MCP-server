@@ -59,7 +59,7 @@ This MCP is inspired by [`datagouv-mcp`](https://github.com/datagouv/datagouv-mc
 
 ## Tools exposed
 
-12 typed functions, grouped into four categories:
+17 typed functions, grouped into five categories.
 
 ### Discovery
 
@@ -76,7 +76,21 @@ This MCP is inspired by [`datagouv-mcp`](https://github.com/datagouv/datagouv-mc
 |---|---|
 | `get_resource` | Metadata for a single resource (URL, format, size, date). |
 | `search_resources` | Search resources by name. |
-| `download_resource_preview` | **Download a file and return the first N rows with their columns.** Works with CSV, TSV, XLSX, XLS, and JSON. Client-side parsing because the portal has no DataStore. 5 MB cap. |
+| `download_resource_preview` | Download a file and return N rows. CSV, TSV, XLSX, XLS, JSON. 5 MB cap. Sample mode: head / tail / random. |
+
+### Analytics (v0.2+)
+
+DuckDB-backed analytics over a persistent Parquet cache. First call per resource downloads + caches (up to 100 MB). Subsequent calls are sub-second.
+
+| Tool | What it does |
+|---|---|
+| `get_resource_schema` | Column names, inferred types, sample values per column. Cheap reconnaissance step before any aggregation. |
+| `summarize_resource` | Auto-generated profile: row count, per-column nulls/distinct, min/max/mean on numerics, top-N values on categoricals. |
+| `filter_resource` | Typed WHERE / SELECT / ORDER BY / LIMIT. Ops: `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in`, `contains`, `starts_with`, `ends_with`, `is_null`, `is_not_null`. |
+| `aggregate_resource` | Typed GROUP BY + aggregations + HAVING + ORDER BY. Fns: `count`, `count_distinct`, `sum`, `avg`, `mean`, `median`, `min`, `max`, `stddev`, `variance`. |
+| `query_resource` | Power-user escape hatch: read-only SQL against table `data`. SELECT/WITH only; DDL/DML/COPY/PRAGMA/ATTACH/LOAD rejected. |
+| `get_cache_stats` | On-disk Parquet cache stats. |
+| `clear_cache` | Wipe the local Parquet cache. |
 
 ### Catalog
 
@@ -91,7 +105,7 @@ This MCP is inspired by [`datagouv-mcp`](https://github.com/datagouv/datagouv-mc
 
 | Tool | What it does |
 |---|---|
-| `autocomplete` | Resolve partial names for datasets, organizations, groups, or tags. Useful when the user only gives a partial name — the model uses it internally to find exact slugs. |
+| `autocomplete` | Resolve partial names for datasets, organizations, groups, or tags. Useful when the user only gives a partial name. |
 
 ---
 
@@ -191,6 +205,16 @@ Once configured, you can ask the model:
 
 → `search_datasets(query="poder judicial")` → `get_dataset("presupuesto-poder-judicial")` → `download_resource_preview(url=..., format="csv", rows=20)` → the model identifies the largest items.
 
+### Big-file analytics (v0.2+)
+
+> *How many active employees are there at the Ministry of Agriculture in April 2026, broken down by employment status?*
+
+The Agricultura nómina CSV has 826,000 rows and 94 MB — too big for the preview tool. The analytics workflow:
+
+→ `search_datasets(query="nomina agricultura")` → `get_dataset(...)` → `get_resource_schema(url, "csv")` to see columns (Nombre, Departamento, Función, Estatus, Sueldo Bruto, Mes, Año) → `aggregate_resource(...)` with `group_by=["Estatus"]`, filters on `Año=2026, Mes='Abril'`, and `count_distinct` on `Nombre`.
+
+Result: 6 status types, total ~8,915 employees. Cold first call: ~14 s (download + Parquet conversion). Subsequent calls on the same file: <0.5 s (cache hit).
+
 ### Monitoring
 
 > *List the 10 most recently updated datasets on the portal.*
@@ -230,11 +254,11 @@ src/datosgobdo_mcp/
 
 ## Known limitations
 
-- **No SQL queries** against resource contents: the portal has no DataStore. Workaround: `download_resource_preview` + analysis by the model.
-- **Preview limited to 5 MB**: larger files are truncated. Enough to understand structure, not for full statistical analysis.
-- **No ODS or PDF support in preview**: only CSV, TSV, XLSX, XLS, and JSON. ODS and PDF files are exposed via their direct download URL.
+- **Preview tool limited to 5 MB** (the portal's largest files have hundreds of MB). For larger files use the analytics tools (`get_resource_schema`, `summarize_resource`, `filter_resource`, `aggregate_resource`, `query_resource`) which raise the cap to 100 MB and parse via DuckDB.
+- **PDF not supported**: PDF files are exposed via their direct download URL only.
 - **Read-only**: the MCP does not write to the portal (no authentication, no `package_create`, `resource_create` endpoints, etc.). By design.
-- **Exotic encodings**: a fallback exists (UTF-8 → CP1252), but files with unusual encoding may show broken characters.
+- **XLSX with non-header preamble rows**: some published XLSX files have title rows above the actual header. DuckDB's `read_xlsx` 1.x has no skip-rows option, so the auto-detected schema is garbled for those files. Workaround: use `download_resource_preview` to inspect, then `query_resource` with explicit column projections.
+- **Exotic encodings**: chardet fallback handles UTF-8 / UTF-8-sig / Latin-1 / CP1252 transparently; files with truly unusual encoding may still show replacement characters.
 
 ---
 
