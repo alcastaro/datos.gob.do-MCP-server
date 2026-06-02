@@ -40,3 +40,7 @@ Thumbs.db
 # Node (legacy)
 node_modules/
 package-lock.json
+
+# Claude Code local files (NEVER commit)
+CLAUDE.md
+.claude/
