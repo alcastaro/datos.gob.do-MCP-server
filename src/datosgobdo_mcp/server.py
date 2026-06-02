@@ -11,6 +11,7 @@ import sys
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from . import ckan
@@ -37,10 +38,26 @@ logger = logging.getLogger("datosgobdo-mcp")
 mcp = FastMCP("datosgobdo-mcp")
 
 
+# ─── Tool annotations ─────────────────────────────────────────────────────────
+# Anthropic Directory review criteria require title + readOnlyHint, plus
+# destructiveHint for any mutating tool. None of these tools write to the
+# portal; the only mutation is clearing the local Parquet cache.
+
+
+def _ro(title: str) -> ToolAnnotations:
+    """Read-only tool that reaches the network (live datos.gob.do / file URLs)."""
+    return ToolAnnotations(title=title, readOnlyHint=True, openWorldHint=True)
+
+
+def _ro_local(title: str) -> ToolAnnotations:
+    """Read-only tool that touches only local state (no network)."""
+    return ToolAnnotations(title=title, readOnlyHint=True, openWorldHint=False)
+
+
 # ─── Búsqueda y descubrimiento ────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("Search datasets"))
 async def search_datasets(
     query: Annotated[
         str | None,
@@ -88,7 +105,7 @@ async def search_datasets(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("Get dataset metadata"))
 async def get_dataset(
     id: Annotated[
         str,
@@ -108,7 +125,7 @@ async def get_dataset(
     return await ckan.get_dataset(id)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("List recent datasets"))
 async def list_recent_datasets(
     limit: Annotated[int, Field(description="Cantidad (1-30)", ge=1, le=30)] = 10,
 ) -> dict:
@@ -123,7 +140,7 @@ async def list_recent_datasets(
 # ─── Recursos ─────────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("Get resource metadata"))
 async def get_resource(
     id: Annotated[str, Field(description="UUID del recurso.")],
 ) -> dict:
@@ -131,7 +148,7 @@ async def get_resource(
     return await ckan.get_resource(id)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("Search resources"))
 async def search_resources(
     query: Annotated[str, Field(description="Nombre o parte del nombre del recurso.")],
     limit: Annotated[int, Field(description="Resultados (1-50)", ge=1, le=50)] = 10,
@@ -140,7 +157,7 @@ async def search_resources(
     return await ckan.search_resources(query=query, limit=limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("Preview resource data"))
 async def download_resource_preview(
     url: Annotated[
         str,
@@ -186,7 +203,7 @@ async def download_resource_preview(
     return await preview_resource_data(url=url, fmt=format, rows=rows, sample=sample)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("Get resource schema"))
 async def get_resource_schema(
     url: Annotated[
         str,
@@ -215,7 +232,7 @@ async def get_resource_schema(
     return await _get_resource_schema(url=url, fmt=format, sample_rows=sample_rows)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("Summarize resource"))
 async def summarize_resource(
     url: Annotated[
         str,
@@ -247,7 +264,7 @@ async def summarize_resource(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("Filter resource rows"))
 async def filter_resource(
     url: Annotated[
         str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
@@ -304,7 +321,7 @@ async def filter_resource(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("Aggregate resource"))
 async def aggregate_resource(
     url: Annotated[
         str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
@@ -373,7 +390,7 @@ async def aggregate_resource(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("Query resource (read-only SQL)"))
 async def query_resource(
     url: Annotated[
         str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
@@ -402,27 +419,38 @@ async def query_resource(
     """Run an ad-hoc read-only SQL query against a cached resource via DuckDB.
 
     Power-user escape hatch when filter_resource / aggregate_resource don't
-    cover the case. The cached resource is exposed as the view 'data'.
+    cover the case. The cached resource is exposed as the in-memory table
+    'data'. SQL is DuckDB dialect — see https://duckdb.org/docs/sql/introduction.
     Supports CSV, TSV, XLSX, XLS, JSON, and ODS (auto-converted to CSV).
 
     Safety:
-      - Only SELECT/WITH statements (CTEs allowed).
-      - Multi-statement queries blocked.
-      - Keywords INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/COPY/EXPORT/IMPORT/
-        TRUNCATE/GRANT/REVOKE/PRAGMA/SET/LOAD/INSTALL/ATTACH/DETACH/VACUUM/
-        ANALYZE rejected outright.
+      - Only SELECT/WITH statements (CTEs allowed); multi-statement blocked.
+      - DDL/DML keywords (INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/COPY/EXPORT/
+        IMPORT/TRUNCATE/GRANT/REVOKE/PRAGMA/SET/LOAD/INSTALL/ATTACH/DETACH/
+        VACUUM/ANALYZE) rejected outright.
+      - Sandboxed: the resource is materialized in memory and external access
+        is disabled, so table functions (read_text/read_csv/glob/...) cannot
+        read local files or reach the network.
       - Row cap always applied via outer wrapper.
     """
     return await _query_resource(url=url, fmt=format, sql=sql, limit=limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro_local("Get cache stats"))
 def get_cache_stats() -> dict:
     """Return on-disk Parquet cache stats: entry count, total bytes, max bytes."""
     return _get_cache_stats()
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Clear analytics cache",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 def clear_cache() -> dict:
     """Remove all cached Parquet files. Returns the count removed."""
     return _clear_cache()
@@ -431,7 +459,7 @@ def clear_cache() -> dict:
 # ─── Organizaciones ───────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("List organizations"))
 async def list_organizations(
     limit: Annotated[int, Field(description="Máximo (1-200)", ge=1, le=200)] = 50,
 ) -> list[dict]:
@@ -443,7 +471,7 @@ async def list_organizations(
     return await ckan.list_organizations(limit=limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("Get organization"))
 async def get_organization(
     id: Annotated[
         str,
@@ -462,13 +490,13 @@ async def get_organization(
 # ─── Grupos y tags ────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("List groups"))
 async def list_groups() -> list[dict]:
     """Categorías temáticas en datos.gob.do (economía, salud, gestión pública, etc.)."""
     return await ckan.list_groups()
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("List tags"))
 async def list_tags(
     query: Annotated[
         str | None, Field(description="Prefijo para filtrar tags.")
@@ -482,7 +510,7 @@ async def list_tags(
 # ─── Autocomplete ─────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("Autocomplete entities"))
 async def autocomplete(
     kind: Annotated[
         Literal["dataset", "organization", "group", "tag"],
@@ -502,7 +530,7 @@ async def autocomplete(
 # ─── Stats ────────────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ro("Get site stats"))
 async def get_site_stats() -> dict:
     """Estadísticas generales del portal datos.gob.do.
 

@@ -302,6 +302,22 @@ def _open_view(con: duckdb.DuckDBPyConnection, parquet: Path) -> None:
     con.execute(f"CREATE OR REPLACE VIEW data AS SELECT * FROM read_parquet('{p}')")
 
 
+def _open_sandboxed(con: duckdb.DuckDBPyConnection, parquet: Path) -> None:
+    """Materialize the resource into an in-memory table, then revoke external access.
+
+    Used by query_resource, whose SQL is model-supplied. Without this, a SELECT
+    could call DuckDB table functions (read_text/read_csv/read_blob/glob) to read
+    arbitrary local files or reach the network — the keyword denylist in
+    _validate_sql does not cover those. We materialize FIRST (reading the local
+    Parquet is itself "external access") and only then disable it, so the user
+    query runs entirely against the in-memory `data` table.
+    """
+    p = str(parquet).replace("'", "''")
+    con.execute(f"CREATE TABLE data AS SELECT * FROM read_parquet('{p}')")
+    con.execute("SET enable_external_access=false")
+    con.execute("SET lock_configuration=true")
+
+
 # ─── Public analytics tools ───────────────────────────────────────────────────
 
 
@@ -328,13 +344,13 @@ async def get_resource_schema(
         ]
         row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]
 
-        n = min(int(sample_rows), 1000)
+        n = min(max(int(sample_rows), 1), SCHEMA_SAMPLE_ROWS)
         for col in columns_meta:
             quoted = _quote_ident(col["name"])
             try:
                 vals = con.execute(
                     f"SELECT DISTINCT {quoted} FROM data "
-                    f"WHERE {quoted} IS NOT NULL LIMIT 5"
+                    f"WHERE {quoted} IS NOT NULL LIMIT {n}"
                 ).fetchall()
                 col["sample_values"] = [v[0] for v in vals]
             except duckdb.Error:
@@ -749,7 +765,7 @@ async def query_resource(
 
     con = _new_con()
     try:
-        _open_view(con, parquet)
+        _open_sandboxed(con, parquet)
         try:
             rs = con.execute(wrapped)
         except duckdb.Error as e:

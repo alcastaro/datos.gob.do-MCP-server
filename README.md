@@ -88,7 +88,7 @@ DuckDB-backed analytics over a persistent Parquet cache. First call per resource
 | `summarize_resource` | Auto-generated profile: row count, per-column nulls/distinct, min/max/mean on numerics, top-N values on categoricals. |
 | `filter_resource` | Typed WHERE / SELECT / ORDER BY / LIMIT. Ops: `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in`, `contains`, `starts_with`, `ends_with`, `is_null`, `is_not_null`. |
 | `aggregate_resource` | Typed GROUP BY + aggregations + HAVING + ORDER BY. Fns: `count`, `count_distinct`, `sum`, `avg`, `mean`, `median`, `min`, `max`, `stddev`, `variance`. |
-| `query_resource` | Power-user escape hatch: read-only SQL against table `data`. SELECT/WITH only; DDL/DML/COPY/PRAGMA/ATTACH/LOAD rejected. |
+| `query_resource` | Power-user escape hatch: read-only SQL against table `data`. SELECT/WITH only; DDL/DML/COPY/PRAGMA/ATTACH/LOAD rejected. Sandboxed — the resource is materialized in memory with external access disabled, so table functions cannot read local files or reach the network. |
 | `get_cache_stats` | On-disk Parquet cache stats. |
 | `clear_cache` | Wipe the local Parquet cache. |
 

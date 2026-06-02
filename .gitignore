@@ -44,3 +44,7 @@ package-lock.json
 # Claude Code local files (NEVER commit)
 CLAUDE.md
 .claude/
+
+# Internal planning docs (NEVER commit)
+workplan.md
+Roadmap.md

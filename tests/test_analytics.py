@@ -340,6 +340,65 @@ async def test_query_resource_blocks_injection(tmp_cache_dir):
     assert "SELECT" in out["error"] or "forbidden" in out["error"].lower()
 
 
+# ─── Security: query_resource must not read local files / reach the network ────
+# DuckDB exposes filesystem access via *table functions* (read_text, read_csv,
+# glob, read_blob) that the keyword denylist does NOT cover. The sandbox
+# (materialize + enable_external_access=false) must neutralize them so a
+# model-supplied SELECT can never exfiltrate local files.
+
+
+@pytest.mark.parametrize(
+    "malicious_sql",
+    [
+        "SELECT * FROM read_text('/etc/passwd')",
+        "SELECT * FROM read_csv('/etc/passwd')",
+        "SELECT size FROM glob('/*')",
+        "SELECT * FROM read_blob('/etc/passwd')",
+    ],
+)
+async def test_query_resource_blocks_file_access(
+    mock_csv_endpoint, tmp_cache_dir, malicious_sql
+):
+    out = await analytics.query_resource(mock_csv_endpoint, "csv", sql=malicious_sql)
+    assert "error" in out, f"file access was NOT blocked: {out}"
+
+
+async def test_query_resource_legit_query_still_works_after_sandbox(
+    mock_csv_endpoint, tmp_cache_dir
+):
+    # Regression: the sandbox must not break normal queries against `data`.
+    out = await analytics.query_resource(
+        mock_csv_endpoint,
+        "csv",
+        sql="SELECT Estatus, COUNT(*) AS n FROM data GROUP BY Estatus",
+    )
+    assert "error" not in out, out
+    by = {r[0]: r[1] for r in out["rows"]}
+    assert by["FIJO"] == 4
+
+
+# ─── #3: get_resource_schema.sample_rows must actually control the cap ─────────
+
+
+async def test_get_resource_schema_sample_rows_limits(
+    mock_csv_endpoint, tmp_cache_dir
+):
+    out = await analytics.get_resource_schema(mock_csv_endpoint, "csv", sample_rows=2)
+    by = {c["name"]: c for c in out["columns"]}
+    # "Nombre" has 6 distinct values; sample_rows=2 must cap the sample at 2.
+    assert len(by["Nombre"]["sample_values"]) <= 2
+
+
+async def test_get_resource_schema_sample_rows_allows_more(
+    mock_csv_endpoint, tmp_cache_dir
+):
+    out = await analytics.get_resource_schema(mock_csv_endpoint, "csv", sample_rows=10)
+    by = {c["name"]: c for c in out["columns"]}
+    # All 6 distinct names should come back when the cap is high enough
+    # (the old hardcoded LIMIT 5 would have truncated this to 5).
+    assert len(by["Nombre"]["sample_values"]) == 6
+
+
 async def test_cache_hit_on_second_call(mock_csv_endpoint, tmp_cache_dir, httpx_mock):
     # First call: cold (HEAD + GET).
     out1 = await analytics.get_resource_schema(mock_csv_endpoint, "csv")
