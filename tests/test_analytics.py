@@ -384,16 +384,51 @@ async def test_get_resource_schema_sample_rows_allows_more(mock_csv_endpoint, tm
     assert len(by["Nombre"]["sample_values"]) == 6
 
 
-async def test_cache_hit_on_second_call(mock_csv_endpoint, tmp_cache_dir, httpx_mock):
+async def test_cache_hit_on_second_call(mock_csv_endpoint, tmp_cache_dir):
     # First call: cold (HEAD + GET).
     out1 = await analytics.get_resource_schema(mock_csv_endpoint, "csv")
     assert out1["cache"]["cache"] == "miss"
 
-    # Re-prime HEAD for the second call. pytest-httpx consumes responses.
+    # Second call: with URL-lookup, skips HEAD and finds cache by URL.
+    # No new mocks needed; it should hit the cache immediately.
+    out2 = await analytics.get_resource_schema(mock_csv_endpoint, "csv")
+    assert out2["cache"]["cache"] == "hit"
+
+
+async def test_warm_cache_skips_head_request(
+    mock_csv_endpoint, tmp_cache_dir, httpx_mock
+):
+    """After a cold call, warm calls must not HEAD the server.
+
+    The HEAD and GET mocks from mock_csv_endpoint are consumed on the cold call.
+    If the warm call tries to HEAD, _head_metadata catches the ConnectError and
+    returns (None, None) → a different cache key → MISS → GET attempt → error.
+    With the URL-lookup fix, the warm call finds the key immediately and returns hit.
+    """
+    # Cold call consumes HEAD + GET mocks.
+    out_cold = await analytics.get_resource_schema(mock_csv_endpoint, "csv")
+    assert out_cold["cache"]["cache"] == "miss"
+
+    # Warm call — no HEAD or GET mocks available.
+    out_warm = await analytics.get_resource_schema(mock_csv_endpoint, "csv")
+    assert "error" not in out_warm, f"warm call errored: {out_warm}"
+    assert out_warm["cache"]["cache"] == "hit"
+
+
+async def test_force_refresh_does_head(mock_csv_endpoint, tmp_cache_dir, httpx_mock):
+    """force_refresh=True must re-HEAD and re-download even on warm cache."""
+    # Cold call.
+    await analytics.get_resource_schema(mock_csv_endpoint, "csv")
+
+    # Re-prime HEAD + GET for the forced refresh.
     httpx_mock.add_response(
         url=mock_csv_endpoint,
         method="HEAD",
-        headers={"etag": "v1", "last-modified": "Mon"},
+        headers={"etag": "v2", "last-modified": "Tue"},
     )
-    out2 = await analytics.get_resource_schema(mock_csv_endpoint, "csv")
-    assert out2["cache"]["cache"] == "hit"
+    httpx_mock.add_response(
+        url=mock_csv_endpoint, method="GET", content=b"Nombre;Sueldo\nANA;25000\n"
+    )
+    out = await analytics.ensure_cached(mock_csv_endpoint, "csv", force_refresh=True)
+    _, meta = out
+    assert meta["cache"] == "miss"

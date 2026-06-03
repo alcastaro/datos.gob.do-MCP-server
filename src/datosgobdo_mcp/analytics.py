@@ -233,13 +233,25 @@ async def ensure_cached(
     url: str,
     fmt: str,
     cache: LocalDiskCache | None = None,
+    force_refresh: bool = False,
 ) -> tuple[Path, dict[str, Any]]:
     """Make sure the resource is in cache as Parquet. Return (parquet_path, meta).
 
-    Cold path: download → transcode → write Parquet via DuckDB.
-    Warm path: just bump access time and return cached path.
+    Warm path (URL already cached, force_refresh=False): returns immediately without
+    any network request. Cold path: HEAD → download → transcode → Parquet.
     """
     cache = cache or get_cache()
+
+    # Warm path: URL→key reverse lookup skips HEAD entirely.
+    if not force_refresh:
+        url_hit = cache.get_by_url(url)
+        if url_hit is not None:
+            cached_path, key = url_hit
+            logger.info("cache URL-HIT key=%s size=%d", key, cached_path.stat().st_size)
+            cache.touch(key)
+            return cached_path, {"cache": "hit", "key": key}
+
+    # Cold path (or forced refresh): HEAD to compute version key.
     etag, last_mod = await _head_metadata(url)
     key = build_cache_key(url, etag=etag, last_modified=last_mod)
     cached = cache.get(key)
@@ -248,25 +260,27 @@ async def ensure_cached(
         return cached, {"cache": "hit", "key": key}
 
     logger.info("cache MISS key=%s — downloading %s", key, url)
-    # Cold: download into a temp file, then convert to Parquet at cache path.
-    fd, tmp_path = tempfile.mkstemp(prefix="dgd-dl-", suffix="." + fmt)
+    fd, tmp_path_str = tempfile.mkstemp(prefix="dgd-dl-", suffix="." + fmt)
     import os
 
     os.close(fd)
-    raw = Path(tmp_path)
+    raw = Path(tmp_path_str)
     try:
-        bytes_written, truncated = await download_to_file(url, raw, max_bytes=ANALYTICS_MAX_BYTES)
+        bytes_written, truncated = await download_to_file(
+            url, raw, max_bytes=ANALYTICS_MAX_BYTES
+        )
         if bytes_written == 0:
             raise AnalyticsError("Downloaded zero bytes")
 
-        # ODS path: convert to CSV first, then run the CSV pipeline.
         effective_fmt = fmt
         if fmt == "ods":
             raw_csv = _ods_to_csv(raw)
-            raw = raw_csv  # so cleanup gets both via sidecar suffix path
+            raw = raw_csv
             effective_fmt = "csv"
 
-        usable = _normalize_csv_encoding(raw) if effective_fmt in ("csv", "tsv") else raw
+        usable = (
+            _normalize_csv_encoding(raw) if effective_fmt in ("csv", "tsv") else raw
+        )
         parquet_path = cache.put_path(key)
 
         con = _new_con()
@@ -294,7 +308,7 @@ async def ensure_cached(
         finally:
             con.close()
 
-        cache.finalize(key)
+        cache.finalize(key, url=url)  # store URL for future warm-path lookups
         logger.info(
             "cache STORE key=%s parquet=%d source=%d",
             key,
