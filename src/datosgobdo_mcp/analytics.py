@@ -273,7 +273,9 @@ async def ensure_cached(
             raise AnalyticsError("Downloaded zero bytes")
 
         effective_fmt = fmt
+        raw_ods: Path | None = None
         if fmt == "ods":
+            raw_ods = raw
             raw_csv = _ods_to_csv(raw)
             raw = raw_csv
             effective_fmt = "csv"
@@ -324,6 +326,8 @@ async def ensure_cached(
         }
     finally:
         _safe_unlink(raw)
+        if raw_ods is not None:
+            _safe_unlink(raw_ods)
 
 
 def _open_view(con: duckdb.DuckDBPyConnection, parquet: Path) -> None:

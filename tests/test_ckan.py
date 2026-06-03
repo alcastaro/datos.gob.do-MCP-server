@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from datosgobdo_mcp import ckan
@@ -128,3 +129,58 @@ def test_format_organization_full_truncates_description():
     )
     assert "description" in o
     assert len(o["description"]) <= ckan.DESC_TRUNC + 1
+
+
+# ─── Error handling (return {error, hint} instead of raising) ──────────────────
+
+
+@pytest.fixture(autouse=True)
+def reset_ckan_client():
+    """Reset the ckan module-level client so httpx_mock intercepts cleanly."""
+    import asyncio
+
+    asyncio.get_event_loop().run_until_complete(ckan.close_client())
+    yield
+    asyncio.get_event_loop().run_until_complete(ckan.close_client())
+
+
+@pytest.mark.asyncio
+async def test_search_datasets_returns_error_dict_on_network_failure(httpx_mock):
+    httpx_mock.add_exception(httpx.ConnectError("portal down"))
+    result = await ckan.search_datasets(query="test")
+    assert "error" in result
+    assert "hint" in result
+
+
+@pytest.mark.asyncio
+async def test_get_dataset_returns_error_dict_on_network_failure(httpx_mock):
+    httpx_mock.add_exception(httpx.ConnectError("portal down"))
+    result = await ckan.get_dataset("nonexistent-id")
+    assert "error" in result
+    assert "hint" in result
+    assert "search_datasets" in result["hint"] or "autocomplete" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_get_organization_returns_error_dict_on_network_failure(httpx_mock):
+    httpx_mock.add_exception(httpx.ConnectError("portal down"))
+    result = await ckan.get_organization("nonexistent-org")
+    assert "error" in result
+    assert "hint" in result
+
+
+@pytest.mark.asyncio
+async def test_list_organizations_returns_error_list_on_network_failure(httpx_mock):
+    httpx_mock.add_exception(httpx.ConnectError("portal down"))
+    result = await ckan.list_organizations()
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert "error" in result[0]
+
+
+@pytest.mark.asyncio
+async def test_get_resource_returns_error_dict_on_network_failure(httpx_mock):
+    httpx_mock.add_exception(httpx.ConnectError("portal down"))
+    result = await ckan.get_resource("nonexistent-uuid")
+    assert "error" in result
+    assert "hint" in result

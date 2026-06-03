@@ -172,118 +172,145 @@ async def search_datasets(
     limit: int = 10,
     offset: int = 0,
 ) -> dict:
-    fq_parts: list[str] = []
-    if organization:
-        fq_parts.append(_fq_term("organization", organization))
-    if tag:
-        fq_parts.append(_fq_term("tags", tag))
-    if group:
-        fq_parts.append(_fq_term("groups", group))
+    try:
+        fq_parts: list[str] = []
+        if organization:
+            fq_parts.append(_fq_term("organization", organization))
+        if tag:
+            fq_parts.append(_fq_term("tags", tag))
+        if group:
+            fq_parts.append(_fq_term("groups", group))
 
-    params: dict[str, Any] = {
-        "q": query or "*:*",
-        "rows": min(max(int(limit), 1), MAX_ROWS),
-        "start": max(int(offset), 0),
-    }
-    if fq_parts:
-        params["fq"] = " AND ".join(fq_parts)
+        params: dict[str, Any] = {
+            "q": query or "*:*",
+            "rows": min(max(int(limit), 1), MAX_ROWS),
+            "start": max(int(offset), 0),
+        }
+        if fq_parts:
+            params["fq"] = " AND ".join(fq_parts)
 
-    result = await ckan_request("package_search", params)
-    return {
-        "total": result.get("count", 0),
-        "returned": len(result.get("results", [])),
-        "offset": params["start"],
-        "datasets": [format_dataset(d) for d in result.get("results", [])],
-    }
+        result = await ckan_request("package_search", params)
+        return {
+            "total": result.get("count", 0),
+            "returned": len(result.get("results", [])),
+            "offset": params["start"],
+            "datasets": [format_dataset(d) for d in result.get("results", [])],
+        }
+    except RuntimeError as e:
+        return {"error": str(e), "hint": "Try narrowing the query or verify the organization slug with autocomplete(kind='organization')."}
 
 
 async def get_dataset(id: str) -> dict:
-    result = await ckan_request("package_show", {"id": id})
-    return format_dataset_full(result)
+    try:
+        result = await ckan_request("package_show", {"id": id})
+        return format_dataset_full(result)
+    except RuntimeError as e:
+        return {"error": str(e), "hint": f"Dataset '{id}' not found. Use search_datasets or autocomplete(kind='dataset') to find valid IDs."}
 
 
 async def list_recent_datasets(limit: int = 10) -> dict:
     """Datasets sorted by metadata_modified desc — no N+1 hydration needed."""
-    params = {
-        "q": "*:*",
-        "rows": min(max(int(limit), 1), MAX_RECENT),
-        "sort": "metadata_modified desc",
-    }
-    result = await ckan_request("package_search", params)
-    return {
-        "total": result.get("count", 0),
-        "returned": len(result.get("results", [])),
-        "datasets": [format_dataset(d) for d in result.get("results", [])],
-    }
+    try:
+        params = {
+            "q": "*:*",
+            "rows": min(max(int(limit), 1), MAX_RECENT),
+            "sort": "metadata_modified desc",
+        }
+        result = await ckan_request("package_search", params)
+        return {
+            "total": result.get("count", 0),
+            "returned": len(result.get("results", [])),
+            "datasets": [format_dataset(d) for d in result.get("results", [])],
+        }
+    except RuntimeError as e:
+        return {"error": str(e), "hint": "The datos.gob.do portal may be temporarily unavailable."}
 
 
 async def get_resource(id: str) -> dict:
-    result = await ckan_request("resource_show", {"id": id})
-    return format_resource(result)
+    try:
+        result = await ckan_request("resource_show", {"id": id})
+        return format_resource(result)
+    except RuntimeError as e:
+        return {"error": str(e), "hint": "Get resource IDs from get_dataset(dataset_id)."}
 
 
 async def search_resources(query: str, limit: int = 10) -> dict:
-    result = await ckan_request(
-        "resource_search",
-        {
-            "query": f"name:{query}",
-            "limit": min(max(int(limit), 1), MAX_ROWS),
-        },
-    )
-    return {
-        "total": result.get("count", 0),
-        "resources": [format_resource(r) for r in (result.get("results") or [])],
-    }
+    try:
+        result = await ckan_request(
+            "resource_search",
+            {
+                "query": f"name:{query}",
+                "limit": min(max(int(limit), 1), MAX_ROWS),
+            },
+        )
+        return {
+            "total": result.get("count", 0),
+            "resources": [format_resource(r) for r in (result.get("results") or [])],
+        }
+    except RuntimeError as e:
+        return {"error": str(e), "hint": "Try a broader search term."}
 
 
 async def list_organizations(limit: int = 50) -> list[dict]:
-    result = await ckan_request(
-        "organization_list",
-        {"all_fields": True, "include_dataset_count": True, "include_extras": False},
-    )
-    if not isinstance(result, list):
-        return []
-    orgs = [format_organization(o, short=True) for o in result]
-    return orgs[: max(int(limit), 1)]
+    try:
+        result = await ckan_request(
+            "organization_list",
+            {"all_fields": True, "include_dataset_count": True, "include_extras": False},
+        )
+        if not isinstance(result, list):
+            return []
+        orgs = [format_organization(o, short=True) for o in result]
+        return orgs[: max(int(limit), 1)]
+    except RuntimeError as e:
+        return [{"error": str(e), "hint": "The datos.gob.do portal may be temporarily unavailable."}]
 
 
 async def get_organization(id: str) -> dict:
-    result = await ckan_request(
-        "organization_show",
-        {
-            "id": id,
-            "include_datasets": False,
-            "include_dataset_count": True,
-            "include_extras": True,
-        },
-    )
-    out = format_organization(result)
-    extras = result.get("extras") or []
-    if extras:
-        out["extras"] = [{"key": e.get("key"), "value": e.get("value")} for e in extras]
-    return out
+    try:
+        result = await ckan_request(
+            "organization_show",
+            {
+                "id": id,
+                "include_datasets": False,
+                "include_dataset_count": True,
+                "include_extras": True,
+            },
+        )
+        out = format_organization(result)
+        extras = result.get("extras") or []
+        if extras:
+            out["extras"] = [{"key": e.get("key"), "value": e.get("value")} for e in extras]
+        return out
+    except RuntimeError as e:
+        return {"error": str(e), "hint": f"Organization '{id}' not found. Use list_organizations or autocomplete(kind='organization')."}
 
 
 async def list_groups() -> list[dict]:
-    result = await ckan_request(
-        "group_list",
-        {"all_fields": True, "include_dataset_count": True, "include_extras": False},
-    )
-    if not isinstance(result, list):
-        return []
-    return [format_group(g) for g in result]
+    try:
+        result = await ckan_request(
+            "group_list",
+            {"all_fields": True, "include_dataset_count": True, "include_extras": False},
+        )
+        if not isinstance(result, list):
+            return []
+        return [format_group(g) for g in result]
+    except RuntimeError as e:
+        return [{"error": str(e), "hint": "The datos.gob.do portal may be temporarily unavailable."}]
 
 
 async def list_tags(query: str | None = None, limit: int = 20) -> list[str]:
-    params: dict[str, Any] = {}
-    if query:
-        params["query"] = query
-    result = await ckan_request("tag_list", params)
-    if not isinstance(result, list):
+    try:
+        params: dict[str, Any] = {}
+        if query:
+            params["query"] = query
+        result = await ckan_request("tag_list", params)
+        if not isinstance(result, list):
+            return []
+        tags = [t if isinstance(t, str) else (t.get("name") or t.get("display_name")) for t in result]
+        tags = [t for t in tags if t]
+        return tags[: max(int(limit), 1)]
+    except RuntimeError:
         return []
-    tags = [t if isinstance(t, str) else (t.get("name") or t.get("display_name")) for t in result]
-    tags = [t for t in tags if t]
-    return tags[: max(int(limit), 1)]
 
 
 async def autocomplete(kind: str, query: str, limit: int = 10) -> list[Any]:
@@ -295,9 +322,12 @@ async def autocomplete(kind: str, query: str, limit: int = 10) -> list[Any]:
     }
     if kind not in action_map:
         raise ValueError(f"kind debe ser uno de: {list(action_map)}")
-    params = {"q": query, "limit": min(max(int(limit), 1), MAX_AUTOCOMPLETE)}
-    result = await ckan_request(action_map[kind], params)
-    return result if isinstance(result, list) else []
+    try:
+        params = {"q": query, "limit": min(max(int(limit), 1), MAX_AUTOCOMPLETE)}
+        result = await ckan_request(action_map[kind], params)
+        return result if isinstance(result, list) else []
+    except RuntimeError:
+        return []
 
 
 async def get_site_stats() -> dict:
