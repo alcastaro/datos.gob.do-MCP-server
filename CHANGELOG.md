@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] — 2026-06-03
+
+### Added
+
+- **Typed `outputSchema` / `structuredContent`** for the 12 data-producing tools
+  (schema, summarize, filter, aggregate, query, quantiles, find_duplicates,
+  detect_outliers, preview, save_query_to_csv, get_cache_stats, clear_cache).
+  New `models.py` with Pydantic response models — hosts can now validate tool output.
+  Models use `extra="allow"` so dynamic keys (quantile p-values, JSON-preview variants)
+  pass through with zero data loss. Navigational CKAN-metadata tools keep dict returns.
+- **`Tutorial.md` + `Tutorial_es.md`** — bilingual educational guide: how the server
+  works, how to use it, and a step-by-step recipe for building your own MCP server.
+
+### Fixed
+
+- README tool count corrected to **23** (was "17" in EN / "12" in ES).
+
 ## [0.5.0] — 2026-06-03
 
 ### Added

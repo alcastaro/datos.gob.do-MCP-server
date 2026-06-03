@@ -18,6 +18,9 @@ It turns the official Dominican open-data portal into a native integration for C
 > Copies published elsewhere are not maintained by the author and may be
 > outdated or modified — verify against this repository before installing.
 
+> 📚 **New here?** Read the [Tutorial](Tutorial.md) — how the server works, how to
+> use it, and how to build your own MCP server like it. ([Español](Tutorial_es.md))
+
 ---
 
 ## What problem does it solve?
@@ -67,7 +70,9 @@ This MCP is inspired by [`datagouv-mcp`](https://github.com/datagouv/datagouv-mc
 
 ## Tools exposed
 
-17 typed functions, grouped into five categories.
+23 typed functions, grouped into five categories. The data-producing tools
+(analytics + preview + cache) return typed `outputSchema` / `structuredContent`,
+so MCP hosts can validate results; navigational metadata tools return JSON.
 
 ### Discovery
 

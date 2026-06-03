@@ -18,6 +18,9 @@ Convierte el portal oficial de datos abiertos del Estado dominicano en una integ
 > Las copias publicadas en otros lugares no son mantenidas por el autor y pueden
 > estar desactualizadas o modificadas — verifica contra este repositorio antes de instalar.
 
+> 📚 **¿Nuevo aquí?** Lee el [Tutorial](Tutorial_es.md) — cómo funciona el servidor, cómo
+> usarlo, y cómo construir tu propio servidor MCP igual. ([English](Tutorial.md))
+
 ---
 
 ## ¿Qué problema resuelve?
@@ -67,7 +70,9 @@ Este MCP está inspirado en [`datagouv-mcp`](https://github.com/datagouv/datagou
 
 ## Herramientas (tools) expuestas
 
-12 funciones tipadas, organizadas en cuatro grupos:
+23 funciones tipadas, organizadas en cinco grupos. Las herramientas que producen
+datos (analytics + preview + cache) devuelven `outputSchema` / `structuredContent`
+tipados, para que los hosts MCP validen resultados; las de metadatos devuelven JSON.
 
 ### Descubrimiento
 
