@@ -626,6 +626,109 @@ def _build_agg_expr(agg: dict) -> str:
     return f"{expr} AS {_quote_ident(alias)}"
 
 
+# ─── New analytics tools (v0.5) ───────────────────────────────────────────────
+
+_NUMERIC_TYPE_FRAGMENTS = (
+    "int", "double", "float", "decimal", "numeric", "real",
+    "hugeint", "bigint", "smallint", "ubigint", "uinteger",
+    "usmallint", "utinyint", "tinyint",
+)
+
+
+async def quantiles_resource(
+    url: str,
+    fmt: str | None,
+    columns: list[str] | None = None,
+    percentiles: list[float] | None = None,
+    filters: list[dict] | None = None,
+) -> dict[str, Any]:
+    """Percentile distribution of numeric columns in a cached resource."""
+    kind = classify_format(fmt)
+    if kind is None:
+        return {"error": f"Format '{fmt}' not supported"}
+
+    if percentiles is None:
+        percentiles = [0.25, 0.5, 0.75, 0.90, 0.95, 0.99]
+    for p in percentiles:
+        if not (0 < p < 1):
+            return {"error": f"Percentile {p} must be in (0, 1) exclusive"}
+
+    try:
+        parquet, meta = await ensure_cached(url, kind)
+    except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
+        return {"error": f"Could not load resource: {e}"}
+
+    con = _new_con()
+    try:
+        _open_view(con, parquet)
+        described = con.execute("DESCRIBE data").fetchall()
+        row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]  # type: ignore[index]
+
+        all_numeric = [
+            (row[0], row[1]) for row in described
+            if any(t in row[1].lower() for t in _NUMERIC_TYPE_FRAGMENTS)
+        ]
+        if columns is not None:
+            all_names = {row[0] for row in described}
+            for c in columns:
+                if c not in all_names:
+                    return {"error": f"Column '{c}' not found in resource"}
+            selected = [(n, t) for n, t in all_numeric if n in set(columns)]
+        else:
+            selected = all_numeric
+
+        if not selected:
+            return {"error": "No numeric columns found (or none of the requested columns are numeric)"}
+
+        try:
+            where = _build_where(filters)
+        except AnalyticsError as e:
+            return {"error": str(e)}
+
+        pctile_arr = "[" + ", ".join(repr(float(p)) for p in percentiles) + "]"
+        pctile_keys = [f"p{int(round(p * 100))}" for p in percentiles]
+
+        col_results = []
+        for col_name, col_type in selected:
+            quoted = _quote_ident(col_name)
+            try:
+                row = con.execute(
+                    f"SELECT quantile_cont({quoted}, {pctile_arr}), "
+                    f"min({quoted}), max({quoted}), avg({quoted}), "
+                    f"count({quoted}), count(*) - count({quoted}) "
+                    f"FROM data {where}"
+                ).fetchone()
+                if row is None:
+                    continue
+                q_arr, mn, mx, mean, non_null, null_ct = row
+                result = {
+                    "name": col_name,
+                    "type": col_type,
+                    "non_null_count": non_null,
+                    "null_count": null_ct,
+                    "min": mn,
+                    "max": mx,
+                    "mean": mean,
+                }
+                if q_arr is not None:
+                    for key, val in zip(pctile_keys, q_arr):
+                        result[key] = val
+                col_results.append(result)
+            except duckdb.Error as e:
+                col_results.append({"name": col_name, "type": col_type, "error": str(e)})
+    finally:
+        con.close()
+
+    return {
+        "source_url": url,
+        "format": kind,
+        "cache": meta,
+        "row_count": row_count,
+        "percentiles": percentiles,
+        "columns": col_results,
+    }
+
+
 async def filter_resource(
     url: str,
     fmt: str | None,

@@ -432,3 +432,43 @@ async def test_force_refresh_does_head(mock_csv_endpoint, tmp_cache_dir, httpx_m
     out = await analytics.ensure_cached(mock_csv_endpoint, "csv", force_refresh=True)
     _, meta = out
     assert meta["cache"] == "miss"
+
+
+# ─── quantiles_resource ───────────────────────────────────────────────────────
+
+
+async def test_quantiles_resource_e2e(mock_csv_endpoint, tmp_cache_dir):
+    out = await analytics.quantiles_resource(mock_csv_endpoint, "csv")
+    assert "error" not in out, out
+    by = {c["name"]: c for c in out["columns"]}
+    assert "Sueldo" in by
+    s = by["Sueldo"]
+    assert "p25" in s and "p50" in s and "p75" in s and "p99" in s
+    assert s["min"] <= s["p25"] <= s["p50"] <= s["p75"] <= s["max"]
+
+
+async def test_quantiles_resource_specific_columns(mock_csv_endpoint, tmp_cache_dir):
+    out = await analytics.quantiles_resource(
+        mock_csv_endpoint, "csv", columns=["Sueldo"]
+    )
+    assert "error" not in out
+    assert len(out["columns"]) == 1
+    assert out["columns"][0]["name"] == "Sueldo"
+
+
+async def test_quantiles_resource_invalid_percentile(sample_csv_url, tmp_cache_dir):
+    out = await analytics.quantiles_resource(
+        sample_csv_url, "csv", percentiles=[0.5, 1.5]
+    )
+    assert "error" in out
+
+
+async def test_quantiles_resource_with_filter(mock_csv_endpoint, tmp_cache_dir):
+    out = await analytics.quantiles_resource(
+        mock_csv_endpoint,
+        "csv",
+        columns=["Sueldo"],
+        filters=[{"col": "Mes", "op": "=", "val": "Abril"}],
+    )
+    assert "error" not in out
+    assert out["columns"][0]["non_null_count"] == 5  # 5 rows in Abril

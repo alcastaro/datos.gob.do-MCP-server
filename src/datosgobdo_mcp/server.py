@@ -31,6 +31,9 @@ from .analytics import (
     get_resource_schema as _get_resource_schema,
 )
 from .analytics import (
+    quantiles_resource as _quantiles_resource,
+)
+from .analytics import (
     query_resource as _query_resource,
 )
 from .analytics import (
@@ -391,6 +394,43 @@ async def aggregate_resource(
         having=having,
         order_by=order_by,
         limit=limit,
+    )
+
+
+@mcp.tool(annotations=_ro("Quantile distribution of numeric columns"))
+async def quantiles_resource(
+    url: Annotated[
+        str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
+    ],
+    format: Annotated[
+        str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
+    ],
+    columns: Annotated[
+        list[str] | None,
+        Field(description="Numeric columns to analyze. None = all numeric columns."),
+    ] = None,
+    percentiles: Annotated[
+        list[float] | None,
+        Field(
+            description=(
+                "Percentiles to compute (0–1 exclusive). "
+                "Default: [0.25, 0.5, 0.75, 0.90, 0.95, 0.99]."
+            )
+        ),
+    ] = None,
+    filters: Annotated[
+        list[dict] | None,
+        Field(description="Same filter syntax as filter_resource. Applied before computing."),
+    ] = None,
+) -> dict:
+    """Percentile distribution (p25/p50/p75/p90/p95/p99) of numeric columns.
+
+    Fills the gap left by aggregate_resource, which only exposes median.
+    First call downloads + caches the file. Subsequent calls reuse the cache.
+    Useful for salary analysis, budget distributions, and statistical profiling.
+    """
+    return await _quantiles_resource(
+        url=url, fmt=format, columns=columns, percentiles=percentiles, filters=filters
     )
 
 
