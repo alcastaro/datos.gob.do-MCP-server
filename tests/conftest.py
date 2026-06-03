@@ -87,3 +87,34 @@ def pytest_collection_modifyitems(config, items):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "live: hits real datos.gob.do API (skipped by default)")
+
+
+SAMPLE_CSV_WITH_DUPES = (
+    "Nombre;Cedula;Sueldo\n"
+    "ANA PEREZ;001-0000001-1;25000\n"
+    "BENITO LOPEZ;001-0000002-2;30000\n"
+    "ANA PEREZ;001-0000001-1;25000\n"
+    "CARLA RUIZ;001-0000003-3;28000\n"
+    "BENITO LOPEZ;001-0000002-2;99000\n"
+)
+
+
+@pytest.fixture
+def sample_dupes_csv_bytes() -> bytes:
+    return SAMPLE_CSV_WITH_DUPES.encode("utf-8")
+
+
+@pytest.fixture
+def dupes_csv_url() -> str:
+    return "https://example.test/dupes.csv"
+
+
+@pytest.fixture
+def mock_dupes_endpoint(httpx_mock, dupes_csv_url, sample_dupes_csv_bytes):
+    httpx_mock.add_response(
+        url=dupes_csv_url, method="HEAD", headers={"etag": "d1"}
+    )
+    httpx_mock.add_response(
+        url=dupes_csv_url, method="GET", content=sample_dupes_csv_bytes
+    )
+    return dupes_csv_url

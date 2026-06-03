@@ -25,6 +25,9 @@ from .analytics import (
     filter_resource as _filter_resource,
 )
 from .analytics import (
+    find_duplicates_resource as _find_duplicates_resource,
+)
+from .analytics import (
     get_cache_stats as _get_cache_stats,
 )
 from .analytics import (
@@ -431,6 +434,42 @@ async def quantiles_resource(
     """
     return await _quantiles_resource(
         url=url, fmt=format, columns=columns, percentiles=percentiles, filters=filters
+    )
+
+
+@mcp.tool(annotations=_ro("Find duplicate rows"))
+async def find_duplicates_resource(
+    url: Annotated[
+        str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
+    ],
+    format: Annotated[
+        str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
+    ],
+    columns: Annotated[
+        list[str] | None,
+        Field(
+            description=(
+                "Columns to check for duplication. None = all columns. "
+                "Example: ['Nombre', 'Cedula'] checks for rows with same name and ID."
+            )
+        ),
+    ] = None,
+    filters: Annotated[
+        list[dict] | None,
+        Field(description="Same filter syntax as filter_resource. Applied before duplicate check."),
+    ] = None,
+    limit: Annotated[
+        int, Field(description="Max duplicate groups to return (1–500).", ge=1, le=500)
+    ] = 50,
+) -> dict:
+    """Find rows that appear more than once on the given columns (or all columns).
+
+    Returns duplicate groups sorted by frequency descending. Useful for detecting
+    data-quality issues in payroll, census, and registry datasets.
+    First call downloads + caches. Subsequent calls reuse the cache.
+    """
+    return await _find_duplicates_resource(
+        url=url, fmt=format, columns=columns, filters=filters, limit=limit
     )
 
 

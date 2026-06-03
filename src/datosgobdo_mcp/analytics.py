@@ -729,6 +729,85 @@ async def quantiles_resource(
     }
 
 
+async def find_duplicates_resource(
+    url: str,
+    fmt: str | None,
+    columns: list[str] | None = None,
+    filters: list[dict] | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Find rows duplicated on the specified columns (or all columns)."""
+    kind = classify_format(fmt)
+    if kind is None:
+        return {"error": f"Format '{fmt}' not supported"}
+
+    limit = min(max(int(limit), 1), 500)
+
+    try:
+        parquet, meta = await ensure_cached(url, kind)
+    except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
+        return {"error": f"Could not load resource: {e}"}
+
+    con = _new_con()
+    try:
+        _open_view(con, parquet)
+        try:
+            where = _build_where(filters)
+        except AnalyticsError as e:
+            return {"error": str(e)}
+
+        if columns is None:
+            described = con.execute("DESCRIBE data").fetchall()
+            columns = [row[0] for row in described]
+
+        try:
+            group_cols = ", ".join(_quote_ident(c) for c in columns)
+        except AnalyticsError as e:
+            return {"error": str(e)}
+
+        count_sql = (
+            f"SELECT COUNT(*) AS grps, SUM(cnt) AS total_rows FROM ("
+            f"SELECT COUNT(*) AS cnt FROM data {where} "
+            f"GROUP BY {group_cols} HAVING COUNT(*) > 1) t"
+        ).strip()
+        try:
+            count_row = con.execute(count_sql).fetchone()
+        except duckdb.Error as e:
+            return {"error": f"DuckDB: {e}"}
+
+        duplicate_groups = count_row[0] if count_row else 0  # type: ignore[index]
+        total_dup_rows = count_row[1] if count_row else 0  # type: ignore[index]
+
+        main_sql = (
+            f"SELECT {group_cols}, COUNT(*) AS duplicate_count "
+            f"FROM data {where} "
+            f"GROUP BY {group_cols} "
+            f"HAVING COUNT(*) > 1 "
+            f"ORDER BY duplicate_count DESC "
+            f"LIMIT {limit}"
+        ).strip()
+        try:
+            rs = con.execute(main_sql)
+        except duckdb.Error as e:
+            return {"error": f"DuckDB: {e}"}
+        col_names = [d[0] for d in rs.description]
+        rows = rs.fetchall()
+    finally:
+        con.close()
+
+    return {
+        "source_url": url,
+        "format": kind,
+        "cache": meta,
+        "columns_checked": columns,
+        "duplicate_groups_found": duplicate_groups,
+        "groups_returned": len(rows),
+        "total_duplicate_rows": total_dup_rows,
+        "columns": col_names,
+        "rows": [list(r) for r in rows],
+    }
+
+
 async def filter_resource(
     url: str,
     fmt: str | None,

@@ -472,3 +472,35 @@ async def test_quantiles_resource_with_filter(mock_csv_endpoint, tmp_cache_dir):
     )
     assert "error" not in out
     assert out["columns"][0]["non_null_count"] == 5  # 5 rows in Abril
+
+
+# ─── find_duplicates_resource ─────────────────────────────────────────────────
+
+
+async def test_find_duplicates_all_columns(mock_dupes_endpoint, tmp_cache_dir):
+    out = await analytics.find_duplicates_resource(mock_dupes_endpoint, "csv")
+    assert "error" not in out, out
+    # Only "ANA PEREZ;001-0000001-1;25000" is a full-row duplicate.
+    assert out["duplicate_groups_found"] == 1
+    assert out["total_duplicate_rows"] == 2
+
+
+async def test_find_duplicates_specific_columns(mock_dupes_endpoint, tmp_cache_dir):
+    out = await analytics.find_duplicates_resource(
+        mock_dupes_endpoint, "csv", columns=["Nombre"]
+    )
+    assert "error" not in out
+    # ANA PEREZ appears 2 times, BENITO LOPEZ appears 2 times
+    assert out["duplicate_groups_found"] == 2
+    by_name = {r[0]: r[1] for r in out["rows"]}
+    assert by_name["ANA PEREZ"] == 2
+    assert by_name["BENITO LOPEZ"] == 2
+
+
+async def test_find_duplicates_returns_empty_when_no_dupes(
+    mock_csv_endpoint, tmp_cache_dir
+):
+    out = await analytics.find_duplicates_resource(mock_csv_endpoint, "csv")
+    assert "error" not in out
+    assert out["duplicate_groups_found"] == 0
+    assert out["rows"] == []
