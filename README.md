@@ -10,6 +10,14 @@
 
 It turns the official Dominican open-data portal into a native integration for Claude Desktop, Claude Code, Cursor, ChatGPT Desktop or any MCP-compatible client. The model can search, read, analyze, and preview the 1,053+ datasets published by the country's 266 government institutions, all from within a conversation.
 
+> **Official source.** The canonical repository is
+> [`alcastaro/datos.gob.do-MCP-server`](https://github.com/alcastaro/datos.gob.do-MCP-server).
+> The only official distributions are the PyPI package
+> [`dominican-open-data-mcp`](https://pypi.org/project/dominican-open-data-mcp/)
+> and the MCP Registry entry `io.github.alcastaro/datos.gob.do-MCP-server`.
+> Copies published elsewhere are not maintained by the author and may be
+> outdated or modified — verify against this repository before installing.
+
 ---
 
 ## What problem does it solve?
