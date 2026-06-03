@@ -7,17 +7,17 @@ on:
     branches: [main]
 
 jobs:
-  smoke:
-    name: Build + import smoke test
+  quality:
+    name: Lint + types + tests
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
 
@@ -25,7 +25,16 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies (with dev extras)
-        run: uv sync --python ${{ matrix.python-version }} --extra dev
+        run: uv sync --python ${{ matrix.python-version }} --group dev --extra dev
+
+      - name: Lint (ruff)
+        run: uv run --python ${{ matrix.python-version }} ruff check src/ tests/
+
+      - name: Format check (ruff)
+        run: uv run --python ${{ matrix.python-version }} ruff format --check src/ tests/
+
+      - name: Type check (mypy)
+        run: uv run --python ${{ matrix.python-version }} mypy src/datosgobdo_mcp/ --no-error-summary
 
       - name: Verify package imports
         run: |
@@ -40,7 +49,7 @@ jobs:
           print('OK: all modules import cleanly')
           "
 
-      - name: Run pytest (hermetic, no network)
+      - name: Run pytest + coverage
         run: uv run --python ${{ matrix.python-version }} pytest -v
 
       - name: Verify entry point script
@@ -54,7 +63,6 @@ jobs:
           else
             wait $PID
             EXIT=$?
-            # stdio MCP exits cleanly when stdin closes — treat exit 0 as success.
             if [ $EXIT -eq 0 ]; then
               echo "OK: datosgobdo-mcp ran and exited cleanly on EOF"
             else

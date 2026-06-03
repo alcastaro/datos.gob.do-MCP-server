@@ -8,7 +8,7 @@ from datosgobdo_mcp import download
 
 
 def test_detect_encoding_utf8():
-    data = "ñ á é".encode("utf-8")
+    data = "ñ á é".encode()
     assert download._detect_encoding(data) == "utf-8"
 
 
@@ -59,9 +59,7 @@ async def test_download_capped_stops_at_max_bytes(httpx_mock):
         url="https://example.test/big.bin",
         content=b"x" * 10_000,
     )
-    data, truncated = await download.download_capped(
-        "https://example.test/big.bin", max_bytes=1000
-    )
+    data, truncated = await download.download_capped("https://example.test/big.bin", max_bytes=1000)
     assert len(data) <= 1000
     assert truncated is True
 

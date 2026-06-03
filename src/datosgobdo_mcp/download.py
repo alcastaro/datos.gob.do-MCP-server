@@ -11,7 +11,8 @@ from typing import Literal
 
 import httpx
 
-USER_AGENT = "datosgobdo-mcp/0.2 (MCP Server)"
+from . import USER_AGENT
+
 DEFAULT_TIMEOUT = 60.0  # bigger files = longer timeout vs preview
 
 # Caps per call-site. Preview keeps the conservative 5 MB. Analytics tools

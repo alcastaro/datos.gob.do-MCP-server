@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dominican-open-data-mcp"
-version = "0.4.1"
+version = "0.4.2"
 description = "MCP server for datos.gob.do — Dominican Republic open government data portal (CKAN 2.11)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,9 +24,10 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "mcp>=1.2.0",
+    "mcp>=1.9.0",
     "httpx>=0.27",
     "openpyxl>=3.1",
     "duckdb>=1.0",
@@ -48,12 +49,42 @@ datosgobdo-mcp = "datosgobdo_mcp.server:main"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers --cov=datosgobdo_mcp --cov-report=term-missing --cov-fail-under=75"
+
+[tool.coverage.run]
+omit = [
+    "src/datosgobdo_mcp/server.py",   # MCP tool wrappers: thin delegates, covered via live tests
+    "src/datosgobdo_mcp/ckan.py",     # HTTP adapter: covered by RUN_LIVE_TESTS suite
+]
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if __name__"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = false
 
 [project.urls]
 Homepage = "https://github.com/alcastaro/datos.gob.do-MCP-server"
 Repository = "https://github.com/alcastaro/datos.gob.do-MCP-server"
+Changelog = "https://github.com/alcastaro/datos.gob.do-MCP-server/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/alcastaro/datos.gob.do-MCP-server/issues"
 Portal = "https://datos.gob.do"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/datosgobdo_mcp"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.1.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.15",
+]

@@ -15,7 +15,6 @@ v0.4 will add raw query_resource + XLSX/ODS analytics.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import tempfile
@@ -25,6 +24,7 @@ from typing import Any, Literal
 import duckdb
 import httpx
 
+from . import USER_AGENT
 from .cache import LocalDiskCache, build_cache_key, get_cache
 from .download import (
     ANALYTICS_MAX_BYTES,
@@ -43,18 +43,37 @@ AGGREGATE_MAX_LIMIT = 1000
 # "Sueldo Bruto" or "data.column"). We always pass identifiers through
 # double-quote escaping anyway; this is the second line of defense.
 # We explicitly forbid SQL-comment sequences and statement terminators.
-_IDENT_OK = re.compile(r'^[\w .À-ſ]+$', re.UNICODE)
+_IDENT_OK = re.compile(r"^[\w .À-ſ]+$", re.UNICODE)
 _IDENT_FORBIDDEN_SUBSTR = ("--", "/*", "*/", ";")
 
 ALLOWED_AGG_FNS = {
-    "count", "count_distinct", "sum", "avg", "mean", "median",
-    "min", "max", "stddev", "variance",
+    "count",
+    "count_distinct",
+    "sum",
+    "avg",
+    "mean",
+    "median",
+    "min",
+    "max",
+    "stddev",
+    "variance",
 }
 
 ALLOWED_OPS = {
-    "=", "!=", "<>", "<", "<=", ">", ">=",
-    "in", "not_in", "contains", "starts_with", "ends_with",
-    "is_null", "is_not_null",
+    "=",
+    "!=",
+    "<>",
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "in",
+    "not_in",
+    "contains",
+    "starts_with",
+    "ends_with",
+    "is_null",
+    "is_not_null",
 }
 
 # Raw SQL hatch: reject anything that isn't strictly a read-only SELECT/WITH.
@@ -108,7 +127,7 @@ def _new_con() -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(":memory:")
     for ext in ("httpfs", "excel"):
         try:
-            con.execute(f"INSTALL {ext}; LOAD {ext};")
+            con.execute(f"LOAD {ext}")
         except duckdb.Error:
             pass
     return con
@@ -163,7 +182,7 @@ async def _head_metadata(url: str) -> tuple[str | None, str | None]:
         async with httpx.AsyncClient(
             follow_redirects=True,
             timeout=15.0,
-            headers={"User-Agent": "datosgobdo-mcp/0.3"},
+            headers={"User-Agent": USER_AGENT},
         ) as client:
             r = await client.head(url)
             return r.headers.get("etag"), r.headers.get("last-modified")
@@ -179,7 +198,7 @@ def _ods_to_csv(src: Path) -> Path:
     """
     try:
         from odf.opendocument import load
-        from odf.table import Table, TableRow, TableCell
+        from odf.table import Table, TableCell, TableRow
         from odf.text import P
     except ImportError as e:
         raise AnalyticsError(f"odfpy not installed: {e}") from e
@@ -236,9 +255,7 @@ async def ensure_cached(
     os.close(fd)
     raw = Path(tmp_path)
     try:
-        bytes_written, truncated = await download_to_file(
-            url, raw, max_bytes=ANALYTICS_MAX_BYTES
-        )
+        bytes_written, truncated = await download_to_file(url, raw, max_bytes=ANALYTICS_MAX_BYTES)
         if bytes_written == 0:
             raise AnalyticsError("Downloaded zero bytes")
 
@@ -249,9 +266,7 @@ async def ensure_cached(
             raw = raw_csv  # so cleanup gets both via sidecar suffix path
             effective_fmt = "csv"
 
-        usable = (
-            _normalize_csv_encoding(raw) if effective_fmt in ("csv", "tsv") else raw
-        )
+        usable = _normalize_csv_encoding(raw) if effective_fmt in ("csv", "tsv") else raw
         parquet_path = cache.put_path(key)
 
         con = _new_con()
@@ -339,18 +354,16 @@ async def get_resource_schema(
         _open_view(con, parquet)
         described = con.execute("DESCRIBE data").fetchall()
         columns_meta = [
-            {"name": row[0], "type": row[1], "nullable": row[2] == "YES"}
-            for row in described
+            {"name": row[0], "type": row[1], "nullable": row[2] == "YES"} for row in described
         ]
-        row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]
+        row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]  # type: ignore[index]
 
         n = min(max(int(sample_rows), 1), SCHEMA_SAMPLE_ROWS)
         for col in columns_meta:
             quoted = _quote_ident(col["name"])
             try:
                 vals = con.execute(
-                    f"SELECT DISTINCT {quoted} FROM data "
-                    f"WHERE {quoted} IS NOT NULL LIMIT {n}"
+                    f"SELECT DISTINCT {quoted} FROM data WHERE {quoted} IS NOT NULL LIMIT {n}"
                 ).fetchall()
                 col["sample_values"] = [v[0] for v in vals]
             except duckdb.Error:
@@ -378,15 +391,24 @@ def _column_stats(
     type_lower = col_type.lower()
     is_numeric = any(
         t in type_lower
-        for t in ("int", "double", "float", "decimal", "numeric", "real",
-                  "hugeint", "bigint", "smallint")
+        for t in (
+            "int",
+            "double",
+            "float",
+            "decimal",
+            "numeric",
+            "real",
+            "hugeint",
+            "bigint",
+            "smallint",
+        )
     )
     is_temporal = any(t in type_lower for t in ("date", "time", "timestamp"))
 
     base = con.execute(
         f"SELECT COUNT(*), COUNT({quoted}), COUNT(DISTINCT {quoted}) FROM data"
     ).fetchone()
-    total, non_null, distinct = base
+    total, non_null, distinct = base  # type: ignore[misc]
 
     stats: dict[str, Any] = {
         "name": col_name,
@@ -402,16 +424,17 @@ def _column_stats(
                 f"SELECT MIN({quoted}), MAX({quoted}), AVG({quoted}), "
                 f"MEDIAN({quoted}) FROM data WHERE {quoted} IS NOT NULL"
             ).fetchone()
-            stats.update({"min": r[0], "max": r[1], "mean": r[2], "median": r[3]})
+            if r is not None:
+                stats.update({"min": r[0], "max": r[1], "mean": r[2], "median": r[3]})
         except duckdb.Error:
             pass
     elif is_temporal:
         try:
             r = con.execute(
-                f"SELECT MIN({quoted}), MAX({quoted}) FROM data "
-                f"WHERE {quoted} IS NOT NULL"
+                f"SELECT MIN({quoted}), MAX({quoted}) FROM data WHERE {quoted} IS NOT NULL"
             ).fetchone()
-            stats.update({"min": r[0], "max": r[1]})
+            if r is not None:
+                stats.update({"min": r[0], "max": r[1]})
         except duckdb.Error:
             pass
 
@@ -448,10 +471,8 @@ async def summarize_resource(
         _open_view(con, parquet)
         described = con.execute("DESCRIBE data").fetchall()
         columns_meta = [{"name": row[0], "type": row[1]} for row in described]
-        row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]
-        column_stats = [
-            _column_stats(con, c["name"], c["type"], top_n) for c in columns_meta
-        ]
+        row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]  # type: ignore[index]
+        column_stats = [_column_stats(con, c["name"], c["type"], top_n) for c in columns_meta]
     finally:
         con.close()
 
@@ -469,9 +490,20 @@ async def summarize_resource(
 
 
 Op = Literal[
-    "=", "!=", "<>", "<", "<=", ">", ">=",
-    "in", "not_in", "contains", "starts_with", "ends_with",
-    "is_null", "is_not_null",
+    "=",
+    "!=",
+    "<>",
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "in",
+    "not_in",
+    "contains",
+    "starts_with",
+    "ends_with",
+    "is_null",
+    "is_not_null",
 ]
 
 
@@ -531,6 +563,8 @@ def _build_order_by(order_by: list[dict] | None) -> str:
     parts = []
     for ob in order_by:
         col = ob.get("col")
+        if not isinstance(col, str):
+            raise AnalyticsError("order_by.col must be a string")
         direction = (ob.get("dir") or "asc").lower()
         if direction not in ("asc", "desc"):
             raise AnalyticsError(f"Invalid order direction: {direction}")
@@ -547,20 +581,30 @@ def _build_agg_expr(agg: dict) -> str:
     if fn == "count" and col in (None, "*"):
         expr = "COUNT(*)"
     elif fn == "count":
+        if not isinstance(col, str):
+            raise AnalyticsError("count requires col to be a string")
         expr = f"COUNT({_quote_ident(col)})"
     elif fn == "count_distinct":
-        if col is None:
+        if not isinstance(col, str):
             raise AnalyticsError("count_distinct requires col")
         expr = f"COUNT(DISTINCT {_quote_ident(col)})"
     elif fn in ("avg", "mean"):
+        if not isinstance(col, str):
+            raise AnalyticsError(f"{fn} requires col")
         expr = f"AVG({_quote_ident(col)})"
     elif fn == "median":
+        if not isinstance(col, str):
+            raise AnalyticsError("median requires col")
         expr = f"MEDIAN({_quote_ident(col)})"
     elif fn in ("sum", "min", "max", "stddev", "variance"):
+        if not isinstance(col, str):
+            raise AnalyticsError(f"{fn} requires col")
         sql_fn = "STDDEV" if fn == "stddev" else ("VAR_SAMP" if fn == "variance" else fn.upper())
         expr = f"{sql_fn}({_quote_ident(col)})"
     else:
         raise AnalyticsError(f"Unhandled fn: {fn}")
+    if not isinstance(alias, str):
+        raise AnalyticsError("alias must be a string")
     return f"{expr} AS {_quote_ident(alias)}"
 
 
@@ -598,8 +642,7 @@ async def filter_resource(
             return {"error": str(e)}
 
         sql = (
-            f"SELECT {select_clause} FROM data "
-            f"{where} {order} LIMIT {limit} OFFSET {offset}"
+            f"SELECT {select_clause} FROM data {where} {order} LIMIT {limit} OFFSET {offset}"
         ).strip()
         try:
             rs = con.execute(sql)
@@ -609,9 +652,7 @@ async def filter_resource(
         rows = rs.fetchall()
         # Estimate total matching rows (separate count query).
         try:
-            total = con.execute(
-                f"SELECT COUNT(*) FROM data {where}".strip()
-            ).fetchone()[0]
+            total = con.execute(f"SELECT COUNT(*) FROM data {where}".strip()).fetchone()[0]  # type: ignore[index]
         except duckdb.Error:
             total = None
 
@@ -682,9 +723,7 @@ async def aggregate_resource(
         if having:
             try:
                 # HAVING refers to aliases which are valid identifiers — same path.
-                having_clause = "HAVING " + " AND ".join(
-                    _build_filter_clause(h) for h in having
-                )
+                having_clause = "HAVING " + " AND ".join(_build_filter_clause(h) for h in having)
             except AnalyticsError as e:
                 return {"error": str(e)}
 

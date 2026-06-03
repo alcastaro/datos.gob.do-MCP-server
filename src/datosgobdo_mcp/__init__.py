@@ -1,3 +1,4 @@
 """datosgobdo-mcp — Servidor MCP para datos.gob.do."""
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
+USER_AGENT = f"datosgobdo-mcp/{__version__} (MCP Server)"

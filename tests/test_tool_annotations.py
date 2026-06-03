@@ -40,7 +40,12 @@ async def test_clear_cache_marked_destructive():
 
 async def test_network_tools_marked_open_world():
     tools = {t.name: t for t in await mcp.list_tools()}
-    for name in ("search_datasets", "get_dataset", "summarize_resource", "query_resource"):
+    for name in (
+        "search_datasets",
+        "get_dataset",
+        "summarize_resource",
+        "query_resource",
+    ):
         assert tools[name].annotations.openWorldHint is True, (
             f"{name}: hits the network, should be openWorldHint=True"
         )

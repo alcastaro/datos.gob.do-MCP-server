@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import io
 import os
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 import pytest
 
 from datosgobdo_mcp import cache as cache_mod
-
 
 SAMPLE_NOMINA_CSV = (
     "Nombre;Departamento;Estatus;Sueldo;Mes;Año\n"
@@ -87,6 +86,4 @@ def pytest_collection_modifyitems(config, items):
 
 
 def pytest_configure(config):
-    config.addinivalue_line(
-        "markers", "live: hits real datos.gob.do API (skipped by default)"
-    )
+    config.addinivalue_line("markers", "live: hits real datos.gob.do API (skipped by default)")

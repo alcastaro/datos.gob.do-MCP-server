@@ -9,7 +9,6 @@ import pytest
 
 from datosgobdo_mcp import ckan
 
-
 pytestmark = pytest.mark.live
 
 

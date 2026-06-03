@@ -17,11 +17,23 @@ from pydantic import Field
 from . import ckan
 from .analytics import (
     aggregate_resource as _aggregate_resource,
+)
+from .analytics import (
     clear_cache as _clear_cache,
+)
+from .analytics import (
     filter_resource as _filter_resource,
+)
+from .analytics import (
     get_cache_stats as _get_cache_stats,
+)
+from .analytics import (
     get_resource_schema as _get_resource_schema,
+)
+from .analytics import (
     query_resource as _query_resource,
+)
+from .analytics import (
     summarize_resource as _summarize_resource,
 )
 from .preview import preview_resource_data
@@ -163,8 +175,7 @@ async def download_resource_preview(
         str,
         Field(
             description=(
-                "Direct URL to the file (CKAN resource 'url' field). "
-                "Supports CSV, TSV, XLSX, JSON."
+                "Direct URL to the file (CKAN resource 'url' field). Supports CSV, TSV, XLSX, JSON."
             )
         ),
     ],
@@ -172,8 +183,7 @@ async def download_resource_preview(
         str,
         Field(
             description=(
-                "Format declared in CKAN ('format' field). "
-                "Accepts: csv, tsv, xlsx, xls, json."
+                "Format declared in CKAN ('format' field). Accepts: csv, tsv, xlsx, xls, json."
             )
         ),
     ],
@@ -266,11 +276,10 @@ async def summarize_resource(
 
 @mcp.tool(annotations=_ro("Filter resource rows"))
 async def filter_resource(
-    url: Annotated[
-        str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
-    ],
+    url: Annotated[str, Field(description="Direct URL to the file (CKAN resource 'url' field).")],
     format: Annotated[
-        str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
+        str,
+        Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json."),
     ],
     filters: Annotated[
         list[dict] | None,
@@ -296,12 +305,8 @@ async def filter_resource(
             )
         ),
     ] = None,
-    limit: Annotated[
-        int, Field(description="Max rows to return (1-1000).", ge=1, le=1000)
-    ] = 100,
-    offset: Annotated[
-        int, Field(description="Rows to skip (for paginating).", ge=0)
-    ] = 0,
+    limit: Annotated[int, Field(description="Max rows to return (1-1000).", ge=1, le=1000)] = 100,
+    offset: Annotated[int, Field(description="Rows to skip (for paginating).", ge=0)] = 0,
 ) -> dict:
     """Run a typed WHERE/SELECT/ORDER BY/LIMIT against a cached resource.
 
@@ -323,11 +328,10 @@ async def filter_resource(
 
 @mcp.tool(annotations=_ro("Aggregate resource"))
 async def aggregate_resource(
-    url: Annotated[
-        str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
-    ],
+    url: Annotated[str, Field(description="Direct URL to the file (CKAN resource 'url' field).")],
     format: Annotated[
-        str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
+        str,
+        Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json."),
     ],
     aggregations: Annotated[
         list[dict],
@@ -360,11 +364,11 @@ async def aggregate_resource(
     ] = None,
     order_by: Annotated[
         list[dict] | None,
-        Field(description="Same syntax as filter_resource.order_by. Refs aggregation aliases or group cols."),
+        Field(
+            description="Same syntax as filter_resource.order_by. Refs aggregation aliases or group cols."
+        ),
     ] = None,
-    limit: Annotated[
-        int, Field(description="Max groups to return (1-1000).", ge=1, le=1000)
-    ] = 100,
+    limit: Annotated[int, Field(description="Max groups to return (1-1000).", ge=1, le=1000)] = 100,
 ) -> dict:
     """Run GROUP BY + aggregations against a cached resource without writing SQL.
 
@@ -392,9 +396,7 @@ async def aggregate_resource(
 
 @mcp.tool(annotations=_ro("Query resource (read-only SQL)"))
 async def query_resource(
-    url: Annotated[
-        str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
-    ],
+    url: Annotated[str, Field(description="Direct URL to the file (CKAN resource 'url' field).")],
     format: Annotated[
         str,
         Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, xls, json, ods."),
@@ -407,7 +409,7 @@ async def query_resource(
                 "allowed; DDL/DML rejected. The query is wrapped in "
                 "'SELECT * FROM (<your sql>) LIMIT <limit>' so a row cap is "
                 "always enforced. "
-                "Example: \"SELECT Estatus, COUNT(*) c FROM data WHERE Año=2026 "
+                'Example: "SELECT Estatus, COUNT(*) c FROM data WHERE Año=2026 '
                 "AND Mes='Abril' GROUP BY Estatus ORDER BY c DESC\""
             )
         ),
@@ -477,8 +479,7 @@ async def get_organization(
         str,
         Field(
             description=(
-                "ID o slug de la organización. "
-                "Ej: 'ministerio-de-hacienda', 'bcrd', 'indotel'."
+                "ID o slug de la organización. Ej: 'ministerio-de-hacienda', 'bcrd', 'indotel'."
             )
         ),
     ],
@@ -498,9 +499,7 @@ async def list_groups() -> list[dict]:
 
 @mcp.tool(annotations=_ro("List tags"))
 async def list_tags(
-    query: Annotated[
-        str | None, Field(description="Prefijo para filtrar tags.")
-    ] = None,
+    query: Annotated[str | None, Field(description="Prefijo para filtrar tags.")] = None,
     limit: Annotated[int, Field(description="Máximo (1-100)", ge=1, le=100)] = 20,
 ) -> list[str]:
     """Lista etiquetas disponibles, opcionalmente filtradas por prefijo."""
@@ -542,19 +541,8 @@ async def get_site_stats() -> dict:
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 
-def _tool_count() -> int | None:
-    """Best-effort count of registered tools (uses private FastMCP attr)."""
-    try:
-        return len(mcp._tool_manager._tools)  # type: ignore[attr-defined]
-    except Exception:
-        return None
-
-
 def main() -> None:
     logger.info("datosgobdo-mcp starting (CKAN endpoint: %s)", ckan.BASE_URL)
-    count = _tool_count()
-    if count is not None:
-        logger.info("Registered %d tools", count)
     try:
         mcp.run()
     except Exception:

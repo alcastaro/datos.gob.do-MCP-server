@@ -10,8 +10,9 @@ from typing import Any
 
 import httpx
 
+from . import USER_AGENT
+
 BASE_URL = "https://datos.gob.do/api/3/action"
-USER_AGENT = "datosgobdo-mcp/0.1 (MCP Server)"
 DEFAULT_TIMEOUT = 15.0
 MAX_ROWS = 50
 MAX_RECENT = 30
@@ -54,9 +55,7 @@ async def ckan_request(action: str, params: dict[str, Any] | None = None) -> Any
     except httpx.HTTPError as e:
         raise RuntimeError(f"Error de red en {action}: {e}") from e
     if r.status_code >= 400:
-        raise RuntimeError(
-            f"Error API datos.gob.do [{action}]: {r.status_code} {r.reason_phrase}"
-        )
+        raise RuntimeError(f"Error API datos.gob.do [{action}]: {r.status_code} {r.reason_phrase}")
     data = r.json()
     if not data.get("success"):
         err = data.get("error", {})
@@ -118,9 +117,7 @@ def format_dataset(d: dict) -> dict:
         "organization_slug": org.get("name"),
         "notes": _truncate(d.get("notes"), NOTES_TRUNC),
         "tags": [t.get("name") for t in (d.get("tags") or []) if t.get("name")],
-        "groups": [
-            g.get("title") or g.get("name") for g in (d.get("groups") or [])
-        ],
+        "groups": [g.get("title") or g.get("name") for g in (d.get("groups") or [])],
         "resource_count": len(resources),
         "formats": sorted({r.get("format") for r in resources if r.get("format")}),
         "last_modified": d.get("metadata_modified"),
@@ -146,9 +143,7 @@ def format_organization(o: dict, *, short: bool = False) -> dict:
         "name": o.get("name"),
         "title": o.get("title") or o.get("display_name") or o.get("name"),
         "dataset_count": o.get("package_count"),
-        "url": f"https://datos.gob.do/organization/{o.get('name')}"
-        if o.get("name")
-        else None,
+        "url": f"https://datos.gob.do/organization/{o.get('name')}" if o.get("name") else None,
     }
     if not short:
         out["description"] = _truncate(o.get("description"), DESC_TRUNC)

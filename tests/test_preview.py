@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from datosgobdo_mcp import preview
-
 
 # ─── Sample selection ─────────────────────────────────────────────────────────
 
@@ -49,7 +46,14 @@ def test_preview_csv_semicolon_delimiter(sample_csv_bytes):
     out = preview._preview_csv(sample_csv_bytes, rows=10, sample="head")
     assert out["format"] == "csv"
     assert out["delimiter"] == ";"
-    assert out["columns"] == ["Nombre", "Departamento", "Estatus", "Sueldo", "Mes", "Año"]
+    assert out["columns"] == [
+        "Nombre",
+        "Departamento",
+        "Estatus",
+        "Sueldo",
+        "Mes",
+        "Año",
+    ]
     assert out["total_rows_in_download"] == 7
     assert out["rows_returned"] == 7
 
@@ -116,9 +120,7 @@ def test_preview_xlsx_extracts_header_and_rows(small_xlsx_bytes):
 
 
 async def test_preview_resource_data_unsupported_format():
-    out = await preview.preview_resource_data(
-        "https://example.test/x.pdf", fmt="pdf", rows=5
-    )
+    out = await preview.preview_resource_data("https://example.test/x.pdf", fmt="pdf", rows=5)
     assert "error" in out
 
 

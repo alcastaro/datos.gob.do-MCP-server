@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] — 2026-06-03
+
+### Added
+
+- **ruff + mypy + pytest-cov** gates in CI and `pyproject.toml`. Coverage floor 75% (omitting the HTTP adapter layer covered by live tests).
+- **Python 3.13** classifier and CI leg.
+- **Dependabot** (pip + GitHub Actions, weekly).
+- **CodeQL** SAST workflow (weekly + on push).
+- **CONTRIBUTING.md** with dev setup, PR checklist, and security reporting pointer.
+- **`pre-commit`** config (ruff lint+format + mypy) for local enforcement.
+
+### Changed
+
+- `mcp` dependency floor raised from `>=1.2.0` to `>=1.9.0` (tested minimum).
+- Added `Changelog` and `Bug Tracker` URLs to `pyproject.toml`.
+
+### Fixed
+
+- `_new_con()` no longer runs `INSTALL httpfs/excel` on every call — extensions are bundled in DuckDB ≥1.0 and `LOAD` suffices. Eliminates the network round-trip and the silent-failure risk on cold starts.
+- `USER_AGENT` unified to a single source-of-truth (`__init__.py`) across `ckan.py`, `download.py`, and `analytics.py` — previously drifted at `0.1` / `0.2` / `0.3`.
+- Removed `_tool_count()` which accessed a private FastMCP attribute (`_tool_manager._tools`) brittle against version upgrades.
+- mypy errors in `analytics.py`: `fetchone()` null-safety guards + `_build_agg_expr` / `_build_order_by` now validate `col` is `str` before passing to `_quote_ident`.
+
 ## [0.4.1] — 2026-06-02
 
 ### Security

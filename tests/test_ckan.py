@@ -6,7 +6,6 @@ import pytest
 
 from datosgobdo_mcp import ckan
 
-
 # ─── Solr escape ──────────────────────────────────────────────────────────────
 
 
@@ -17,7 +16,7 @@ def test_escape_solr_passes_safe_chars():
 @pytest.mark.parametrize(
     "raw,expected_contains",
     [
-        ('with "quote"', r'\"quote\"'),
+        ('with "quote"', r"\"quote\""),
         ("with : colon", r"\:"),
         ("(parens)", r"\(parens\)"),
         ("a+b", r"a\+b"),
@@ -47,7 +46,7 @@ def test_fq_term_no_quotes_when_value_simple():
 def test_fq_term_escapes_special_in_value():
     out = ckan._fq_term("tags", 'has "quote" inside')
     # Must contain the escaped quote, never raw `"` outside outer quotes.
-    assert r'\"' in out
+    assert r"\"" in out
     # Outer must wrap with non-escaped quotes since value has a space.
     assert out.startswith('tags:"')
     assert out.endswith('"')
