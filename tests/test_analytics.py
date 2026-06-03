@@ -397,9 +397,7 @@ async def test_cache_hit_on_second_call(mock_csv_endpoint, tmp_cache_dir):
     assert out2["cache"]["cache"] == "hit"
 
 
-async def test_warm_cache_skips_head_request(
-    mock_csv_endpoint, tmp_cache_dir, httpx_mock
-):
+async def test_warm_cache_skips_head_request(mock_csv_endpoint, tmp_cache_dir, httpx_mock):
     """After a cold call, warm calls must not HEAD the server.
 
     The HEAD and GET mocks from mock_csv_endpoint are consumed on the cold call.
@@ -450,18 +448,14 @@ async def test_quantiles_resource_e2e(mock_csv_endpoint, tmp_cache_dir):
 
 
 async def test_quantiles_resource_specific_columns(mock_csv_endpoint, tmp_cache_dir):
-    out = await analytics.quantiles_resource(
-        mock_csv_endpoint, "csv", columns=["Sueldo"]
-    )
+    out = await analytics.quantiles_resource(mock_csv_endpoint, "csv", columns=["Sueldo"])
     assert "error" not in out
     assert len(out["columns"]) == 1
     assert out["columns"][0]["name"] == "Sueldo"
 
 
 async def test_quantiles_resource_invalid_percentile(sample_csv_url, tmp_cache_dir):
-    out = await analytics.quantiles_resource(
-        sample_csv_url, "csv", percentiles=[0.5, 1.5]
-    )
+    out = await analytics.quantiles_resource(sample_csv_url, "csv", percentiles=[0.5, 1.5])
     assert "error" in out
 
 
@@ -488,9 +482,7 @@ async def test_find_duplicates_all_columns(mock_dupes_endpoint, tmp_cache_dir):
 
 
 async def test_find_duplicates_specific_columns(mock_dupes_endpoint, tmp_cache_dir):
-    out = await analytics.find_duplicates_resource(
-        mock_dupes_endpoint, "csv", columns=["Nombre"]
-    )
+    out = await analytics.find_duplicates_resource(mock_dupes_endpoint, "csv", columns=["Nombre"])
     assert "error" not in out
     # ANA PEREZ appears 2 times, BENITO LOPEZ appears 2 times
     assert out["duplicate_groups_found"] == 2
@@ -499,9 +491,7 @@ async def test_find_duplicates_specific_columns(mock_dupes_endpoint, tmp_cache_d
     assert by_name["BENITO LOPEZ"] == 2
 
 
-async def test_find_duplicates_returns_empty_when_no_dupes(
-    mock_csv_endpoint, tmp_cache_dir
-):
+async def test_find_duplicates_returns_empty_when_no_dupes(mock_csv_endpoint, tmp_cache_dir):
     out = await analytics.find_duplicates_resource(mock_csv_endpoint, "csv")
     assert "error" not in out
     assert out["duplicate_groups_found"] == 0
@@ -511,12 +501,8 @@ async def test_find_duplicates_returns_empty_when_no_dupes(
 # ─── detect_outliers_resource ─────────────────────────────────────────────────
 
 
-async def test_detect_outliers_finds_extreme_values(
-    mock_outliers_endpoint, tmp_cache_dir
-):
-    out = await analytics.detect_outliers_resource(
-        mock_outliers_endpoint, "csv", column="Sueldo"
-    )
+async def test_detect_outliers_finds_extreme_values(mock_outliers_endpoint, tmp_cache_dir):
+    out = await analytics.detect_outliers_resource(mock_outliers_endpoint, "csv", column="Sueldo")
     assert "error" not in out, out
     assert out["method"] == "IQR"
     assert out["iqr"] > 0
@@ -526,9 +512,7 @@ async def test_detect_outliers_finds_extreme_values(
 
 
 async def test_detect_outliers_no_outliers(mock_csv_endpoint, tmp_cache_dir):
-    out = await analytics.detect_outliers_resource(
-        mock_csv_endpoint, "csv", column="Sueldo"
-    )
+    out = await analytics.detect_outliers_resource(mock_csv_endpoint, "csv", column="Sueldo")
     assert "error" not in out
     assert "q1" in out and "q3" in out and "iqr" in out
     assert "lower_fence" in out and "upper_fence" in out
@@ -544,9 +528,7 @@ async def test_detect_outliers_zero_iqr_returns_error(tmp_cache_dir, httpx_mock)
     assert "IQR" in out["error"] or "iqr" in out["error"].lower()
 
 
-async def test_detect_outliers_nonexistent_column(
-    mock_outliers_endpoint, tmp_cache_dir
-):
+async def test_detect_outliers_nonexistent_column(mock_outliers_endpoint, tmp_cache_dir):
     out = await analytics.detect_outliers_resource(
         mock_outliers_endpoint, "csv", column="NonExistentCol"
     )
@@ -556,9 +538,7 @@ async def test_detect_outliers_nonexistent_column(
 # ─── save_query_to_csv ────────────────────────────────────────────────────────
 
 
-async def test_save_query_to_csv_writes_file(
-    mock_csv_endpoint, tmp_cache_dir, tmp_path
-):
+async def test_save_query_to_csv_writes_file(mock_csv_endpoint, tmp_cache_dir, tmp_path):
     dest = str(tmp_path / "output.csv")
     out = await analytics.save_query_to_csv(
         mock_csv_endpoint,
@@ -571,14 +551,13 @@ async def test_save_query_to_csv_writes_file(
     assert out["path"] == dest
     assert out["bytes_written"] > 0
     import csv as _csv
+
     with open(dest, newline="", encoding="utf-8") as f:
         rows = list(_csv.reader(f))
     assert len(rows) == 6  # 1 header + 5 data rows
 
 
-async def test_save_query_to_csv_with_sql(
-    mock_csv_endpoint, tmp_cache_dir, tmp_path
-):
+async def test_save_query_to_csv_with_sql(mock_csv_endpoint, tmp_cache_dir, tmp_path):
     dest = str(tmp_path / "sql_out.csv")
     out = await analytics.save_query_to_csv(
         mock_csv_endpoint,
@@ -621,3 +600,18 @@ async def test_save_query_to_csv_refuses_overwrite_by_default(
     out = await analytics.save_query_to_csv(sample_csv_url, "csv", dest=dest)
     assert "error" in out
     assert "exists" in out["error"].lower() or "overwrite" in out["error"].lower()
+
+
+async def test_save_query_to_csv_refuses_private_etc_on_macos(tmp_cache_dir):
+    """macOS resolves /etc to /private/etc — both must be blocked."""
+    out = await analytics.save_query_to_csv(
+        "https://example.test/any.csv", "csv", dest="/private/etc/evil.csv"
+    )
+    assert "error" in out
+
+
+async def test_quantiles_resource_duplicate_percentile_error(sample_csv_url, tmp_cache_dir):
+    out = await analytics.quantiles_resource(
+        sample_csv_url, "csv", percentiles=[0.5, 0.5]
+    )
+    assert "error" in out

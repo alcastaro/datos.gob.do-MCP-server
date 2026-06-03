@@ -88,8 +88,20 @@ _SQL_ALLOWED_START = re.compile(r"^\s*(with|select)\b", re.IGNORECASE)
 SQL_MAX_LIMIT = 1000
 
 _FORBIDDEN_DEST_PREFIXES = (
-    "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64",
-    "/boot", "/sys", "/proc", "/dev", "/root",
+    "/etc",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/boot",
+    "/sys",
+    "/proc",
+    "/dev",
+    "/root",
+    # macOS canonical paths (symlinks resolve to /private/*)
+    "/private/etc",
+    "/private/var",
 )
 
 
@@ -271,9 +283,7 @@ async def ensure_cached(
     os.close(fd)
     raw = Path(tmp_path_str)
     try:
-        bytes_written, truncated = await download_to_file(
-            url, raw, max_bytes=ANALYTICS_MAX_BYTES
-        )
+        bytes_written, truncated = await download_to_file(url, raw, max_bytes=ANALYTICS_MAX_BYTES)
         if bytes_written == 0:
             raise AnalyticsError("Downloaded zero bytes")
 
@@ -285,9 +295,7 @@ async def ensure_cached(
             raw = raw_csv
             effective_fmt = "csv"
 
-        usable = (
-            _normalize_csv_encoding(raw) if effective_fmt in ("csv", "tsv") else raw
-        )
+        usable = _normalize_csv_encoding(raw) if effective_fmt in ("csv", "tsv") else raw
         parquet_path = cache.put_path(key)
 
         con = _new_con()
@@ -634,9 +642,20 @@ def _build_agg_expr(agg: dict) -> str:
 # ─── New analytics tools (v0.5) ───────────────────────────────────────────────
 
 _NUMERIC_TYPE_FRAGMENTS = (
-    "int", "double", "float", "decimal", "numeric", "real",
-    "hugeint", "bigint", "smallint", "ubigint", "uinteger",
-    "usmallint", "utinyint", "tinyint",
+    "int",
+    "double",
+    "float",
+    "decimal",
+    "numeric",
+    "real",
+    "hugeint",
+    "bigint",
+    "smallint",
+    "ubigint",
+    "uinteger",
+    "usmallint",
+    "utinyint",
+    "tinyint",
 )
 
 
@@ -657,6 +676,9 @@ async def quantiles_resource(
     for p in percentiles:
         if not (0 < p < 1):
             return {"error": f"Percentile {p} must be in (0, 1) exclusive"}
+    pctile_keys_check = [f"p{int(round(p * 100))}" for p in percentiles]
+    if len(set(pctile_keys_check)) != len(pctile_keys_check):
+        return {"error": "Duplicate percentile values after rounding (e.g., 0.904 and 0.905 both map to p90). Use distinct values."}
 
     try:
         parquet, meta = await ensure_cached(url, kind)
@@ -670,7 +692,8 @@ async def quantiles_resource(
         row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]  # type: ignore[index]
 
         all_numeric = [
-            (row[0], row[1]) for row in described
+            (row[0], row[1])
+            for row in described
             if any(t in row[1].lower() for t in _NUMERIC_TYPE_FRAGMENTS)
         ]
         if columns is not None:
@@ -683,7 +706,9 @@ async def quantiles_resource(
             selected = all_numeric
 
         if not selected:
-            return {"error": "No numeric columns found (or none of the requested columns are numeric)"}
+            return {
+                "error": "No numeric columns found (or none of the requested columns are numeric)"
+            }
 
         try:
             where = _build_where(filters)
@@ -877,9 +902,7 @@ async def detect_outliers_resource(
             else f"WHERE ({quoted} < {lower_fence} OR {quoted} > {upper_fence})"
         )
         try:
-            count_row = con.execute(
-                f"SELECT COUNT(*) FROM data {outlier_where}"
-            ).fetchone()
+            count_row = con.execute(f"SELECT COUNT(*) FROM data {outlier_where}").fetchone()
             outlier_count = count_row[0] if count_row else 0  # type: ignore[index]
         except duckdb.Error:
             outlier_count = None
@@ -956,9 +979,7 @@ async def save_query_to_csv(
                     return {"error": f"Cannot write to system path: {check_str}"}
 
     if dest_path.exists() and not overwrite:
-        return {
-            "error": f"File already exists: {dest_path}. Pass overwrite=True to replace."
-        }
+        return {"error": f"File already exists: {dest_path}. Pass overwrite=True to replace."}
 
     try:
         parquet, meta = await ensure_cached(url, kind)
@@ -991,9 +1012,7 @@ async def save_query_to_csv(
             except AnalyticsError as e:
                 return {"error": str(e)}
             try:
-                rs = con.execute(
-                    f"SELECT {select_clause} FROM data {where} LIMIT {limit}".strip()
-                )
+                rs = con.execute(f"SELECT {select_clause} FROM data {where} LIMIT {limit}".strip())
             except duckdb.Error as e:
                 return {"error": f"DuckDB: {e}"}
 

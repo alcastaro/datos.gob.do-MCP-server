@@ -197,7 +197,10 @@ async def search_datasets(
             "datasets": [format_dataset(d) for d in result.get("results", [])],
         }
     except RuntimeError as e:
-        return {"error": str(e), "hint": "Try narrowing the query or verify the organization slug with autocomplete(kind='organization')."}
+        return {
+            "error": str(e),
+            "hint": "Try narrowing the query or verify the organization slug with autocomplete(kind='organization').",
+        }
 
 
 async def get_dataset(id: str) -> dict:
@@ -205,7 +208,10 @@ async def get_dataset(id: str) -> dict:
         result = await ckan_request("package_show", {"id": id})
         return format_dataset_full(result)
     except RuntimeError as e:
-        return {"error": str(e), "hint": f"Dataset '{id}' not found. Use search_datasets or autocomplete(kind='dataset') to find valid IDs."}
+        return {
+            "error": str(e),
+            "hint": f"Dataset '{id}' not found. Use search_datasets or autocomplete(kind='dataset') to find valid IDs.",
+        }
 
 
 async def list_recent_datasets(limit: int = 10) -> dict:
@@ -262,7 +268,9 @@ async def list_organizations(limit: int = 50) -> list[dict]:
         orgs = [format_organization(o, short=True) for o in result]
         return orgs[: max(int(limit), 1)]
     except RuntimeError as e:
-        return [{"error": str(e), "hint": "The datos.gob.do portal may be temporarily unavailable."}]
+        return [
+            {"error": str(e), "hint": "The datos.gob.do portal may be temporarily unavailable."}
+        ]
 
 
 async def get_organization(id: str) -> dict:
@@ -282,7 +290,10 @@ async def get_organization(id: str) -> dict:
             out["extras"] = [{"key": e.get("key"), "value": e.get("value")} for e in extras]
         return out
     except RuntimeError as e:
-        return {"error": str(e), "hint": f"Organization '{id}' not found. Use list_organizations or autocomplete(kind='organization')."}
+        return {
+            "error": str(e),
+            "hint": f"Organization '{id}' not found. Use list_organizations or autocomplete(kind='organization').",
+        }
 
 
 async def list_groups() -> list[dict]:
@@ -295,7 +306,9 @@ async def list_groups() -> list[dict]:
             return []
         return [format_group(g) for g in result]
     except RuntimeError as e:
-        return [{"error": str(e), "hint": "The datos.gob.do portal may be temporarily unavailable."}]
+        return [
+            {"error": str(e), "hint": "The datos.gob.do portal may be temporarily unavailable."}
+        ]
 
 
 async def list_tags(query: str | None = None, limit: int = 20) -> list[str]:
@@ -306,7 +319,9 @@ async def list_tags(query: str | None = None, limit: int = 20) -> list[str]:
         result = await ckan_request("tag_list", params)
         if not isinstance(result, list):
             return []
-        tags = [t if isinstance(t, str) else (t.get("name") or t.get("display_name")) for t in result]
+        tags = [
+            t if isinstance(t, str) else (t.get("name") or t.get("display_name")) for t in result
+        ]
         tags = [t for t in tags if t]
         return tags[: max(int(limit), 1)]
     except RuntimeError:
@@ -321,7 +336,7 @@ async def autocomplete(kind: str, query: str, limit: int = 10) -> list[Any]:
         "tag": "tag_autocomplete",
     }
     if kind not in action_map:
-        raise ValueError(f"kind debe ser uno de: {list(action_map)}")
+        return [{"error": f"Invalid kind '{kind}'. Must be one of: {list(action_map)}"}]
     try:
         params = {"q": query, "limit": min(max(int(limit), 1), MAX_AUTOCOMPLETE)}
         result = await ckan_request(action_map[kind], params)
