@@ -43,6 +43,9 @@ from .analytics import (
     query_resource as _query_resource,
 )
 from .analytics import (
+    save_query_to_csv as _save_query_to_csv,
+)
+from .analytics import (
     summarize_resource as _summarize_resource,
 )
 from .preview import preview_resource_data
@@ -504,6 +507,74 @@ async def detect_outliers_resource(
     """
     return await _detect_outliers_resource(
         url=url, fmt=format, column=column, filters=filters, limit=limit
+    )
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Save query result to CSV",
+        readOnlyHint=False,
+        destructiveHint=False,
+        openWorldHint=True,
+    )
+)
+async def save_query_to_csv(
+    url: Annotated[
+        str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
+    ],
+    format: Annotated[
+        str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
+    ],
+    dest: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Absolute path for the output file (.csv or .tsv). "
+                "If None, saves to ~/Downloads/datosgobdo-exports/<slug>-<timestamp>.csv. "
+                "Must not contain '..'. Cannot write to system paths (/etc, /usr, /bin, ...)."
+            )
+        ),
+    ] = None,
+    sql: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Read-only SQL query against table 'data' (same rules as query_resource). "
+                "If provided, takes precedence over filters/columns."
+            )
+        ),
+    ] = None,
+    filters: Annotated[
+        list[dict] | None,
+        Field(description="Same filter syntax as filter_resource. Used if sql is None."),
+    ] = None,
+    columns: Annotated[
+        list[str] | None,
+        Field(description="Columns to include. None = all. Ignored if sql is provided."),
+    ] = None,
+    limit: Annotated[
+        int,
+        Field(description="Max rows to write (1–100000). Default 10000.", ge=1, le=100000),
+    ] = 10000,
+    overwrite: Annotated[
+        bool, Field(description="Overwrite dest if it already exists. Default False.")
+    ] = False,
+) -> dict:
+    """Write a query or filter result to a local CSV file.
+
+    Export endpoint for analysis workflows — run your filter or SQL, then save
+    the result to open in Excel or another tool. Returns the file path and row count.
+    First call downloads + caches the source file. Subsequent calls reuse the cache.
+    """
+    return await _save_query_to_csv(
+        url=url,
+        fmt=format,
+        dest=dest,
+        sql=sql,
+        filters=filters,
+        columns=columns,
+        limit=limit,
+        overwrite=overwrite,
     )
 
 

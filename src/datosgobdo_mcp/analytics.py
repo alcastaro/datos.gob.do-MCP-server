@@ -87,6 +87,11 @@ _SQL_FORBIDDEN = re.compile(
 _SQL_ALLOWED_START = re.compile(r"^\s*(with|select)\b", re.IGNORECASE)
 SQL_MAX_LIMIT = 1000
 
+_FORBIDDEN_DEST_PREFIXES = (
+    "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64",
+    "/boot", "/sys", "/proc", "/dev", "/root",
+)
+
 
 class AnalyticsError(RuntimeError):
     pass
@@ -908,6 +913,108 @@ async def detect_outliers_resource(
         "rows_returned": len(rows),
         "columns": col_names,
         "rows": [list(r) for r in rows],
+    }
+
+
+async def save_query_to_csv(
+    url: str,
+    fmt: str | None,
+    dest: str | None = None,
+    sql: str | None = None,
+    filters: list[dict] | None = None,
+    columns: list[str] | None = None,
+    limit: int = 10_000,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Run a filter or SQL query against a cached resource and write the result to CSV."""
+    import csv as _csv
+    import datetime
+    import re
+
+    kind = classify_format(fmt)
+    if kind is None:
+        return {"error": f"Format '{fmt}' not supported"}
+
+    limit = min(max(int(limit), 1), 100_000)
+
+    if dest is None:
+        slug = re.sub(r"[^a-z0-9]", "-", Path(url).stem.lower())[:30]
+        ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+        export_dir = Path.home() / "Downloads" / "datosgobdo-exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = export_dir / f"{slug}-{ts}.csv"
+    else:
+        if ".." in Path(dest).parts:
+            return {"error": "Destination path must not contain '..' components"}
+        dest_path = Path(dest).resolve()
+        if dest_path.suffix not in (".csv", ".tsv"):
+            return {"error": "Destination must end in .csv or .tsv"}
+        # Check both the raw path and the resolved path (macOS resolves /etc → /private/etc).
+        for check_str in (dest, str(dest_path)):
+            for prefix in _FORBIDDEN_DEST_PREFIXES:
+                if check_str.startswith(prefix):
+                    return {"error": f"Cannot write to system path: {check_str}"}
+
+    if dest_path.exists() and not overwrite:
+        return {
+            "error": f"File already exists: {dest_path}. Pass overwrite=True to replace."
+        }
+
+    try:
+        parquet, meta = await ensure_cached(url, kind)
+    except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
+        return {"error": f"Could not load resource: {e}"}
+
+    con = _new_con()
+    try:
+        if sql is not None:
+            try:
+                cleaned = _validate_sql(sql)
+            except AnalyticsError as e:
+                return {"error": str(e)}
+            _open_sandboxed(con, parquet)
+            wrapped = f"SELECT * FROM ({cleaned}) AS _q LIMIT {limit}"
+            try:
+                rs = con.execute(wrapped)
+            except duckdb.Error as e:
+                return {"error": f"DuckDB: {e}"}
+        else:
+            _open_view(con, parquet)
+            select_clause = "*"
+            if columns:
+                try:
+                    select_clause = ", ".join(_quote_ident(c) for c in columns)
+                except AnalyticsError as e:
+                    return {"error": str(e)}
+            try:
+                where = _build_where(filters)
+            except AnalyticsError as e:
+                return {"error": str(e)}
+            try:
+                rs = con.execute(
+                    f"SELECT {select_clause} FROM data {where} LIMIT {limit}".strip()
+                )
+            except duckdb.Error as e:
+                return {"error": f"DuckDB: {e}"}
+
+        col_names = [d[0] for d in rs.description]
+        rows = rs.fetchall()
+    finally:
+        con.close()
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    with dest_path.open("w", newline="", encoding="utf-8") as f:
+        writer = _csv.writer(f)
+        writer.writerow(col_names)
+        writer.writerows(rows)
+
+    bytes_written = dest_path.stat().st_size
+    return {
+        "path": str(dest_path),
+        "rows_written": len(rows),
+        "columns": col_names,
+        "bytes_written": bytes_written,
+        "cache": meta,
     }
 
 

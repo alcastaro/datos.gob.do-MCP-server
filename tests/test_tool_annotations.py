@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from datosgobdo_mcp.server import mcp
 
-# Tools that mutate state (only the local Parquet cache; never the portal).
-DESTRUCTIVE_TOOLS = {"clear_cache"}
+# Tools that mutate state (only local files/cache; never the portal).
+DESTRUCTIVE_TOOLS = {"clear_cache", "save_query_to_csv"}
 
 
 async def test_every_tool_has_title_and_readonly_hint():

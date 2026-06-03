@@ -9,6 +9,8 @@ Split into:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from datosgobdo_mcp import analytics
@@ -549,3 +551,73 @@ async def test_detect_outliers_nonexistent_column(
         mock_outliers_endpoint, "csv", column="NonExistentCol"
     )
     assert "error" in out
+
+
+# ─── save_query_to_csv ────────────────────────────────────────────────────────
+
+
+async def test_save_query_to_csv_writes_file(
+    mock_csv_endpoint, tmp_cache_dir, tmp_path
+):
+    dest = str(tmp_path / "output.csv")
+    out = await analytics.save_query_to_csv(
+        mock_csv_endpoint,
+        "csv",
+        dest=dest,
+        filters=[{"col": "Mes", "op": "=", "val": "Abril"}],
+    )
+    assert "error" not in out, out
+    assert out["rows_written"] == 5
+    assert out["path"] == dest
+    assert out["bytes_written"] > 0
+    import csv as _csv
+    with open(dest, newline="", encoding="utf-8") as f:
+        rows = list(_csv.reader(f))
+    assert len(rows) == 6  # 1 header + 5 data rows
+
+
+async def test_save_query_to_csv_with_sql(
+    mock_csv_endpoint, tmp_cache_dir, tmp_path
+):
+    dest = str(tmp_path / "sql_out.csv")
+    out = await analytics.save_query_to_csv(
+        mock_csv_endpoint,
+        "csv",
+        dest=dest,
+        sql="SELECT Nombre, Sueldo FROM data WHERE Mes='Abril'",
+    )
+    assert "error" not in out
+    assert out["rows_written"] == 5
+    assert out["columns"] == ["Nombre", "Sueldo"]
+
+
+async def test_save_query_to_csv_refuses_traversal(tmp_cache_dir):
+    out = await analytics.save_query_to_csv(
+        "https://example.test/any.csv", "csv", dest="../../../etc/passwd.csv"
+    )
+    assert "error" in out
+    assert ".." in out["error"] or "path" in out["error"].lower()
+
+
+async def test_save_query_to_csv_refuses_system_path(tmp_cache_dir):
+    out = await analytics.save_query_to_csv(
+        "https://example.test/any.csv", "csv", dest="/etc/evil.csv"
+    )
+    assert "error" in out
+
+
+async def test_save_query_to_csv_refuses_non_csv_extension(tmp_cache_dir, tmp_path):
+    out = await analytics.save_query_to_csv(
+        "https://example.test/any.csv", "csv", dest=str(tmp_path / "output.xlsx")
+    )
+    assert "error" in out
+
+
+async def test_save_query_to_csv_refuses_overwrite_by_default(
+    sample_csv_url, tmp_cache_dir, tmp_path
+):
+    dest = str(tmp_path / "existing.csv")
+    Path(dest).write_text("existing content")
+    out = await analytics.save_query_to_csv(sample_csv_url, "csv", dest=dest)
+    assert "error" in out
+    assert "exists" in out["error"].lower() or "overwrite" in out["error"].lower()
