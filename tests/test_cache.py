@@ -97,3 +97,63 @@ def test_get_cache_respects_env_override(tmp_path, monkeypatch):
     assert c.cache_dir == tmp_path / "custom"
     assert c.max_bytes == 12345
     cache_mod._singleton = None
+
+
+def test_get_by_url_returns_none_before_any_entry(tmp_path):
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path)
+    assert c.get_by_url("https://example.test/data.csv") is None
+
+
+def test_get_by_url_returns_path_after_finalize(tmp_path):
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path)
+    key = "testkey123"
+    p = c.put_path(key)
+    p.write_bytes(b"parquet data")
+    c.finalize(key, url="https://example.test/data.csv")
+    result = c.get_by_url("https://example.test/data.csv")
+    assert result is not None
+    path, returned_key = result
+    assert path == p
+    assert returned_key == key
+
+
+def test_get_by_url_returns_none_for_unknown_url(tmp_path):
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path)
+    key = "testkey456"
+    p = c.put_path(key)
+    p.write_bytes(b"parquet data")
+    c.finalize(key, url="https://example.test/data.csv")
+    assert c.get_by_url("https://example.test/OTHER.csv") is None
+
+
+def test_get_by_url_returns_none_if_file_deleted(tmp_path):
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path)
+    key = "testkey789"
+    p = c.put_path(key)
+    p.write_bytes(b"parquet data")
+    c.finalize(key, url="https://example.test/data.csv")
+    p.unlink()
+    assert c.get_by_url("https://example.test/data.csv") is None
+
+
+def test_get_by_url_returns_most_recently_accessed(tmp_path):
+    """When two keys share the same URL, get_by_url returns the one accessed more recently."""
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path)
+
+    # Create two entries with the same URL but different keys.
+    key_old = "old_key_aaa"
+    key_new = "new_key_bbb"
+    p_old = c.put_path(key_old)
+    p_old.write_bytes(b"old parquet")
+    c.finalize(key_old, url="https://example.test/shared.csv")
+
+    time.sleep(0.01)  # ensure distinct timestamps
+
+    p_new = c.put_path(key_new)
+    p_new.write_bytes(b"new parquet")
+    c.finalize(key_new, url="https://example.test/shared.csv")
+
+    result = c.get_by_url("https://example.test/shared.csv")
+    assert result is not None
+    _, returned_key = result
+    assert returned_key == key_new  # newer entry wins

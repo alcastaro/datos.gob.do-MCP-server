@@ -94,14 +94,32 @@ class LocalDiskCache:
         }
         return p
 
-    def finalize(self, key: str) -> None:
+    def finalize(self, key: str, url: str | None = None) -> None:
         """Mark a put as complete; refresh size metadata."""
         p = self._entry_path(key)
         if p.exists():
             self._index.setdefault(key, {})["bytes"] = p.stat().st_size
             self._index[key]["accessed_at"] = time.time()
+            if url is not None:
+                self._index[key]["url"] = url
             self._save_index()
             self.evict_to_fit(self.max_bytes)
+
+    def get_by_url(self, url: str) -> tuple[Path, str] | None:
+        """Return (path, key) for the most recently accessed entry matching url, or None."""
+        best_key: str | None = None
+        best_accessed: float = -1.0
+        for key, meta in self._index.items():
+            if meta.get("url") == url:
+                p = self._entry_path(key)
+                if p.exists():
+                    accessed = meta.get("accessed_at", 0.0)
+                    if accessed > best_accessed:
+                        best_accessed = accessed
+                        best_key = key
+        if best_key is None:
+            return None
+        return self._entry_path(best_key), best_key
 
     def touch(self, key: str) -> None:
         self._index.setdefault(key, {})["accessed_at"] = time.time()
