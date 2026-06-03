@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] — 2026-06-03
+
+### Added
+
+- **`quantiles_resource`** — percentile distribution (p25/p50/p75/p90/p95/p99 by default) of numeric columns. Fills the gap `aggregate_resource` leaves (only exposes `median`).
+- **`find_duplicates_resource`** — find rows duplicated on specified columns (or all columns), sorted by frequency. Essential for payroll and census data-quality checks.
+- **`detect_outliers_resource`** — IQR method outlier detection on a single numeric column. Returns outlier rows sorted by distance from the median.
+- **`save_query_to_csv`** — export any filter or SQL result to a local CSV file. Defaults to `~/Downloads/datosgobdo-exports/`; supports explicit `dest` (validated, no traversal, no system paths). `overwrite=False` by default.
+
+### Fixed
+
+- **Warm cache no longer issues a HEAD request** on every call. The cache index now stores URL→key mappings; warm-path reads skip the network entirely. Cached data survives a portal outage. `ensure_cached()` gains a `force_refresh=False` parameter for explicit invalidation.
+- **ckan.py error model unified** — all public functions now return `{"error": ..., "hint": ...}` on failures instead of raising `RuntimeError`. The model can read the hint and try a recovery tool. Consistent with the `analytics.py` pattern.
+
+### Tools count
+
+19 → 23.
+
 ## [0.4.2] — 2026-06-03
 
 ### Added

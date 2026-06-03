@@ -97,6 +97,10 @@ DuckDB-backed analytics over a persistent Parquet cache. First call per resource
 | `filter_resource` | Typed WHERE / SELECT / ORDER BY / LIMIT. Ops: `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in`, `contains`, `starts_with`, `ends_with`, `is_null`, `is_not_null`. |
 | `aggregate_resource` | Typed GROUP BY + aggregations + HAVING + ORDER BY. Fns: `count`, `count_distinct`, `sum`, `avg`, `mean`, `median`, `min`, `max`, `stddev`, `variance`. |
 | `query_resource` | Power-user escape hatch: read-only SQL against table `data`. SELECT/WITH only; DDL/DML/COPY/PRAGMA/ATTACH/LOAD rejected. Sandboxed — the resource is materialized in memory with external access disabled, so table functions cannot read local files or reach the network. |
+| `quantiles_resource` | Percentile distribution (p25/p50/p75/p90/p95/p99) of numeric columns. Use before `aggregate_resource` for statistical profiling. |
+| `find_duplicates_resource` | Find rows duplicated on specified columns (or all columns). Essential for payroll and census data-quality checks. |
+| `detect_outliers_resource` | Find rows outside the IQR fence on a numeric column. Returns rows sorted by distance from median. |
+| `save_query_to_csv` | Write a filter or SQL result to a local CSV file. Default destination: `~/Downloads/datosgobdo-exports/`. |
 | `get_cache_stats` | On-disk Parquet cache stats. |
 | `clear_cache` | Wipe the local Parquet cache. |
 

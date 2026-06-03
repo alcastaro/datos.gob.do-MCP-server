@@ -97,6 +97,10 @@ Capa analítica con DuckDB sobre cache persistente en Parquet. Primera llamada p
 | `filter_resource` | WHERE / SELECT / ORDER BY / LIMIT tipados. Ops: `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in`, `contains`, `starts_with`, `ends_with`, `is_null`, `is_not_null`. |
 | `aggregate_resource` | GROUP BY + agregaciones + HAVING + ORDER BY tipados. Fns: `count`, `count_distinct`, `sum`, `avg`, `mean`, `median`, `min`, `max`, `stddev`, `variance`. |
 | `query_resource` | Escape hatch para power users: SQL read-only contra tabla `data`. Solo SELECT/WITH; DDL/DML/COPY/PRAGMA/ATTACH/LOAD rechazados. Aislado (sandbox) — el recurso se materializa en memoria con el acceso externo deshabilitado, así las funciones de tabla no pueden leer archivos locales ni acceder a la red. |
+| `quantiles_resource` | Distribución de percentiles (p25/p50/p75/p90/p95/p99) de columnas numéricas. Útil para perfiles estadísticos de nóminas y presupuestos. |
+| `find_duplicates_resource` | Encuentra filas duplicadas en columnas indicadas (o en todas). Esencial para control de calidad en nóminas y padrones. |
+| `detect_outliers_resource` | Detecta filas fuera del rango IQR en una columna numérica. Devuelve filas ordenadas por distancia a la mediana. |
+| `save_query_to_csv` | Exporta un resultado de filtro o SQL a un archivo CSV local. Destino por defecto: `~/Downloads/datosgobdo-exports/`. |
 | `get_cache_stats` | Stats del cache Parquet en disco. |
 | `clear_cache` | Borra todo el cache. |
 
