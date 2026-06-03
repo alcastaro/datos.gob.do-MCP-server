@@ -22,6 +22,9 @@ from .analytics import (
     clear_cache as _clear_cache,
 )
 from .analytics import (
+    detect_outliers_resource as _detect_outliers_resource,
+)
+from .analytics import (
     filter_resource as _filter_resource,
 )
 from .analytics import (
@@ -470,6 +473,37 @@ async def find_duplicates_resource(
     """
     return await _find_duplicates_resource(
         url=url, fmt=format, columns=columns, filters=filters, limit=limit
+    )
+
+
+@mcp.tool(annotations=_ro("Detect outliers in a numeric column"))
+async def detect_outliers_resource(
+    url: Annotated[
+        str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
+    ],
+    format: Annotated[
+        str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
+    ],
+    column: Annotated[
+        str, Field(description="Numeric column to check. One column per call.")
+    ],
+    filters: Annotated[
+        list[dict] | None,
+        Field(description="Same filter syntax as filter_resource. Applied before outlier detection."),
+    ] = None,
+    limit: Annotated[
+        int, Field(description="Max outlier rows to return (1–500).", ge=1, le=500)
+    ] = 100,
+) -> dict:
+    """Find rows where a numeric column falls outside the IQR fence.
+
+    Uses the standard IQR method: outliers are values below Q1 - 1.5*IQR or
+    above Q3 + 1.5*IQR. Returns rows sorted by distance from the median.
+    Useful for detecting data-entry errors in salary, budget, or census data.
+    First call downloads + caches. Subsequent calls reuse the cache.
+    """
+    return await _detect_outliers_resource(
+        url=url, fmt=format, column=column, filters=filters, limit=limit
     )
 
 

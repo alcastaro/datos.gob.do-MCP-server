@@ -118,3 +118,38 @@ def mock_dupes_endpoint(httpx_mock, dupes_csv_url, sample_dupes_csv_bytes):
         url=dupes_csv_url, method="GET", content=sample_dupes_csv_bytes
     )
     return dupes_csv_url
+
+
+SAMPLE_CSV_WITH_OUTLIERS = (
+    "Nombre;Sueldo\n"
+    "ANA;25000\n"
+    "BENITO;28000\n"
+    "CARLA;30000\n"
+    "DIEGO;27000\n"
+    "EVA;29000\n"
+    "FRANK;26000\n"
+    "GINA;31000\n"
+    "HUGO;999999\n"
+    "IVAN;100\n"
+)
+
+
+@pytest.fixture
+def sample_outliers_csv_bytes() -> bytes:
+    return SAMPLE_CSV_WITH_OUTLIERS.encode("utf-8")
+
+
+@pytest.fixture
+def outliers_csv_url() -> str:
+    return "https://example.test/outliers.csv"
+
+
+@pytest.fixture
+def mock_outliers_endpoint(httpx_mock, outliers_csv_url, sample_outliers_csv_bytes):
+    httpx_mock.add_response(
+        url=outliers_csv_url, method="HEAD", headers={"etag": "o1"}
+    )
+    httpx_mock.add_response(
+        url=outliers_csv_url, method="GET", content=sample_outliers_csv_bytes
+    )
+    return outliers_csv_url

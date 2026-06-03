@@ -808,6 +808,109 @@ async def find_duplicates_resource(
     }
 
 
+async def detect_outliers_resource(
+    url: str,
+    fmt: str | None,
+    column: str,
+    filters: list[dict] | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Find rows where a numeric column falls outside the IQR fence (Q1-1.5*IQR, Q3+1.5*IQR)."""
+    kind = classify_format(fmt)
+    if kind is None:
+        return {"error": f"Format '{fmt}' not supported"}
+
+    limit = min(max(int(limit), 1), 500)
+
+    try:
+        _quote_ident(column)  # validate early
+    except AnalyticsError as e:
+        return {"error": str(e)}
+
+    try:
+        parquet, meta = await ensure_cached(url, kind)
+    except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
+        return {"error": f"Could not load resource: {e}"}
+
+    con = _new_con()
+    try:
+        _open_view(con, parquet)
+        try:
+            where = _build_where(filters)
+        except AnalyticsError as e:
+            return {"error": str(e)}
+
+        quoted = _quote_ident(column)
+
+        try:
+            stats_row = con.execute(
+                f"SELECT quantile_cont({quoted}, 0.25), quantile_cont({quoted}, 0.75) "
+                f"FROM data {where}"
+            ).fetchone()
+        except duckdb.Error as e:
+            return {"error": f"Could not compute IQR for column '{column}': {e}. Is it numeric?"}
+
+        if stats_row is None or stats_row[0] is None or stats_row[1] is None:
+            return {"error": f"Column '{column}' has no non-null values in the filtered data."}
+
+        q1, q3 = stats_row[0], stats_row[1]
+        iqr = q3 - q1
+        if iqr == 0:
+            return {
+                "error": f"IQR is 0 for column '{column}' — all values are identical or the distribution has no spread. Outlier detection is undefined.",
+                "q1": q1,
+                "q3": q3,
+                "iqr": 0,
+            }
+
+        lower_fence = q1 - 1.5 * iqr
+        upper_fence = q3 + 1.5 * iqr
+
+        outlier_where = (
+            f"{where} AND ({quoted} < {lower_fence} OR {quoted} > {upper_fence})"
+            if where
+            else f"WHERE ({quoted} < {lower_fence} OR {quoted} > {upper_fence})"
+        )
+        try:
+            count_row = con.execute(
+                f"SELECT COUNT(*) FROM data {outlier_where}"
+            ).fetchone()
+            outlier_count = count_row[0] if count_row else 0  # type: ignore[index]
+        except duckdb.Error:
+            outlier_count = None
+
+        try:
+            rs = con.execute(
+                f"SELECT *, {lower_fence} AS lower_fence, {upper_fence} AS upper_fence "
+                f"FROM data {outlier_where} "
+                f"ORDER BY ABS({quoted} - {(q1 + q3) / 2}) DESC "
+                f"LIMIT {limit}"
+            )
+            col_names = [d[0] for d in rs.description]
+            rows = rs.fetchall()
+        except duckdb.Error as e:
+            return {"error": f"DuckDB: {e}"}
+    finally:
+        con.close()
+
+    return {
+        "source_url": url,
+        "format": kind,
+        "cache": meta,
+        "column": column,
+        "method": "IQR",
+        "q1": q1,
+        "q3": q3,
+        "iqr": iqr,
+        "lower_fence": lower_fence,
+        "upper_fence": upper_fence,
+        "outlier_count_estimate": outlier_count,
+        "rows_returned": len(rows),
+        "columns": col_names,
+        "rows": [list(r) for r in rows],
+    }
+
+
 async def filter_resource(
     url: str,
     fmt: str | None,

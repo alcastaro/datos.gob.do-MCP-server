@@ -504,3 +504,48 @@ async def test_find_duplicates_returns_empty_when_no_dupes(
     assert "error" not in out
     assert out["duplicate_groups_found"] == 0
     assert out["rows"] == []
+
+
+# ─── detect_outliers_resource ─────────────────────────────────────────────────
+
+
+async def test_detect_outliers_finds_extreme_values(
+    mock_outliers_endpoint, tmp_cache_dir
+):
+    out = await analytics.detect_outliers_resource(
+        mock_outliers_endpoint, "csv", column="Sueldo"
+    )
+    assert "error" not in out, out
+    assert out["method"] == "IQR"
+    assert out["iqr"] > 0
+    sueldo_values = [r[1] for r in out["rows"]]
+    assert 999999 in sueldo_values
+    assert 100 in sueldo_values
+
+
+async def test_detect_outliers_no_outliers(mock_csv_endpoint, tmp_cache_dir):
+    out = await analytics.detect_outliers_resource(
+        mock_csv_endpoint, "csv", column="Sueldo"
+    )
+    assert "error" not in out
+    assert "q1" in out and "q3" in out and "iqr" in out
+    assert "lower_fence" in out and "upper_fence" in out
+
+
+async def test_detect_outliers_zero_iqr_returns_error(tmp_cache_dir, httpx_mock):
+    uniform_csv = b"val\n5\n5\n5\n5\n5\n"
+    url = "https://example.test/uniform.csv"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "u1"})
+    httpx_mock.add_response(url=url, method="GET", content=uniform_csv)
+    out = await analytics.detect_outliers_resource(url, "csv", column="val")
+    assert "error" in out
+    assert "IQR" in out["error"] or "iqr" in out["error"].lower()
+
+
+async def test_detect_outliers_nonexistent_column(
+    mock_outliers_endpoint, tmp_cache_dir
+):
+    out = await analytics.detect_outliers_resource(
+        mock_outliers_endpoint, "csv", column="NonExistentCol"
+    )
+    assert "error" in out
