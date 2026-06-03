@@ -282,13 +282,13 @@ async def ensure_cached(
 
     os.close(fd)
     raw = Path(tmp_path_str)
+    raw_ods: Path | None = None  # declared here so finally block can always reference it
     try:
         bytes_written, truncated = await download_to_file(url, raw, max_bytes=ANALYTICS_MAX_BYTES)
         if bytes_written == 0:
             raise AnalyticsError("Downloaded zero bytes")
 
         effective_fmt = fmt
-        raw_ods: Path | None = None
         if fmt == "ods":
             raw_ods = raw
             raw_csv = _ods_to_csv(raw)
@@ -678,7 +678,9 @@ async def quantiles_resource(
             return {"error": f"Percentile {p} must be in (0, 1) exclusive"}
     pctile_keys_check = [f"p{int(round(p * 100))}" for p in percentiles]
     if len(set(pctile_keys_check)) != len(pctile_keys_check):
-        return {"error": "Duplicate percentile values after rounding (e.g., 0.904 and 0.905 both map to p90). Use distinct values."}
+        return {
+            "error": "Duplicate percentile values after rounding (e.g., 0.904 and 0.905 both map to p90). Use distinct values."
+        }
 
     try:
         parquet, meta = await ensure_cached(url, kind)

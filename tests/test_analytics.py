@@ -611,7 +611,119 @@ async def test_save_query_to_csv_refuses_private_etc_on_macos(tmp_cache_dir):
 
 
 async def test_quantiles_resource_duplicate_percentile_error(sample_csv_url, tmp_cache_dir):
-    out = await analytics.quantiles_resource(
-        sample_csv_url, "csv", percentiles=[0.5, 0.5]
-    )
+    out = await analytics.quantiles_resource(sample_csv_url, "csv", percentiles=[0.5, 0.5])
     assert "error" in out
+
+
+# ─── Format coverage: XLSX, JSON, ODS ────────────────────────────────────────
+
+
+async def test_get_resource_schema_xlsx(mock_xlsx_endpoint, tmp_cache_dir):
+    out = await analytics.get_resource_schema(mock_xlsx_endpoint, "xlsx")
+    assert "error" not in out, out
+    names = {c["name"] for c in out["columns"]}
+    assert "nombre" in names
+    assert out["row_count"] == 3
+
+
+async def test_filter_resource_xlsx(mock_xlsx_endpoint, tmp_cache_dir):
+    out = await analytics.filter_resource(
+        mock_xlsx_endpoint, "xlsx",
+        filters=[{"col": "estatus", "op": "=", "val": "FIJO"}],
+    )
+    assert "error" not in out, out
+    assert out["rows_returned"] == 2  # ANA + CARLA are FIJO
+
+
+async def test_aggregate_resource_xlsx(mock_xlsx_endpoint, tmp_cache_dir):
+    out = await analytics.aggregate_resource(
+        mock_xlsx_endpoint, "xlsx",
+        aggregations=[{"col": None, "fn": "count", "alias": "n"}],
+        group_by=["estatus"],
+    )
+    assert "error" not in out, out
+    by = {r[0]: r[1] for r in out["rows"]}
+    assert by.get("FIJO", 0) == 2
+    assert by.get("TEMPORAL", 0) == 1
+
+
+async def test_get_resource_schema_json(mock_json_endpoint, tmp_cache_dir):
+    out = await analytics.get_resource_schema(mock_json_endpoint, "json")
+    assert "error" not in out, out
+    names = {c["name"] for c in out["columns"]}
+    assert "nombre" in names and "sueldo" in names
+    assert out["row_count"] == 3
+
+
+async def test_filter_resource_json(mock_json_endpoint, tmp_cache_dir):
+    out = await analytics.filter_resource(
+        mock_json_endpoint, "json",
+        filters=[{"col": "sueldo", "op": ">", "val": 25000}],
+    )
+    assert "error" not in out, out
+    assert out["rows_returned"] == 2  # BENITO (30000) + CARLA (28000)
+
+
+async def test_get_resource_schema_ods(mock_ods_endpoint, tmp_cache_dir):
+    out = await analytics.get_resource_schema(mock_ods_endpoint, "ods")
+    assert "error" not in out, out
+    names = {c["name"] for c in out["columns"]}
+    assert "nombre" in names
+    assert out["row_count"] == 3
+
+
+async def test_filter_resource_ods(mock_ods_endpoint, tmp_cache_dir):
+    out = await analytics.filter_resource(mock_ods_endpoint, "ods", limit=10)
+    assert "error" not in out, out
+    assert out["rows_returned"] == 3
+
+
+# ─── Encoding fallback: Latin-1 CSV ──────────────────────────────────────────
+
+
+async def test_analytics_handles_latin1_encoding(mock_latin1_endpoint, tmp_cache_dir):
+    """Non-UTF8 CSVs must be transcoded before DuckDB can read them."""
+    out = await analytics.get_resource_schema(mock_latin1_endpoint, "csv")
+    assert "error" not in out, out
+    assert out["row_count"] == 7
+    names = {c["name"] for c in out["columns"]}
+    assert "Nombre" in names
+
+
+async def test_filter_resource_latin1_encoding(mock_latin1_endpoint, tmp_cache_dir):
+    out = await analytics.filter_resource(
+        mock_latin1_endpoint, "csv",
+        filters=[{"col": "Mes", "op": "=", "val": "Abril"}],
+    )
+    assert "error" not in out, out
+    assert out["rows_returned"] == 5
+
+
+# ─── ensure_cached error paths ────────────────────────────────────────────────
+
+
+async def test_ensure_cached_zero_bytes_returns_error(tmp_cache_dir, httpx_mock):
+    """A 0-byte download must propagate as an error, not silently succeed."""
+    url = "https://example.test/empty.csv"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "e1"})
+    httpx_mock.add_response(url=url, method="GET", content=b"")
+    out = await analytics.get_resource_schema(url, "csv")
+    assert "error" in out
+
+
+# ─── _quote_ident denylist branch ─────────────────────────────────────────────
+
+
+def test_quote_ident_rejects_forbidden_substring_dash_dash():
+    with pytest.raises(analytics.AnalyticsError):
+        analytics._quote_ident("col--comment")
+
+
+def test_quote_ident_rejects_forbidden_substring_block_comment():
+    with pytest.raises(analytics.AnalyticsError):
+        analytics._quote_ident("col/*bad")
+
+
+def test_quote_ident_rejects_semicolon():
+    with pytest.raises(analytics.AnalyticsError):
+        analytics._quote_ident("col;drop")

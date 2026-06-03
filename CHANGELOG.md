@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] — 2026-06-03
+
+### Fixed
+
+- **`ensure_cached` crash on zero-byte download** — `UnboundLocalError: raw_ods` when
+  the server returned an empty body. `raw_ods` was declared inside the `try` block after
+  the zero-byte check; moved before `try` so the `finally` cleanup always works.
+
+### Changed
+
+- **Coverage floor raised 75% → 80%** (actual 83%).
+- Added hermetic tests for XLSX, JSON, ODS, Latin-1 encoding, and zero-byte error path
+  in `analytics.py`; 171 → 184 tests.
+
 ## [0.6.0] — 2026-06-03
 
 ### Added

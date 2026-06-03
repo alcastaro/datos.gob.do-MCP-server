@@ -75,6 +75,86 @@ def small_xlsx_bytes() -> bytes:
     return buf.getvalue()
 
 
+SAMPLE_JSON_ARRAY = '[{"nombre":"ANA","sueldo":25000},{"nombre":"BENITO","sueldo":30000},{"nombre":"CARLA","sueldo":28000}]'
+
+
+@pytest.fixture
+def sample_json_bytes() -> bytes:
+    return SAMPLE_JSON_ARRAY.encode("utf-8")
+
+
+@pytest.fixture
+def json_url() -> str:
+    return "https://example.test/data.json"
+
+
+@pytest.fixture
+def mock_json_endpoint(httpx_mock, json_url, sample_json_bytes):
+    httpx_mock.add_response(url=json_url, method="HEAD", headers={"etag": "j1"})
+    httpx_mock.add_response(url=json_url, method="GET", content=sample_json_bytes)
+    return json_url
+
+
+@pytest.fixture
+def xlsx_url() -> str:
+    return "https://example.test/data.xlsx"
+
+
+@pytest.fixture
+def mock_xlsx_endpoint(httpx_mock, xlsx_url, small_xlsx_bytes):
+    httpx_mock.add_response(url=xlsx_url, method="HEAD", headers={"etag": "x1"})
+    httpx_mock.add_response(url=xlsx_url, method="GET", content=small_xlsx_bytes)
+    return xlsx_url
+
+
+@pytest.fixture
+def sample_ods_bytes() -> bytes:
+    """Tiny ODS spreadsheet built with odfpy."""
+    import io
+
+    from odf.opendocument import OpenDocumentSpreadsheet
+    from odf.table import Table, TableCell, TableRow
+    from odf.text import P
+
+    doc = OpenDocumentSpreadsheet()
+    table = Table(name="Sheet1")
+    for row_vals in [
+        ["nombre", "valor"],
+        ["ANA", "100"],
+        ["BENITO", "200"],
+        ["CARLA", "300"],
+    ]:
+        row = TableRow()
+        for v in row_vals:
+            cell = TableCell()
+            cell.addElement(P(text=v))
+            row.addElement(cell)
+        table.addElement(row)
+    doc.spreadsheet.addElement(table)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+@pytest.fixture
+def ods_url() -> str:
+    return "https://example.test/data.ods"
+
+
+@pytest.fixture
+def mock_ods_endpoint(httpx_mock, ods_url, sample_ods_bytes):
+    httpx_mock.add_response(url=ods_url, method="HEAD", headers={"etag": "ods1"})
+    httpx_mock.add_response(url=ods_url, method="GET", content=sample_ods_bytes)
+    return ods_url
+
+
+@pytest.fixture
+def mock_latin1_endpoint(httpx_mock, sample_csv_url, sample_csv_latin1_bytes):
+    httpx_mock.add_response(url=sample_csv_url, method="HEAD", headers={"etag": "lat1"})
+    httpx_mock.add_response(url=sample_csv_url, method="GET", content=sample_csv_latin1_bytes)
+    return sample_csv_url
+
+
 def pytest_collection_modifyitems(config, items):
     """Auto-skip live network tests unless RUN_LIVE_TESTS=1."""
     if os.environ.get("RUN_LIVE_TESTS") == "1":
@@ -111,12 +191,8 @@ def dupes_csv_url() -> str:
 
 @pytest.fixture
 def mock_dupes_endpoint(httpx_mock, dupes_csv_url, sample_dupes_csv_bytes):
-    httpx_mock.add_response(
-        url=dupes_csv_url, method="HEAD", headers={"etag": "d1"}
-    )
-    httpx_mock.add_response(
-        url=dupes_csv_url, method="GET", content=sample_dupes_csv_bytes
-    )
+    httpx_mock.add_response(url=dupes_csv_url, method="HEAD", headers={"etag": "d1"})
+    httpx_mock.add_response(url=dupes_csv_url, method="GET", content=sample_dupes_csv_bytes)
     return dupes_csv_url
 
 
@@ -146,10 +222,6 @@ def outliers_csv_url() -> str:
 
 @pytest.fixture
 def mock_outliers_endpoint(httpx_mock, outliers_csv_url, sample_outliers_csv_bytes):
-    httpx_mock.add_response(
-        url=outliers_csv_url, method="HEAD", headers={"etag": "o1"}
-    )
-    httpx_mock.add_response(
-        url=outliers_csv_url, method="GET", content=sample_outliers_csv_bytes
-    )
+    httpx_mock.add_response(url=outliers_csv_url, method="HEAD", headers={"etag": "o1"})
+    httpx_mock.add_response(url=outliers_csv_url, method="GET", content=sample_outliers_csv_bytes)
     return outliers_csv_url
