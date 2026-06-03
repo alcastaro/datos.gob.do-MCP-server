@@ -48,6 +48,20 @@ from .analytics import (
 from .analytics import (
     summarize_resource as _summarize_resource,
 )
+from .models import (
+    AggregateResult,
+    CacheStatsResult,
+    ClearCacheResult,
+    DuplicatesResult,
+    FilterResult,
+    OutliersResult,
+    PreviewResult,
+    QuantilesResult,
+    QueryResult,
+    SaveCsvResult,
+    SchemaResult,
+    SummaryResult,
+)
 from .preview import preview_resource_data
 
 # Per MCP spec: stdio servers MUST NOT write to stdout (interferes with protocol).
@@ -213,7 +227,7 @@ async def download_resource_preview(
             )
         ),
     ] = "head",
-) -> dict:
+) -> PreviewResult:
     """Download a resource and return N rows with their column headers.
 
     The datos.gob.do portal has no DataStore (no SQL), so this tool downloads
@@ -222,7 +236,9 @@ async def download_resource_preview(
     For analytical queries on big files, use get_resource_schema +
     summarize_resource (v0.2) or aggregate_resource (v0.3+).
     """
-    return await preview_resource_data(url=url, fmt=format, rows=rows, sample=sample)
+    return PreviewResult(
+        **await preview_resource_data(url=url, fmt=format, rows=rows, sample=sample)
+    )
 
 
 @mcp.tool(annotations=_ro("Get resource schema"))
@@ -243,7 +259,7 @@ async def get_resource_schema(
             le=1000,
         ),
     ] = 1000,
-) -> dict:
+) -> SchemaResult:
     """Return column names, inferred types, and sample values for a resource.
 
     Cheap reconnaissance step. Downloads file (up to 100 MB), opens it in
@@ -251,7 +267,7 @@ async def get_resource_schema(
     raw rows. Use this before summarize_resource or aggregate_resource so the
     model knows column names and types.
     """
-    return await _get_resource_schema(url=url, fmt=format, sample_rows=sample_rows)
+    return SchemaResult(**await _get_resource_schema(url=url, fmt=format, sample_rows=sample_rows))
 
 
 @mcp.tool(annotations=_ro("Summarize resource"))
@@ -272,7 +288,7 @@ async def summarize_resource(
             le=50,
         ),
     ] = 10,
-) -> dict:
+) -> SummaryResult:
     """Auto-generated profile: row count, types, nulls, distinct, min/max/mean, top values.
 
     Downloads file (up to 100 MB), runs DuckDB COUNT/DISTINCT/AGG queries per
@@ -281,8 +297,10 @@ async def summarize_resource(
     rows in its context. For columns with many distinct values (e.g. names),
     'top_values' is omitted; only counts are returned.
     """
-    return await _summarize_resource(
-        url=url, fmt=format, max_categorical_top_n=max_categorical_top_n
+    return SummaryResult(
+        **await _summarize_resource(
+            url=url, fmt=format, max_categorical_top_n=max_categorical_top_n
+        )
     )
 
 
@@ -319,7 +337,7 @@ async def filter_resource(
     ] = None,
     limit: Annotated[int, Field(description="Max rows to return (1-1000).", ge=1, le=1000)] = 100,
     offset: Annotated[int, Field(description="Rows to skip (for paginating).", ge=0)] = 0,
-) -> dict:
+) -> FilterResult:
     """Run a typed WHERE/SELECT/ORDER BY/LIMIT against a cached resource.
 
     First call downloads the file (up to 100 MB) and caches it as Parquet at
@@ -327,14 +345,16 @@ async def filter_resource(
     requested columns + matching rows (capped at limit) plus the total count
     of matching rows. Use this when you need actual records, not aggregates.
     """
-    return await _filter_resource(
-        url=url,
-        fmt=format,
-        filters=filters,
-        columns=columns,
-        order_by=order_by,
-        limit=limit,
-        offset=offset,
+    return FilterResult(
+        **await _filter_resource(
+            url=url,
+            fmt=format,
+            filters=filters,
+            columns=columns,
+            order_by=order_by,
+            limit=limit,
+            offset=offset,
+        )
     )
 
 
@@ -381,7 +401,7 @@ async def aggregate_resource(
         ),
     ] = None,
     limit: Annotated[int, Field(description="Max groups to return (1-1000).", ge=1, le=1000)] = 100,
-) -> dict:
+) -> AggregateResult:
     """Run GROUP BY + aggregations against a cached resource without writing SQL.
 
     Typed wrapper that builds safe DuckDB queries from JSON. Example usage:
@@ -394,23 +414,23 @@ async def aggregate_resource(
     First call downloads + caches the file. Subsequent calls reuse the cache.
     Returns one row per group with the aggregation values.
     """
-    return await _aggregate_resource(
-        url=url,
-        fmt=format,
-        aggregations=aggregations,
-        group_by=group_by,
-        filters=filters,
-        having=having,
-        order_by=order_by,
-        limit=limit,
+    return AggregateResult(
+        **await _aggregate_resource(
+            url=url,
+            fmt=format,
+            aggregations=aggregations,
+            group_by=group_by,
+            filters=filters,
+            having=having,
+            order_by=order_by,
+            limit=limit,
+        )
     )
 
 
 @mcp.tool(annotations=_ro("Quantile distribution of numeric columns"))
 async def quantiles_resource(
-    url: Annotated[
-        str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
-    ],
+    url: Annotated[str, Field(description="Direct URL to the file (CKAN resource 'url' field).")],
     format: Annotated[
         str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
     ],
@@ -431,23 +451,23 @@ async def quantiles_resource(
         list[dict] | None,
         Field(description="Same filter syntax as filter_resource. Applied before computing."),
     ] = None,
-) -> dict:
+) -> QuantilesResult:
     """Percentile distribution (p25/p50/p75/p90/p95/p99) of numeric columns.
 
     Fills the gap left by aggregate_resource, which only exposes median.
     First call downloads + caches the file. Subsequent calls reuse the cache.
     Useful for salary analysis, budget distributions, and statistical profiling.
     """
-    return await _quantiles_resource(
-        url=url, fmt=format, columns=columns, percentiles=percentiles, filters=filters
+    return QuantilesResult(
+        **await _quantiles_resource(
+            url=url, fmt=format, columns=columns, percentiles=percentiles, filters=filters
+        )
     )
 
 
 @mcp.tool(annotations=_ro("Find duplicate rows"))
 async def find_duplicates_resource(
-    url: Annotated[
-        str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
-    ],
+    url: Annotated[str, Field(description="Direct URL to the file (CKAN resource 'url' field).")],
     format: Annotated[
         str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
     ],
@@ -467,37 +487,37 @@ async def find_duplicates_resource(
     limit: Annotated[
         int, Field(description="Max duplicate groups to return (1–500).", ge=1, le=500)
     ] = 50,
-) -> dict:
+) -> DuplicatesResult:
     """Find rows that appear more than once on the given columns (or all columns).
 
     Returns duplicate groups sorted by frequency descending. Useful for detecting
     data-quality issues in payroll, census, and registry datasets.
     First call downloads + caches. Subsequent calls reuse the cache.
     """
-    return await _find_duplicates_resource(
-        url=url, fmt=format, columns=columns, filters=filters, limit=limit
+    return DuplicatesResult(
+        **await _find_duplicates_resource(
+            url=url, fmt=format, columns=columns, filters=filters, limit=limit
+        )
     )
 
 
 @mcp.tool(annotations=_ro("Detect outliers in a numeric column"))
 async def detect_outliers_resource(
-    url: Annotated[
-        str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
-    ],
+    url: Annotated[str, Field(description="Direct URL to the file (CKAN resource 'url' field).")],
     format: Annotated[
         str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
     ],
-    column: Annotated[
-        str, Field(description="Numeric column to check. One column per call.")
-    ],
+    column: Annotated[str, Field(description="Numeric column to check. One column per call.")],
     filters: Annotated[
         list[dict] | None,
-        Field(description="Same filter syntax as filter_resource. Applied before outlier detection."),
+        Field(
+            description="Same filter syntax as filter_resource. Applied before outlier detection."
+        ),
     ] = None,
     limit: Annotated[
         int, Field(description="Max outlier rows to return (1–500).", ge=1, le=500)
     ] = 100,
-) -> dict:
+) -> OutliersResult:
     """Find rows where a numeric column falls outside the IQR fence.
 
     Uses the standard IQR method: outliers are values below Q1 - 1.5*IQR or
@@ -505,8 +525,10 @@ async def detect_outliers_resource(
     Useful for detecting data-entry errors in salary, budget, or census data.
     First call downloads + caches. Subsequent calls reuse the cache.
     """
-    return await _detect_outliers_resource(
-        url=url, fmt=format, column=column, filters=filters, limit=limit
+    return OutliersResult(
+        **await _detect_outliers_resource(
+            url=url, fmt=format, column=column, filters=filters, limit=limit
+        )
     )
 
 
@@ -519,9 +541,7 @@ async def detect_outliers_resource(
     )
 )
 async def save_query_to_csv(
-    url: Annotated[
-        str, Field(description="Direct URL to the file (CKAN resource 'url' field).")
-    ],
+    url: Annotated[str, Field(description="Direct URL to the file (CKAN resource 'url' field).")],
     format: Annotated[
         str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
     ],
@@ -559,22 +579,24 @@ async def save_query_to_csv(
     overwrite: Annotated[
         bool, Field(description="Overwrite dest if it already exists. Default False.")
     ] = False,
-) -> dict:
+) -> SaveCsvResult:
     """Write a query or filter result to a local CSV file.
 
     Export endpoint for analysis workflows — run your filter or SQL, then save
     the result to open in Excel or another tool. Returns the file path and row count.
     First call downloads + caches the source file. Subsequent calls reuse the cache.
     """
-    return await _save_query_to_csv(
-        url=url,
-        fmt=format,
-        dest=dest,
-        sql=sql,
-        filters=filters,
-        columns=columns,
-        limit=limit,
-        overwrite=overwrite,
+    return SaveCsvResult(
+        **await _save_query_to_csv(
+            url=url,
+            fmt=format,
+            dest=dest,
+            sql=sql,
+            filters=filters,
+            columns=columns,
+            limit=limit,
+            overwrite=overwrite,
+        )
     )
 
 
@@ -601,7 +623,7 @@ async def query_resource(
     limit: Annotated[
         int, Field(description="Hard cap on returned rows (1-1000).", ge=1, le=1000)
     ] = 200,
-) -> dict:
+) -> QueryResult:
     """Run an ad-hoc read-only SQL query against a cached resource via DuckDB.
 
     Power-user escape hatch when filter_resource / aggregate_resource don't
@@ -619,13 +641,13 @@ async def query_resource(
         read local files or reach the network.
       - Row cap always applied via outer wrapper.
     """
-    return await _query_resource(url=url, fmt=format, sql=sql, limit=limit)
+    return QueryResult(**await _query_resource(url=url, fmt=format, sql=sql, limit=limit))
 
 
 @mcp.tool(annotations=_ro_local("Get cache stats"))
-def get_cache_stats() -> dict:
+def get_cache_stats() -> CacheStatsResult:
     """Return on-disk Parquet cache stats: entry count, total bytes, max bytes."""
-    return _get_cache_stats()
+    return CacheStatsResult(**_get_cache_stats())
 
 
 @mcp.tool(
@@ -637,9 +659,9 @@ def get_cache_stats() -> dict:
         openWorldHint=False,
     )
 )
-def clear_cache() -> dict:
+def clear_cache() -> ClearCacheResult:
     """Remove all cached Parquet files. Returns the count removed."""
-    return _clear_cache()
+    return ClearCacheResult(**_clear_cache())
 
 
 # ─── Organizaciones ───────────────────────────────────────────────────────────

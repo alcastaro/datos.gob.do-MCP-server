@@ -57,3 +57,28 @@ async def test_local_only_tools_not_open_world():
         assert tools[name].annotations.openWorldHint is False, (
             f"{name}: purely local, should be openWorldHint=False"
         )
+
+
+DATA_TOOLS_WITH_SCHEMA = {
+    "download_resource_preview",
+    "get_resource_schema",
+    "summarize_resource",
+    "filter_resource",
+    "aggregate_resource",
+    "query_resource",
+    "quantiles_resource",
+    "find_duplicates_resource",
+    "detect_outliers_resource",
+    "save_query_to_csv",
+    "get_cache_stats",
+    "clear_cache",
+}
+
+
+async def test_data_tools_have_output_schema():
+    """The data-producing tools must emit a typed outputSchema (Pydantic-backed)."""
+    tools = {t.name: t for t in await mcp.list_tools()}
+    for name in DATA_TOOLS_WITH_SCHEMA:
+        t = tools[name]
+        assert t.outputSchema is not None, f"{name}: missing outputSchema"
+        assert t.outputSchema.get("type") == "object", f"{name}: schema not an object"
