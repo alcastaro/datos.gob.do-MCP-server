@@ -45,6 +45,7 @@ package-lock.json
 CLAUDE.md
 .claude/
 
-# Internal planning docs (NEVER commit)
+# Internal planning docs and dev artifacts (NEVER commit)
 workplan.md
 Roadmap.md
+docs/
