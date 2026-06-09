@@ -9,10 +9,16 @@ on:
 jobs:
   quality:
     name: Lint + types + tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # One macOS job: the user base is desktop-heavy and Linux-only CI has
+        # already hidden a real platform bug (macOS $TMPDIR under /private/var).
+        include:
+          - os: macos-latest
+            python-version: "3.13"
     steps:
       - uses: actions/checkout@v4
 

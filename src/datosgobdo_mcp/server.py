@@ -747,7 +747,9 @@ async def get_site_stats() -> dict:
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 
-def main() -> None:
+def main() -> (
+    None
+):  # pragma: no cover — blocking stdio loop, exercised by CI entry-point smoke test
     logger.info("datosgobdo-mcp starting (CKAN endpoint: %s)", ckan.BASE_URL)
     try:
         mcp.run()

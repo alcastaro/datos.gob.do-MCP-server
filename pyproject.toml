@@ -49,13 +49,11 @@ datosgobdo-mcp = "datosgobdo_mcp.server:main"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-ra --strict-markers --cov=datosgobdo_mcp --cov-report=term-missing --cov-fail-under=80"
+addopts = "-ra --strict-markers --cov=datosgobdo_mcp --cov-report=term-missing --cov-fail-under=85"
 
 [tool.coverage.run]
-omit = [
-    "src/datosgobdo_mcp/server.py",   # MCP tool wrappers: thin delegates, covered via live tests
-    "src/datosgobdo_mcp/ckan.py",     # HTTP adapter: covered by RUN_LIVE_TESTS suite
-]
+# No omits — the whole shipped package counts toward the floor. server.py and
+# ckan.py were previously excluded as "live-tested", but live tests are opt-in.
 
 [tool.coverage.report]
 exclude_lines = ["pragma: no cover", "if __name__"]

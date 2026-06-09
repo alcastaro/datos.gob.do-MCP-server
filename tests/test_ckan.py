@@ -184,3 +184,470 @@ async def test_get_resource_returns_error_dict_on_network_failure(httpx_mock):
     result = await ckan.get_resource("nonexistent-uuid")
     assert "error" in result
     assert "hint" in result
+
+
+# ─── Shared sample payloads ────────────────────────────────────────────────────
+
+SAMPLE_DATASET = {
+    "id": "abc-123",
+    "name": "censo-2022",
+    "title": "Censo Nacional 2022",
+    "organization": {"name": "one", "title": "Oficina Nacional de Estadística"},
+    "notes": "Resultados del censo nacional.",
+    "tags": [{"name": "censo"}, {"name": "poblacion"}],
+    "groups": [{"title": "Demografía"}],
+    "resources": [
+        {"id": "r1", "name": "censo.csv", "format": "CSV", "url": "https://x/censo.csv"},
+        {"id": "r2", "name": "censo.xlsx", "format": "XLSX", "url": "https://x/censo.xlsx"},
+    ],
+    "metadata_modified": "2026-01-01T00:00:00",
+    "license_title": "CC-BY",
+    "author": "ONE",
+    "maintainer": "ONE",
+    "extras": [{"key": "frecuencia", "value": "decenal"}],
+}
+
+SAMPLE_RESOURCE = {
+    "id": "r1",
+    "name": "censo.csv",
+    "description": "Archivo CSV del censo",
+    "format": "CSV",
+    "url": "https://x/censo.csv",
+    "size": 1024,
+    "mimetype": "text/csv",
+    "created": "2026-01-01T00:00:00",
+    "last_modified": "2026-02-01T00:00:00",
+}
+
+
+def _ok(result):
+    return {"success": True, "result": result}
+
+
+# ─── Client lifecycle ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_client_is_reused_across_calls():
+    c1 = await ckan._get_client()
+    c2 = await ckan._get_client()
+    assert c1 is c2
+    await ckan.close_client()
+    assert ckan._client is None
+    assert c1.is_closed
+
+
+@pytest.mark.asyncio
+async def test_close_client_noop_when_no_client():
+    await ckan.close_client()  # _client is None — must not raise
+    assert ckan._client is None
+
+
+@pytest.mark.asyncio
+async def test_get_client_recreates_after_close():
+    c1 = await ckan._get_client()
+    await ckan.close_client()
+    c2 = await ckan._get_client()
+    assert c2 is not c1
+    assert not c2.is_closed
+    await ckan.close_client()
+
+
+# ─── ckan_request error branches ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_ckan_request_timeout_becomes_runtime_error(httpx_mock):
+    httpx_mock.add_exception(httpx.ReadTimeout("too slow"))
+    result = await ckan.search_datasets(query="x")
+    assert "Timeout" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_ckan_request_http_error_status(httpx_mock):
+    httpx_mock.add_response(status_code=503)
+    result = await ckan.search_datasets(query="x")
+    assert "503" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_ckan_request_success_false_dict_error(httpx_mock):
+    httpx_mock.add_response(
+        json={"success": False, "error": {"message": "Not found", "__type": "Not Found Error"}}
+    )
+    result = await ckan.get_dataset("nope")
+    assert "Not found" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_ckan_request_success_false_non_dict_error(httpx_mock):
+    httpx_mock.add_response(json={"success": False, "error": "boom"})
+    result = await ckan.get_dataset("nope")
+    assert "boom" in result["error"]
+
+
+# ─── search_datasets ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_search_datasets_happy_path(httpx_mock):
+    httpx_mock.add_response(json=_ok({"count": 42, "results": [SAMPLE_DATASET]}))
+    result = await ckan.search_datasets(query="censo", limit=5, offset=10)
+    assert result["total"] == 42
+    assert result["returned"] == 1
+    assert result["offset"] == 10
+    ds = result["datasets"][0]
+    assert ds["name"] == "censo-2022"
+    assert ds["organization"] == "Oficina Nacional de Estadística"
+    assert ds["resource_count"] == 2
+    assert "resources" not in ds  # list view uses the short formatter
+    req = httpx_mock.get_requests()[0]
+    assert req.url.params["q"] == "censo"
+    assert req.url.params["rows"] == "5"
+    assert req.url.params["start"] == "10"
+    assert "fq" not in req.url.params
+
+
+@pytest.mark.asyncio
+async def test_search_datasets_builds_escaped_fq_filters(httpx_mock):
+    httpx_mock.add_response(json=_ok({"count": 0, "results": []}))
+    result = await ckan.search_datasets(
+        organization="min-salud", tag="finanzas publicas", group="economia"
+    )
+    assert result["total"] == 0
+    req = httpx_mock.get_requests()[0]
+    fq = req.url.params["fq"]
+    assert r"organization:min\-salud" in fq  # Solr-escaped hyphen
+    assert 'tags:"finanzas publicas"' in fq  # quoted because of space
+    assert "groups:economia" in fq
+    assert fq.count(" AND ") == 2
+    assert req.url.params["q"] == "*:*"  # no query → match-all
+
+
+@pytest.mark.asyncio
+async def test_search_datasets_clamps_limit_and_offset(httpx_mock):
+    httpx_mock.add_response(json=_ok({"count": 0, "results": []}))
+    await ckan.search_datasets(query="x", limit=9999, offset=-7)
+    req = httpx_mock.get_requests()[0]
+    assert req.url.params["rows"] == str(ckan.MAX_ROWS)
+    assert req.url.params["start"] == "0"
+
+
+# ─── get_dataset ───────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_dataset_happy_path_full_format(httpx_mock):
+    httpx_mock.add_response(json=_ok(SAMPLE_DATASET))
+    result = await ckan.get_dataset("censo-2022")
+    assert result["id"] == "abc-123"
+    assert result["author"] == "ONE"
+    assert result["maintainer"] == "ONE"
+    assert len(result["resources"]) == 2
+    assert result["resources"][0]["format"] == "CSV"
+    assert result["extras"] == [{"key": "frecuencia", "value": "decenal"}]
+    req = httpx_mock.get_requests()[0]
+    assert req.url.params["id"] == "censo-2022"
+
+
+@pytest.mark.asyncio
+async def test_get_dataset_omits_extras_key_when_absent(httpx_mock):
+    bare = {k: v for k, v in SAMPLE_DATASET.items() if k != "extras"}
+    httpx_mock.add_response(json=_ok(bare))
+    result = await ckan.get_dataset("censo-2022")
+    assert "extras" not in result
+    assert "error" not in result
+
+
+# ─── list_recent_datasets ──────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_recent_datasets_happy_path(httpx_mock):
+    httpx_mock.add_response(json=_ok({"count": 1054, "results": [SAMPLE_DATASET]}))
+    result = await ckan.list_recent_datasets(limit=5)
+    assert result["total"] == 1054
+    assert result["returned"] == 1
+    assert result["datasets"][0]["name"] == "censo-2022"
+    req = httpx_mock.get_requests()[0]
+    assert req.url.params["sort"] == "metadata_modified desc"
+    assert req.url.params["rows"] == "5"
+
+
+@pytest.mark.asyncio
+async def test_list_recent_datasets_clamps_limit(httpx_mock):
+    httpx_mock.add_response(json=_ok({"count": 0, "results": []}))
+    await ckan.list_recent_datasets(limit=500)
+    req = httpx_mock.get_requests()[0]
+    assert req.url.params["rows"] == str(ckan.MAX_RECENT)
+
+
+@pytest.mark.asyncio
+async def test_list_recent_datasets_error_dict(httpx_mock):
+    httpx_mock.add_exception(httpx.ConnectError("portal down"))
+    result = await ckan.list_recent_datasets()
+    assert "error" in result
+    assert "hint" in result
+
+
+# ─── get_resource ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_resource_happy_path(httpx_mock):
+    httpx_mock.add_response(json=_ok(SAMPLE_RESOURCE))
+    result = await ckan.get_resource("r1")
+    assert result["id"] == "r1"
+    assert result["format"] == "CSV"
+    assert result["mimetype"] == "text/csv"
+    assert result["last_modified"] == "2026-02-01T00:00:00"
+
+
+# ─── search_resources ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_search_resources_happy_path(httpx_mock):
+    httpx_mock.add_response(json=_ok({"count": 1, "results": [SAMPLE_RESOURCE]}))
+    result = await ckan.search_resources("censo", limit=7)
+    assert result["total"] == 1
+    assert result["resources"][0]["name"] == "censo.csv"
+    req = httpx_mock.get_requests()[0]
+    assert req.url.params["query"] == "name:censo"
+    assert req.url.params["limit"] == "7"
+
+
+@pytest.mark.asyncio
+async def test_search_resources_sanitizes_query_separators(httpx_mock):
+    """resource_search splits 'field:term' on the first colon — user ':'/'"'
+    must not reach the query or they alter its structure."""
+    httpx_mock.add_response(json=_ok({"count": 0, "results": []}))
+    await ckan.search_resources('url:"http://evil"')
+    req = httpx_mock.get_requests()[0]
+    q = req.url.params["query"]
+    assert q.startswith("name:")
+    assert ":" not in q.removeprefix("name:")
+    assert '"' not in q
+
+
+@pytest.mark.asyncio
+async def test_search_resources_handles_null_results(httpx_mock):
+    httpx_mock.add_response(json=_ok({"count": 0, "results": None}))
+    result = await ckan.search_resources("nada")
+    assert result["resources"] == []
+
+
+@pytest.mark.asyncio
+async def test_search_resources_error_dict(httpx_mock):
+    httpx_mock.add_exception(httpx.ConnectError("portal down"))
+    result = await ckan.search_resources("censo")
+    assert "error" in result
+    assert "hint" in result
+
+
+# ─── list_organizations ────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_organizations_happy_path_respects_limit(httpx_mock):
+    orgs = [
+        {"id": f"o{i}", "name": f"org-{i}", "title": f"Org {i}", "package_count": i}
+        for i in range(3)
+    ]
+    httpx_mock.add_response(json=_ok(orgs))
+    result = await ckan.list_organizations(limit=2)
+    assert len(result) == 2
+    assert result[0]["name"] == "org-0"
+    assert result[0]["dataset_count"] == 0
+    assert "description" not in result[0]  # short formatter
+    assert result[0]["url"] == "https://datos.gob.do/organization/org-0"
+
+
+@pytest.mark.asyncio
+async def test_list_organizations_non_list_result_returns_empty(httpx_mock):
+    httpx_mock.add_response(json=_ok({"unexpected": "shape"}))
+    result = await ckan.list_organizations()
+    assert result == []
+
+
+# ─── get_organization ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_organization_happy_path_with_extras(httpx_mock):
+    httpx_mock.add_response(
+        json=_ok(
+            {
+                "id": "o1",
+                "name": "one",
+                "title": "Oficina Nacional de Estadística",
+                "description": "x" * 5000,
+                "package_count": 99,
+                "extras": [{"key": "sigla", "value": "ONE"}],
+            }
+        )
+    )
+    result = await ckan.get_organization("one")
+    assert result["dataset_count"] == 99
+    assert len(result["description"]) <= ckan.DESC_TRUNC + 1
+    assert result["extras"] == [{"key": "sigla", "value": "ONE"}]
+
+
+@pytest.mark.asyncio
+async def test_get_organization_omits_extras_when_absent(httpx_mock):
+    httpx_mock.add_response(json=_ok({"id": "o1", "name": "one", "package_count": 1}))
+    result = await ckan.get_organization("one")
+    assert "extras" not in result
+    assert "error" not in result
+
+
+# ─── list_groups ───────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_groups_happy_path(httpx_mock):
+    httpx_mock.add_response(
+        json=_ok(
+            [
+                {
+                    "id": "g1",
+                    "name": "economia",
+                    "title": "Economía",
+                    "description": "Datos económicos",
+                    "package_count": 7,
+                }
+            ]
+        )
+    )
+    result = await ckan.list_groups()
+    assert len(result) == 1
+    g = result[0]
+    assert g["title"] == "Economía"
+    assert g["dataset_count"] == 7
+    assert g["url"] == "https://datos.gob.do/group/economia"
+
+
+@pytest.mark.asyncio
+async def test_list_groups_non_list_result_returns_empty(httpx_mock):
+    httpx_mock.add_response(json=_ok({"unexpected": "shape"}))
+    assert await ckan.list_groups() == []
+
+
+@pytest.mark.asyncio
+async def test_list_groups_error_list(httpx_mock):
+    httpx_mock.add_exception(httpx.ConnectError("portal down"))
+    result = await ckan.list_groups()
+    assert len(result) == 1
+    assert "error" in result[0]
+
+
+# ─── list_tags ─────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_tags_happy_path_with_query(httpx_mock):
+    httpx_mock.add_response(json=_ok(["salud", "saludable", "salubridad"]))
+    result = await ckan.list_tags(query="salu", limit=2)
+    assert result == ["salud", "saludable"]  # limit applied
+    req = httpx_mock.get_requests()[0]
+    assert req.url.params["query"] == "salu"
+
+
+@pytest.mark.asyncio
+async def test_list_tags_handles_dict_entries_and_empties(httpx_mock):
+    httpx_mock.add_response(
+        json=_ok([{"name": "censo"}, {"display_name": "poblacion"}, {"other": 1}, ""])
+    )
+    result = await ckan.list_tags()
+    assert result == ["censo", "poblacion"]  # falsy entries dropped
+
+
+@pytest.mark.asyncio
+async def test_list_tags_non_list_result_returns_empty(httpx_mock):
+    httpx_mock.add_response(json=_ok({"unexpected": "shape"}))
+    assert await ckan.list_tags() == []
+
+
+@pytest.mark.asyncio
+async def test_list_tags_error_returns_empty_list(httpx_mock):
+    httpx_mock.add_exception(httpx.ConnectError("portal down"))
+    assert await ckan.list_tags() == []
+
+
+# ─── autocomplete ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_autocomplete_invalid_kind_returns_error_no_http():
+    result = await ckan.autocomplete("planet", "earth")
+    assert len(result) == 1
+    assert "Invalid kind" in result[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_autocomplete_dataset_happy_path(httpx_mock):
+    matches = [{"name": "censo-2022", "title": "Censo 2022", "match_field": "name"}]
+    httpx_mock.add_response(json=_ok(matches))
+    result = await ckan.autocomplete("dataset", "cen", limit=5)
+    assert result == matches
+    req = httpx_mock.get_requests()[0]
+    assert str(req.url.path).endswith("/package_autocomplete")
+    assert req.url.params["q"] == "cen"
+    assert req.url.params["limit"] == "5"
+
+
+@pytest.mark.asyncio
+async def test_autocomplete_clamps_limit(httpx_mock):
+    httpx_mock.add_response(json=_ok([]))
+    await ckan.autocomplete("tag", "x", limit=9999)
+    req = httpx_mock.get_requests()[0]
+    assert req.url.params["limit"] == str(ckan.MAX_AUTOCOMPLETE)
+
+
+@pytest.mark.asyncio
+async def test_autocomplete_non_list_result_returns_empty(httpx_mock):
+    httpx_mock.add_response(json=_ok({"unexpected": "shape"}))
+    assert await ckan.autocomplete("organization", "min") == []
+
+
+@pytest.mark.asyncio
+async def test_autocomplete_error_returns_empty_list(httpx_mock):
+    httpx_mock.add_exception(httpx.ConnectError("portal down"))
+    assert await ckan.autocomplete("group", "eco") == []
+
+
+# ─── get_site_stats ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_site_stats_happy_path(httpx_mock):
+    import re
+
+    httpx_mock.add_response(
+        url=re.compile(r".*/package_search.*"), json=_ok({"count": 1054, "results": []})
+    )
+    httpx_mock.add_response(url=re.compile(r".*/organization_list.*"), json=_ok(["a", "b", "c"]))
+    httpx_mock.add_response(url=re.compile(r".*/group_list.*"), json=_ok(["g1", "g2"]))
+    httpx_mock.add_response(url=re.compile(r".*/tag_list.*"), json=_ok(["t1", "t2", "t3", "t4"]))
+    result = await ckan.get_site_stats()
+    assert result["total_datasets"] == 1054
+    assert result["total_organizations"] == 3
+    assert result["total_groups"] == 2
+    assert result["total_tags"] == 4
+    assert result["portal"] == "datos.gob.do"
+    assert result["pais"] == "República Dominicana"
+
+
+@pytest.mark.asyncio
+async def test_get_site_stats_resilient_to_partial_failures(httpx_mock):
+    import re
+
+    httpx_mock.add_exception(httpx.ConnectError("down"), url=re.compile(r".*/package_search.*"))
+    httpx_mock.add_response(url=re.compile(r".*/organization_list.*"), json=_ok(["a"]))
+    httpx_mock.add_response(url=re.compile(r".*/group_list.*"), json=_ok("weird-shape"))
+    httpx_mock.add_response(url=re.compile(r".*/tag_list.*"), json=_ok(["t1"]))
+    result = await ckan.get_site_stats()
+    assert result["total_datasets"] is None  # request failed → None
+    assert result["total_organizations"] == 1
+    assert result["total_groups"] is None  # neither dict nor list → None
+    assert result["total_tags"] == 1

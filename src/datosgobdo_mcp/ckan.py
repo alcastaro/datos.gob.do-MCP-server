@@ -5,12 +5,15 @@ Documentación CKAN: https://docs.ckan.org/en/2.11/api/
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 import httpx
 
 from . import USER_AGENT
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://datos.gob.do/api/3/action"
 DEFAULT_TIMEOUT = 15.0
@@ -241,11 +244,15 @@ async def get_resource(id: str) -> dict:
 
 
 async def search_resources(query: str, limit: int = 10) -> dict:
+    # resource_search parses "field:term" by splitting on the FIRST colon, and the
+    # term is matched as a plain string (not Solr — backslash escapes would corrupt
+    # it). A user ':' or '"' would therefore alter the query structure: strip them.
+    sanitized = query.replace(":", " ").replace('"', " ").strip()
     try:
         result = await ckan_request(
             "resource_search",
             {
-                "query": f"name:{query}",
+                "query": f"name:{sanitized}",
                 "limit": min(max(int(limit), 1), MAX_ROWS),
             },
         )
@@ -324,7 +331,10 @@ async def list_tags(query: str | None = None, limit: int = 20) -> list[str]:
         ]
         tags = [t for t in tags if t]
         return tags[: max(int(limit), 1)]
-    except RuntimeError:
+    except RuntimeError as e:
+        # list[str] contract can't carry an error dict — degrade to empty but
+        # leave a trace so a failing portal isn't mistaken for "no tags".
+        logger.warning("list_tags failed, returning []: %s", e)
         return []
 
 
@@ -341,7 +351,8 @@ async def autocomplete(kind: str, query: str, limit: int = 10) -> list[Any]:
         params = {"q": query, "limit": min(max(int(limit), 1), MAX_AUTOCOMPLETE)}
         result = await ckan_request(action_map[kind], params)
         return result if isinstance(result, list) else []
-    except RuntimeError:
+    except RuntimeError as e:
+        logger.warning("autocomplete(%s) failed, returning []: %s", kind, e)
         return []
 
 
