@@ -9,6 +9,7 @@ Split into:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -612,6 +613,28 @@ async def test_save_query_to_csv_refuses_private_etc_on_macos(tmp_cache_dir):
     assert "error" in out
 
 
+async def test_save_query_to_csv_opens_with_nofollow(
+    mock_csv_endpoint, tmp_cache_dir, tmp_path, monkeypatch
+):
+    """The final write must use O_NOFOLLOW so a symlink swapped in after path
+    validation (TOCTOU) raises instead of writing through the link."""
+    if not hasattr(os, "O_NOFOLLOW"):
+        pytest.skip("platform without O_NOFOLLOW")
+    seen = {}
+    real_open = os.open
+
+    def spy(path, flags, *args, **kwargs):
+        seen["flags"] = flags
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(analytics.os, "open", spy)
+    out = await analytics.save_query_to_csv(
+        mock_csv_endpoint, "csv", dest=str(tmp_path / "out.csv")
+    )
+    assert "error" not in out
+    assert seen["flags"] & os.O_NOFOLLOW
+
+
 async def test_save_query_to_csv_refuses_system_var_path(tmp_cache_dir):
     """The OS-temp exception must not unblock the rest of /private/var (e.g. /private/var/db)."""
     out = await analytics.save_query_to_csv(
@@ -639,7 +662,8 @@ async def test_get_resource_schema_xlsx(mock_xlsx_endpoint, tmp_cache_dir):
 
 async def test_filter_resource_xlsx(mock_xlsx_endpoint, tmp_cache_dir):
     out = await analytics.filter_resource(
-        mock_xlsx_endpoint, "xlsx",
+        mock_xlsx_endpoint,
+        "xlsx",
         filters=[{"col": "estatus", "op": "=", "val": "FIJO"}],
     )
     assert "error" not in out, out
@@ -648,7 +672,8 @@ async def test_filter_resource_xlsx(mock_xlsx_endpoint, tmp_cache_dir):
 
 async def test_aggregate_resource_xlsx(mock_xlsx_endpoint, tmp_cache_dir):
     out = await analytics.aggregate_resource(
-        mock_xlsx_endpoint, "xlsx",
+        mock_xlsx_endpoint,
+        "xlsx",
         aggregations=[{"col": None, "fn": "count", "alias": "n"}],
         group_by=["estatus"],
     )
@@ -668,7 +693,8 @@ async def test_get_resource_schema_json(mock_json_endpoint, tmp_cache_dir):
 
 async def test_filter_resource_json(mock_json_endpoint, tmp_cache_dir):
     out = await analytics.filter_resource(
-        mock_json_endpoint, "json",
+        mock_json_endpoint,
+        "json",
         filters=[{"col": "sueldo", "op": ">", "val": 25000}],
     )
     assert "error" not in out, out
@@ -703,7 +729,8 @@ async def test_analytics_handles_latin1_encoding(mock_latin1_endpoint, tmp_cache
 
 async def test_filter_resource_latin1_encoding(mock_latin1_endpoint, tmp_cache_dir):
     out = await analytics.filter_resource(
-        mock_latin1_endpoint, "csv",
+        mock_latin1_endpoint,
+        "csv",
         filters=[{"col": "Mes", "op": "=", "val": "Abril"}],
     )
     assert "error" not in out, out

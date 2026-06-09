@@ -4,7 +4,22 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.2] — 2026-06-09
+
+> Local build — not yet published to PyPI / MCP Registry.
+
+### Added
+
+- **Version-drift guard** (`tests/test_version_sync.py`): CI now fails if
+  `pyproject.toml`, `server.json`, `__init__.__version__` or `USER_AGENT` disagree.
+- **Symlink hardening in `save_query_to_csv`**: final write uses `O_NOFOLLOW`, closing
+  the TOCTOU window where a symlink swapped in after path validation (with
+  `overwrite=True`) could redirect the write.
+
+### Changed
+
+- `download_resource_preview` ODS rejection now hints at the analytics tools (which DO
+  support ODS) instead of suggesting a manual download.
 
 ### Fixed
 

@@ -167,7 +167,9 @@ async def preview_resource_data(
 
     Args:
         url: Direct URL to the file (from resource.url in CKAN).
-        fmt: Declared format in CKAN (csv, xlsx, json, ods, pdf...).
+        fmt: Declared format in CKAN (csv, xlsx, json, ods, pdf...). ODS is not
+            previewable here — the analytics tools (get_resource_schema, etc.)
+            do support it.
         rows: Rows to return (cap MAX_ROWS).
         sample: 'head' (first N), 'tail' (last N), or 'random' (uniform sample
             from the downloaded portion — biased if file was truncated by cap).
@@ -181,7 +183,11 @@ async def preview_resource_data(
         return {
             "error": f"Formato '{fmt}' no soportado para preview",
             "supported": ["CSV", "TSV", "XLSX", "JSON"],
-            "hint": "Descargar manualmente desde la URL del recurso.",
+            "hint": (
+                "Para ODS usar las herramientas de analytics (get_resource_schema, "
+                "summarize_resource, filter_resource) que sí lo soportan. "
+                "Otros formatos: descargar manualmente desde la URL del recurso."
+            ),
         }
 
     try:

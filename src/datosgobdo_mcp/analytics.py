@@ -16,6 +16,7 @@ v0.4 will add raw query_resource + XLSX/ODS analytics.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import tempfile
 from pathlib import Path
@@ -971,8 +972,6 @@ async def save_query_to_csv(
         export_dir.mkdir(parents=True, exist_ok=True)
         dest_path = export_dir / f"{slug}-{ts}.csv"
     else:
-        import tempfile
-
         if ".." in Path(dest).parts:
             return {"error": "Destination path must not contain '..' components"}
         dest_path = Path(dest).resolve()
@@ -1033,7 +1032,15 @@ async def save_query_to_csv(
         con.close()
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    with dest_path.open("w", newline="", encoding="utf-8") as f:
+    # O_NOFOLLOW closes the TOCTOU window: a symlink swapped in between the
+    # earlier path checks and this write would otherwise be followed when
+    # overwrite=True. Raises ELOOP instead of writing through the link.
+    open_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(str(dest_path), open_flags, 0o644)
+    except OSError as e:
+        return {"error": f"Cannot open destination for writing: {e}"}
+    with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
         writer = _csv.writer(f)
         writer.writerow(col_names)
         writer.writerows(rows)
