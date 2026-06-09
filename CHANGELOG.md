@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`save_query_to_csv` rejected legitimate writes to the OS temp dir on macOS.** The
+  `/private/var` system-path denylist entry also matched `/private/var/folders/…`, which
+  is the macOS per-user temp dir (`$TMPDIR`). Writes there — including the entire pytest
+  `tmp_path` suite — were blocked. The hermetic suite was therefore **red on macOS while
+  green on Linux CI** (where temp lives in `/tmp`). Now paths under
+  `tempfile.gettempdir()` are allowed before the denylist runs; real system subtrees such
+  as `/private/var/db` stay blocked (regression test added).
+- **`_quote_ident` allowed a trailing newline in column identifiers.** The allowlist
+  regex was anchored with `^…$`; in Python `$` also matches just before a trailing
+  newline, so `"col\n"` passed an allowlist meant to reject control characters. Re-anchored
+  with `\A…\Z`. Embedded-newline and trailing-CR cases added to the test matrix.
+
 ## [0.6.1] — 2026-06-03
 
 ### Fixed

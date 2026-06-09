@@ -195,6 +195,11 @@ Column identifiers everywhere else go through `_quote_ident` (an allowlist regex
 denylist of `--`, `/*`, `;` + double-quoting). This is the lesson: **defense in depth,
 and never trust that a denylist is complete.**
 
+A concrete trap from this codebase: the allowlist regex was originally anchored with
+`^…$`. In Python, `$` also matches *just before* a trailing newline — so `"col\n"`
+slipped through an allowlist meant to reject control characters. Anchor with `\A…\Z`
+(not `^…$`) whenever a regex is a security boundary, not just a format check.
+
 ### 2.6 Encoding: the real-world data problem
 
 Government CSVs are often Windows-1252, not UTF-8. DuckDB requires UTF-8. So
@@ -211,11 +216,17 @@ trick for variable data: `model_config = ConfigDict(extra="allow")` keeps dynami
 
 ### 2.8 Testing: hermetic by default
 
-171 tests run with **no network** — `pytest-httpx` mocks the CKAN responses and a tiny
+The hermetic suite (180+ tests) runs with **no network** — `pytest-httpx` mocks the CKAN responses and a tiny
 in-memory CSV fixture exercises the whole download→DuckDB→Parquet stack. A handful of
 live tests hit the real API only when `RUN_LIVE_TESTS=1`. The security guards have
 **adversarial tests**: `test_query_resource_blocks_file_access` proves `read_text('/etc/passwd')`
 returns an error, not your password file.
+
+One subtle trap worth internalizing: a path-safety denylist that blocked `/private/var`
+passed on Linux CI (where temp files live in `/tmp`) but **failed on macOS**, where the
+per-user temp dir *is* `/private/var/folders/…`. Green CI is not green everywhere — test
+on the platforms you actually ship to, and scope security denylists narrowly enough that
+they don't swallow legitimate user-writable space.
 
 ---
 

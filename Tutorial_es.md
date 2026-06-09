@@ -196,6 +196,12 @@ identificadores de columna en todos lados pasan por `_quote_ident` (regex allowl
 denylist de `--`, `/*`, `;` + comillas dobles). La lección: **defensa en profundidad, y
 nunca confíes en que una denylist está completa.**
 
+Una trampa concreta de este código: la regex allowlist estaba anclada con `^…$`. En
+Python, `$` también coincide *justo antes* de un salto de línea final — así que `"col\n"`
+se colaba por una allowlist pensada para rechazar caracteres de control. Ancla con
+`\A…\Z` (no `^…$`) cuando una regex es una frontera de seguridad, no solo un chequeo de
+formato.
+
 ### 2.6 Encoding: el problema de los datos del mundo real
 
 Los CSV gubernamentales suelen ser Windows-1252, no UTF-8. DuckDB requiere UTF-8. Entonces
@@ -213,11 +219,18 @@ dinámicas (como percentiles `p25`/`p50`) fluyendo mientras tipa el sobre conoci
 
 ### 2.8 Tests: herméticos por defecto
 
-171 tests corren **sin red** — `pytest-httpx` mockea las respuestas de CKAN y un CSV
+La suite hermética (180+ tests) corre **sin red** — `pytest-httpx` mockea las respuestas de CKAN y un CSV
 diminuto en memoria ejercita todo el stack descarga→DuckDB→Parquet. Un puñado de tests en
 vivo pegan a la API real solo con `RUN_LIVE_TESTS=1`. Los guardias de seguridad tienen
 **tests adversariales**: `test_query_resource_blocks_file_access` prueba que
 `read_text('/etc/passwd')` devuelve un error, no tu archivo de contraseñas.
+
+Una trampa sutil que conviene interiorizar: una denylist de rutas que bloqueaba
+`/private/var` pasaba en CI de Linux (donde los archivos temporales viven en `/tmp`) pero
+**fallaba en macOS**, donde el directorio temporal por usuario *es* `/private/var/folders/…`.
+Un CI verde no es verde en todas partes — prueba en las plataformas a las que realmente
+distribuyes, y acota las denylists de seguridad lo suficiente como para que no se traguen
+el espacio escribible legítimo del usuario.
 
 ---
 

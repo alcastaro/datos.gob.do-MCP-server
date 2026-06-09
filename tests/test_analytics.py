@@ -39,6 +39,8 @@ def test_quote_ident_valid(name, expected):
         "has--comment",
         "has/*comment*/",
         "has\nnewline",
+        "trailing_newline\n",  # Python $ matches before a trailing \n — must still reject
+        "trailing_cr\r",
         "",
     ],
 )
@@ -608,6 +610,15 @@ async def test_save_query_to_csv_refuses_private_etc_on_macos(tmp_cache_dir):
         "https://example.test/any.csv", "csv", dest="/private/etc/evil.csv"
     )
     assert "error" in out
+
+
+async def test_save_query_to_csv_refuses_system_var_path(tmp_cache_dir):
+    """The OS-temp exception must not unblock the rest of /private/var (e.g. /private/var/db)."""
+    out = await analytics.save_query_to_csv(
+        "https://example.test/any.csv", "csv", dest="/private/var/db/evil.csv"
+    )
+    assert "error" in out
+    assert "system path" in out["error"].lower()
 
 
 async def test_quantiles_resource_duplicate_percentile_error(sample_csv_url, tmp_cache_dir):

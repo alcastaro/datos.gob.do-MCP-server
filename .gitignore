@@ -50,3 +50,7 @@ workplan.md
 Roadmap.md
 gcp-roadmap.md
 docs/
+
+# Test artifacts
+.coverage
+htmlcov/

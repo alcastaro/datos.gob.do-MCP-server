@@ -43,7 +43,9 @@ AGGREGATE_MAX_LIMIT = 1000
 # "Sueldo Bruto" or "data.column"). We always pass identifiers through
 # double-quote escaping anyway; this is the second line of defense.
 # We explicitly forbid SQL-comment sequences and statement terminators.
-_IDENT_OK = re.compile(r"^[\w .À-ſ]+$", re.UNICODE)
+# \A…\Z (not ^…$): in Python, $ also matches just before a trailing newline, so
+# `^[...]+$` would accept an identifier like "col\n". \Z anchors the true end.
+_IDENT_OK = re.compile(r"\A[\w .À-ſ]+\Z", re.UNICODE)
 _IDENT_FORBIDDEN_SUBSTR = ("--", "/*", "*/", ";")
 
 ALLOWED_AGG_FNS = {
@@ -969,16 +971,23 @@ async def save_query_to_csv(
         export_dir.mkdir(parents=True, exist_ok=True)
         dest_path = export_dir / f"{slug}-{ts}.csv"
     else:
+        import tempfile
+
         if ".." in Path(dest).parts:
             return {"error": "Destination path must not contain '..' components"}
         dest_path = Path(dest).resolve()
         if dest_path.suffix not in (".csv", ".tsv"):
             return {"error": "Destination must end in .csv or .tsv"}
-        # Check both the raw path and the resolved path (macOS resolves /etc → /private/etc).
-        for check_str in (dest, str(dest_path)):
-            for prefix in _FORBIDDEN_DEST_PREFIXES:
-                if check_str.startswith(prefix):
-                    return {"error": f"Cannot write to system path: {check_str}"}
+        # The OS per-user temp dir is writable scratch space. On macOS it lives under
+        # /private/var/folders/…, which would otherwise trip the /private/var denylist
+        # entry below. Allow it explicitly before running the system-path check.
+        tmp_root = Path(tempfile.gettempdir()).resolve()
+        if tmp_root not in dest_path.parents:
+            # Check both the raw path and the resolved path (macOS resolves /etc → /private/etc).
+            for check_str in (dest, str(dest_path)):
+                for prefix in _FORBIDDEN_DEST_PREFIXES:
+                    if check_str.startswith(prefix):
+                        return {"error": f"Cannot write to system path: {check_str}"}
 
     if dest_path.exists() and not overwrite:
         return {"error": f"File already exists: {dest_path}. Pass overwrite=True to replace."}
