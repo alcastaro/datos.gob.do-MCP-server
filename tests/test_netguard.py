@@ -142,3 +142,31 @@ async def test_allow_hosts_wildcard_not_fooled_by_lookalike(monkeypatch, public_
     monkeypatch.setenv("DATOSGOBDO_ALLOW_HOSTS", "*.portal.gov.xx")
     with pytest.raises(netguard.NetGuardError):
         await netguard.validate_outbound_url("https://notportal.gov.xx.evil.com/x.csv")
+
+
+# ─── wired into download.py ───────────────────────────────────────────────────
+
+
+async def test_download_capped_blocks_metadata_ip(monkeypatch):
+    """End-to-end: the guard actually fires inside download_capped."""
+    from datosgobdo_mcp import download
+
+    monkeypatch.setenv("DATOSGOBDO_NETGUARD", "public-only")
+    monkeypatch.delenv("DATOSGOBDO_ALLOW_HOSTS", raising=False)
+    with pytest.raises(netguard.NetGuardError, match="non-public"):
+        await download.download_capped("http://169.254.169.254/latest/meta-data/")
+
+
+async def test_download_capped_blocks_redirect_to_private(httpx_mock, monkeypatch):
+    """A trusted host redirecting to a private address must be stopped at the hop."""
+    monkeypatch.setenv("DATOSGOBDO_NETGUARD", "public-only")
+    monkeypatch.setenv("DATOSGOBDO_ALLOW_HOSTS", "example.test")
+    from datosgobdo_mcp import download
+
+    httpx_mock.add_response(
+        url="https://example.test/redir.csv",
+        status_code=302,
+        headers={"location": "http://127.0.0.1:9000/internal.csv"},
+    )
+    with pytest.raises(netguard.NetGuardError, match="non-public"):
+        await download.download_capped("https://example.test/redir.csv")

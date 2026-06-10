@@ -29,6 +29,13 @@ SAMPLE_NOMINA_CSV = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _netguard_trusts_test_host(monkeypatch):
+    """Keep the SSRF guard ACTIVE in tests, but trust the mock host. Tests that
+    exercise the guard itself override these env vars locally."""
+    monkeypatch.setenv("DATOSGOBDO_ALLOW_HOSTS", "example.test")
+
+
 @pytest.fixture
 def sample_csv_bytes() -> bytes:
     """Tiny semicolon-delimited CSV that mirrors the Agricultura nómina shape."""

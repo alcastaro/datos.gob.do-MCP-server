@@ -12,6 +12,7 @@ from typing import Literal
 import httpx
 
 from . import USER_AGENT
+from .netguard import guard_request_hook
 
 DEFAULT_TIMEOUT = 60.0  # bigger files = longer timeout vs preview
 
@@ -63,6 +64,8 @@ async def download_capped(
         follow_redirects=True,
         timeout=DEFAULT_TIMEOUT,
         headers={"User-Agent": USER_AGENT},
+        # SSRF guard validates the initial URL and every redirect hop.
+        event_hooks={"request": [guard_request_hook]},
     ) as client:
         async with client.stream("GET", url) as r:
             r.raise_for_status()
@@ -93,6 +96,7 @@ async def download_to_file(
         follow_redirects=True,
         timeout=DEFAULT_TIMEOUT,
         headers={"User-Agent": USER_AGENT},
+        event_hooks={"request": [guard_request_hook]},
     ) as client:
         async with client.stream("GET", url) as r:
             r.raise_for_status()

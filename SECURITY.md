@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.4.x   | ✅        |
-| < 0.4   | ❌        |
+| 0.6.x   | ✅        |
+| < 0.6   | ❌        |
 
 Always run the latest release. Security fixes land on the newest minor only.
 
@@ -50,9 +50,30 @@ user's privileges and is driven by an LLM. The design assumptions:
      network — closing the gap the keyword denylist alone would leave open.
 - **Download caps** — remote fetches are byte-capped (5 MB preview / 100 MB
   analytics) and streamed, bounding memory and decompression-bomb exposure.
+- **SSRF guard (`netguard.py`)** — every resource download validates the URL
+  *and each redirect hop* (httpx request hook):
+  - schemes restricted to http/https;
+  - every address the hostname resolves to must be globally routable — cloud
+    metadata (`169.254.169.254`), loopback, RFC-1918, link-local and IPv6 ULA
+    ranges are blocked (`public-only`, the default mode);
+  - `DATOSGOBDO_NETGUARD=strict` additionally restricts hosts to
+    `datos.gob.do` / `*.datos.gob.do`; `off` disables the guard;
+  - `DATOSGOBDO_ALLOW_HOSTS` (comma-separated, `*.` wildcards) names
+    operator-trusted hosts — the escape hatch for forks pointing at other
+    portals.
+  The default is deliberately *not* a host allowlist: CKAN resources
+  legitimately live on ministry sites, S3 buckets and CDNs.
+- **Filesystem writes (`save_query_to_csv`)** — destination must end in
+  `.csv`/`.tsv`, may not contain `..`, may not target system paths (OS temp
+  dir excepted), and the final write uses `O_NOFOLLOW` so a symlink swapped in
+  after validation is not followed.
 
 ### Known limitations (tracked)
 
-- **SSRF for remote/hosted deployments**: the local server fetches resource
-  URLs as given. A hosted deployment must add a host allowlist and block
-  private/link-local ranges. Tracked for the hosted (`v0.6`) milestone.
+- **DNS rebind window**: the SSRF guard resolves DNS to validate, then httpx
+  resolves again to connect; a fast-flux rebind between the two lookups is not
+  blocked. Full mitigation (pinning the validated IP at the transport layer)
+  is tracked for the hosted (v0.8) milestone.
+- **Multi-tenant hosting**: `save_query_to_csv`, `clear_cache` and the shared
+  Parquet cache assume a single local user. They are gated/reworked in the
+  hosted milestone before any remote deployment.
