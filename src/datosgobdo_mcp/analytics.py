@@ -1049,7 +1049,9 @@ async def save_query_to_csv(
             _open_sandboxed(con, parquet)
             wrapped = f"SELECT * FROM ({cleaned}) AS _q LIMIT {limit}"
             try:
-                rs = con.execute(wrapped)
+                # Same wall-clock backstop as query_resource — this is the
+                # other free-form SQL entry point.
+                rs = _execute_guarded(con, wrapped)
             except duckdb.Error as e:
                 return {"error": f"DuckDB: {e}"}
         else:
