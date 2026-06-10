@@ -14,8 +14,15 @@ import hashlib
 import json
 import os
 import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol
+
+try:  # POSIX cross-process lock; absent on Windows → per-process no-op
+    import fcntl
+except ImportError:  # pragma: no cover — Windows
+    fcntl = None  # type: ignore[assignment]
 
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "datosgobdo-mcp"
 DEFAULT_MAX_BYTES = 1 * 1024 * 1024 * 1024  # 1 GB
@@ -68,9 +75,29 @@ class LocalDiskCache:
         except Exception:
             return {}
 
+    @contextmanager
+    def _lock(self) -> Generator[None]:
+        """Cross-process exclusive lock for index/eviction mutations. Two server
+        instances (or concurrent HTTP requests in hosted mode) share the cache
+        dir; without this, eviction and finalize race. No-op on Windows."""
+        if fcntl is None:  # pragma: no cover — Windows
+            yield
+            return
+        lock_file = self.cache_dir / ".lock"
+        with open(lock_file, "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+
     def _save_index(self) -> None:
         try:
-            self.index_path.write_text(json.dumps(self._index, indent=2))
+            # Atomic: a crash mid-write must not leave a truncated index that
+            # _load_index would silently discard (losing LRU + URL mappings).
+            tmp = self.index_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self._index, indent=2))
+            os.replace(tmp, self.index_path)
         except Exception:
             pass
 
@@ -98,12 +125,13 @@ class LocalDiskCache:
         """Mark a put as complete; refresh size metadata."""
         p = self._entry_path(key)
         if p.exists():
-            self._index.setdefault(key, {})["bytes"] = p.stat().st_size
-            self._index[key]["accessed_at"] = time.time()
-            if url is not None:
-                self._index[key]["url"] = url
-            self._save_index()
-            self.evict_to_fit(self.max_bytes)
+            with self._lock():
+                self._index.setdefault(key, {})["bytes"] = p.stat().st_size
+                self._index[key]["accessed_at"] = time.time()
+                if url is not None:
+                    self._index[key]["url"] = url
+                self._save_index()
+                self._evict_to_fit_locked(self.max_bytes)
 
     def get_by_url(self, url: str) -> tuple[Path, str] | None:
         """Return (path, key) for the most recently accessed entry matching url, or None."""
@@ -127,6 +155,10 @@ class LocalDiskCache:
 
     def evict_to_fit(self, max_bytes: int) -> None:
         """LRU eviction until total cache size <= max_bytes."""
+        with self._lock():
+            self._evict_to_fit_locked(max_bytes)
+
+    def _evict_to_fit_locked(self, max_bytes: int) -> None:
         entries = [
             (k, v.get("accessed_at", 0), v.get("bytes", 0))
             for k, v in self._index.items()
@@ -135,8 +167,9 @@ class LocalDiskCache:
         total = sum(b for _, _, b in entries)
         if total <= max_bytes:
             return
-        # Oldest first.
-        entries.sort(key=lambda x: x[1])
+        # Oldest first; key as tie-break so eviction order is deterministic
+        # when two entries share a timestamp.
+        entries.sort(key=lambda x: (x[1], x[0]))
         for key, _accessed, size in entries:
             if total <= max_bytes:
                 break
@@ -163,16 +196,17 @@ class LocalDiskCache:
 
     def clear(self) -> int:
         """Remove all entries. Returns count removed."""
-        n = 0
-        for p in self.cache_dir.glob("*.parquet"):
-            try:
-                p.unlink()
-                n += 1
-            except Exception:
-                pass
-        self._index = {}
-        self._save_index()
-        return n
+        with self._lock():
+            n = 0
+            for p in self.cache_dir.glob("*.parquet"):
+                try:
+                    p.unlink()
+                    n += 1
+                except Exception:
+                    pass
+            self._index = {}
+            self._save_index()
+            return n
 
 
 # Module-level singleton. Override via env vars for testing/hosted deployments.

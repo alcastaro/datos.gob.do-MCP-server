@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -586,6 +586,8 @@ async def save_query_to_csv(
     the result to open in Excel or another tool. Returns the file path and row count.
     First call downloads + caches the source file. Subsequent calls reuse the cache.
     """
+    if _hosted_mode():
+        return SaveCsvResult(**_HOSTED_DISABLED)
     return SaveCsvResult(
         **await _save_query_to_csv(
             url=url,
@@ -644,10 +646,31 @@ async def query_resource(
     return QueryResult(**await _query_resource(url=url, fmt=format, sql=sql, limit=limit))
 
 
+def _hosted_mode() -> bool:
+    """True when serving remote clients (streamable HTTP). Local-filesystem and
+    shared-destructive tools are disabled in this mode: the filesystem belongs
+    to the server host, not the user, and the Parquet cache is shared across
+    tenants. Read per-call so tests (and runtime reconfig) see env changes."""
+    import os
+
+    return os.environ.get("DATOSGOBDO_TRANSPORT", "stdio").strip().lower() == "streamable-http"
+
+
+_HOSTED_DISABLED: dict[str, Any] = {
+    "error": "This tool is disabled in hosted mode",
+    "hint": "It touches the server's local filesystem / shared cache. "
+    "Run the server locally (stdio) to use it.",
+}
+
+
 @mcp.tool(annotations=_ro_local("Get cache stats"))
 def get_cache_stats() -> CacheStatsResult:
     """Return on-disk Parquet cache stats: entry count, total bytes, max bytes."""
-    return CacheStatsResult(**_get_cache_stats())
+    stats = _get_cache_stats()
+    if _hosted_mode():
+        # Don't leak server-side paths to remote clients.
+        stats.pop("cache_dir", None)
+    return CacheStatsResult(**stats)
 
 
 @mcp.tool(
@@ -661,6 +684,8 @@ def get_cache_stats() -> CacheStatsResult:
 )
 def clear_cache() -> ClearCacheResult:
     """Remove all cached Parquet files. Returns the count removed."""
+    if _hosted_mode():
+        return ClearCacheResult(**_HOSTED_DISABLED)
     return ClearCacheResult(**_clear_cache())
 
 
@@ -757,10 +782,28 @@ if _GCP_TOOLS_REGISTERED:
 
 def main() -> (
     None
-):  # pragma: no cover — blocking stdio loop, exercised by CI entry-point smoke test
-    logger.info("datosgobdo-mcp starting (CKAN endpoint: %s)", ckan.BASE_URL)
+):  # pragma: no cover — blocking server loop, exercised by CI entry-point smoke test
+    import os
+
+    transport = os.environ.get("DATOSGOBDO_TRANSPORT", "stdio").strip().lower()
+    logger.info(
+        "datosgobdo-mcp starting (CKAN endpoint: %s, transport: %s)", ckan.BASE_URL, transport
+    )
     try:
-        mcp.run()
+        if transport == "streamable-http":
+            # Hosted mode: HTTP transport, stateless so instances can scale
+            # horizontally. save_query_to_csv / clear_cache are auto-disabled
+            # (see _hosted_mode) and cache stats omit server paths.
+            mcp.settings.host = os.environ.get("DATOSGOBDO_HOST", "127.0.0.1")
+            mcp.settings.port = int(os.environ.get("DATOSGOBDO_PORT", "8000"))
+            mcp.settings.stateless_http = True
+            mcp.run(transport="streamable-http")
+        elif transport == "stdio":
+            mcp.run()
+        else:
+            raise SystemExit(
+                f"Invalid DATOSGOBDO_TRANSPORT={transport!r}; use 'stdio' or 'streamable-http'"
+            )
     except Exception:
         logger.exception("Fatal error in MCP server")
         raise

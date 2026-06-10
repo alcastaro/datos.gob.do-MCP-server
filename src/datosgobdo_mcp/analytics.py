@@ -143,6 +143,10 @@ def _quote_literal(value: Any) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
+# Operator-set resource limits (env). Values are validated before reaching SQL.
+_MEM_LIMIT_RE = re.compile(r"\A\d+(\.\d+)?\s*(KB|MB|GB|TB|KiB|MiB|GiB|TiB)?\Z", re.IGNORECASE)
+
+
 def _new_con() -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(":memory:")
     for ext in ("httpfs", "excel"):
@@ -150,7 +154,46 @@ def _new_con() -> duckdb.DuckDBPyConnection:
             con.execute(f"LOAD {ext}")
         except duckdb.Error:
             pass
+    # Resource ceilings — one tenant/query must not be able to OOM the process.
+    mem = os.environ.get("DATOSGOBDO_DUCKDB_MEMORY", "2GB").strip()
+    if not _MEM_LIMIT_RE.match(mem):
+        logger.warning("Ignoring invalid DATOSGOBDO_DUCKDB_MEMORY=%r", mem)
+        mem = "2GB"
+    threads = os.environ.get("DATOSGOBDO_DUCKDB_THREADS", "4").strip()
+    if not threads.isdigit() or int(threads) < 1:
+        logger.warning("Ignoring invalid DATOSGOBDO_DUCKDB_THREADS=%r", threads)
+        threads = "4"
+    try:
+        con.execute(f"SET memory_limit='{mem}'")
+        con.execute(f"SET threads={int(threads)}")
+    except duckdb.Error as e:  # pragma: no cover — defensive, never seen in practice
+        logger.warning("Could not apply DuckDB resource limits: %s", e)
     return con
+
+
+def _execute_guarded(con: duckdb.DuckDBPyConnection, sql: str) -> duckdb.DuckDBPyConnection:
+    """Execute with a wall-clock timeout (DATOSGOBDO_QUERY_TIMEOUT seconds).
+
+    0 / unset = no timeout (local default). On expiry con.interrupt() makes
+    DuckDB abort the query with an error instead of running forever — the
+    backstop for free-form SQL in hosted deployments.
+    """
+    import threading
+
+    raw = os.environ.get("DATOSGOBDO_QUERY_TIMEOUT", "0").strip() or "0"
+    try:
+        timeout = float(raw)
+    except ValueError:
+        logger.warning("Ignoring invalid DATOSGOBDO_QUERY_TIMEOUT=%r", raw)
+        timeout = 0.0
+    if timeout <= 0:
+        return con.execute(sql)
+    timer = threading.Timer(timeout, con.interrupt)
+    timer.start()
+    try:
+        return con.execute(sql)
+    finally:
+        timer.cancel()
 
 
 def _normalize_csv_encoding(path: Path) -> Path:
@@ -1253,7 +1296,7 @@ async def query_resource(
     try:
         _open_sandboxed(con, parquet)
         try:
-            rs = con.execute(wrapped)
+            rs = _execute_guarded(con, wrapped)
         except duckdb.Error as e:
             return {"error": f"DuckDB: {e}", "sql": wrapped}
         col_names = [d[0] for d in rs.description]

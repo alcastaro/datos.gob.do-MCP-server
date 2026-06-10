@@ -151,6 +151,21 @@ blocked). Environment knobs:
 | `DATOSGOBDO_NETGUARD` | `public-only` (default) / `strict` / `off` | `strict` restricts hosts to `datos.gob.do`; `off` disables the guard. |
 | `DATOSGOBDO_ALLOW_HOSTS` | comma-separated, `*.` wildcards | Operator-trusted hosts (e.g. forks pointing at another CKAN portal). |
 
+### Hosted mode (experimental)
+
+`DATOSGOBDO_TRANSPORT=streamable-http` serves MCP over HTTP (stateless, for
+horizontal scaling) instead of stdio. In this mode `save_query_to_csv` and
+`clear_cache` are disabled (they touch the server's filesystem / shared cache)
+and cache stats omit server paths.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DATOSGOBDO_TRANSPORT` | `stdio` | `streamable-http` for hosted deployments. |
+| `DATOSGOBDO_HOST` / `DATOSGOBDO_PORT` | `127.0.0.1` / `8000` | HTTP bind address. |
+| `DATOSGOBDO_DUCKDB_MEMORY` | `2GB` | DuckDB memory ceiling per connection. |
+| `DATOSGOBDO_DUCKDB_THREADS` | `4` | DuckDB thread cap. |
+| `DATOSGOBDO_QUERY_TIMEOUT` | `0` (off) | Wall-clock seconds before a `query_resource` SQL run is interrupted. |
+
 ---
 
 ## Installation and configuration

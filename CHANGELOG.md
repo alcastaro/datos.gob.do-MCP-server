@@ -8,6 +8,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 > Local build — not yet published to PyPI / MCP Registry.
 
+### Added (hosted readiness, experimental)
+
+- **`DATOSGOBDO_TRANSPORT=streamable-http`**: serve MCP over stateless HTTP
+  (`DATOSGOBDO_HOST`/`DATOSGOBDO_PORT`). In hosted mode `save_query_to_csv` and
+  `clear_cache` are disabled (server filesystem / shared cache) and
+  `get_cache_stats` omits server paths.
+- **DuckDB resource ceilings**: `DATOSGOBDO_DUCKDB_MEMORY` (default 2GB),
+  `DATOSGOBDO_DUCKDB_THREADS` (default 4), and `DATOSGOBDO_QUERY_TIMEOUT`
+  (wall-clock interrupt for free-form SQL; off by default locally).
+- **Cache hardening**: atomic `_index.json` writes (tmp + rename), cross-process
+  `flock` around finalize/eviction/clear (no-op on Windows), deterministic LRU
+  tie-break.
+
 ### Added
 
 - **SSRF guard (`netguard.py`)** wired into every resource download via an httpx
