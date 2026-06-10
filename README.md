@@ -124,6 +124,33 @@ DuckDB-backed analytics over a persistent Parquet cache. First call per resource
 |---|---|
 | `autocomplete` | Resolve partial names for datasets, organizations, groups, or tags. Useful when the user only gives a partial name. |
 
+### GCP pipeline (optional — `pip install 'dominican-open-data-mcp[gcp]'`)
+
+Three extra tools register automatically when the google-cloud libraries are
+installed. They turn the server into the *ingestion* half of a BigQuery
+pipeline: discover datasets here, load them to BigQuery, then query them with
+Google's official BigQuery MCP (cross-dataset JOINs local DuckDB cannot do).
+
+| Tool | What it does |
+|---|---|
+| `load_resource_to_bigquery` | Resource → Parquet cache → GCS upload → BigQuery External Table (default, zero-ETL) or Load Job. |
+| `list_bigquery_exports` | List tables in a BigQuery dataset. |
+| `get_bigquery_table_info` | Schema, row count and source URIs of a table. |
+
+Set `DATOSGOBDO_GCS_BUCKET` to avoid passing the bucket on every call.
+
+### Security: outbound download guard
+
+Every resource download is validated by an SSRF guard (initial URL **and**
+each redirect hop): http/https only, and every address the host resolves to
+must be publicly routable (cloud metadata, loopback and private ranges are
+blocked). Environment knobs:
+
+| Variable | Values | Meaning |
+|---|---|---|
+| `DATOSGOBDO_NETGUARD` | `public-only` (default) / `strict` / `off` | `strict` restricts hosts to `datos.gob.do`; `off` disables the guard. |
+| `DATOSGOBDO_ALLOW_HOSTS` | comma-separated, `*.` wildcards | Operator-trusted hosts (e.g. forks pointing at another CKAN portal). |
+
 ---
 
 ## Installation and configuration

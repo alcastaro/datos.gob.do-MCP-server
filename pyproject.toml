@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dominican-open-data-mcp"
-version = "0.6.2"
+version = "0.7.0"
 description = "MCP server for datos.gob.do — Dominican Republic open government data portal (CKAN 2.11)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -40,6 +40,10 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-httpx>=0.30",
+]
+gcp = [
+    "google-cloud-storage>=2.14",
+    "google-cloud-bigquery>=3.17",
 ]
 
 [project.scripts]

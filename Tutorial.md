@@ -132,7 +132,9 @@ src/datosgobdo_mcp/
 ├── preview.py    CSV/TSV/XLSX/JSON parsers for the preview tool
 ├── analytics.py  DuckDB engine: schema/summarize/filter/aggregate/query/…
 ├── cache.py      Parquet-on-disk cache with LRU eviction + URL→key lookup
-└── models.py     Pydantic response models → typed outputSchema
+├── models.py     Pydantic response models → typed outputSchema
+├── netguard.py   SSRF guard: validates every download URL + redirect hop
+└── gcp.py        Optional BigQuery pipeline (registers only with [gcp] extra)
 ```
 
 Each file has **one responsibility**. `server.py` is a thin layer of tool decorators
@@ -324,6 +326,8 @@ Uruguay, Ecuador, and the DR with only a base-URL change. That's the path from
 | DuckDB analytics + the SQL sandbox | `src/datosgobdo_mcp/analytics.py` |
 | Caching strategy | `src/datosgobdo_mcp/cache.py` |
 | Typed output | `src/datosgobdo_mcp/models.py` |
+| SSRF guard (scheme/IP checks, redirect hops) | `src/datosgobdo_mcp/netguard.py` |
+| Optional-dependency tool registration | `src/datosgobdo_mcp/gcp.py` |
 | Hermetic + adversarial tests | `tests/` |
 | Threat model | `SECURITY.md` |
 

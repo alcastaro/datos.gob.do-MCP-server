@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] — 2026-06-10
+
+> Local build — not yet published to PyPI / MCP Registry.
+
+### Added
+
+- **SSRF guard (`netguard.py`)** wired into every resource download via an httpx
+  request hook — validates the initial URL **and each redirect hop**. Default mode
+  `public-only`: http/https only, every resolved address must be globally routable
+  (cloud metadata `169.254.169.254`, loopback, RFC-1918, link-local, IPv6 ULA all
+  blocked). `DATOSGOBDO_NETGUARD=strict|off`, `DATOSGOBDO_ALLOW_HOSTS` for
+  operator-trusted hosts. Adversarial tests incl. redirect-to-private.
+- **Optional GCP pipeline (`gcp.py`, `pip install 'dominican-open-data-mcp[gcp]'`)** —
+  3 tools that register only when the google-cloud libraries are installed:
+  `load_resource_to_bigquery` (Parquet cache → GCS → BigQuery External Table or
+  Load Job), `list_bigquery_exports`, `get_bigquery_table_info`. Pairs with
+  Google's BigQuery MCP: this server ingests, theirs queries. Base install keeps
+  exactly 23 tools.
+- Full-package coverage discipline: no coverage omits, floor 85% (actual ~88%),
+  `ckan.py` and `server.py` at 100% via hermetic tests. macOS CI job added.
+
+### Fixed
+
+- `search_resources` interpolated the raw user query into CKAN's
+  `resource_search` `name:{query}` — `:`/`"` are now sanitized out.
+- `list_tags` / `autocomplete` no longer fail silently: degraded `[]` returns now
+  log a warning.
+
 ## [0.6.2] — 2026-06-09
 
 > Local build — not yet published to PyPI / MCP Registry.

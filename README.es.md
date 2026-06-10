@@ -124,6 +124,34 @@ Capa analítica con DuckDB sobre cache persistente en Parquet. Primera llamada p
 |---|---|
 | `autocomplete` | Resuelve nombres parciales para datasets, organizaciones, grupos o tags. Útil cuando el usuario solo da nombre parcial — el modelo lo usa internamente para encontrar slugs exactos. |
 
+### Pipeline GCP (opcional — `pip install 'dominican-open-data-mcp[gcp]'`)
+
+Tres herramientas extra se registran automáticamente cuando las librerías de
+google-cloud están instaladas. Convierten el servidor en la mitad de *ingesta*
+de un pipeline BigQuery: descubre datasets aquí, cárgalos a BigQuery, y
+consúltalos con el BigQuery MCP oficial de Google (JOINs entre datasets que el
+DuckDB local no puede hacer).
+
+| Tool | Qué hace |
+|---|---|
+| `load_resource_to_bigquery` | Recurso → cache Parquet → subida a GCS → External Table de BigQuery (default, cero-ETL) o Load Job. |
+| `list_bigquery_exports` | Lista las tablas de un dataset de BigQuery. |
+| `get_bigquery_table_info` | Esquema, conteo de filas y URIs de origen de una tabla. |
+
+Define `DATOSGOBDO_GCS_BUCKET` para no pasar el bucket en cada llamada.
+
+### Seguridad: guardia de descargas salientes
+
+Cada descarga de recursos pasa por una guardia anti-SSRF (URL inicial **y**
+cada salto de redirect): solo http/https, y toda dirección a la que resuelva el
+host debe ser públicamente enrutable (metadata de nube, loopback y rangos
+privados quedan bloqueados). Variables de entorno:
+
+| Variable | Valores | Significado |
+|---|---|---|
+| `DATOSGOBDO_NETGUARD` | `public-only` (default) / `strict` / `off` | `strict` restringe los hosts a `datos.gob.do`; `off` desactiva la guardia. |
+| `DATOSGOBDO_ALLOW_HOSTS` | separados por coma, comodines `*.` | Hosts de confianza del operador (p. ej. forks apuntando a otro portal CKAN). |
+
 ---
 
 ## Instalación y configuración

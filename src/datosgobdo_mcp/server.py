@@ -744,6 +744,14 @@ async def get_site_stats() -> dict:
     return await ckan.get_site_stats()
 
 
+# ─── GCP pipeline tools (optional, requires dominican-open-data-mcp[gcp]) ────
+from .gcp import register_gcp_tools  # noqa: E402
+
+_GCP_TOOLS_REGISTERED = register_gcp_tools(mcp)
+if _GCP_TOOLS_REGISTERED:
+    logger.info("GCP pipeline tools registered (google-cloud libraries found)")
+
+
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 
