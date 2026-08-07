@@ -51,6 +51,8 @@ Roadmap.md
 gcp-roadmap.md
 docs/
 sweep/
+testing_audit.md
+mirror/
 
 # Test artifacts
 .coverage
