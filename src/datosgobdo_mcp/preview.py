@@ -19,7 +19,9 @@ from .download import (
     _detect_encoding,
     classify_format,
     download_capped,
+    looks_like_html,
 )
+from .netguard import NetGuardError
 
 DEFAULT_ROWS = 20
 MAX_ROWS = 200
@@ -196,6 +198,18 @@ async def preview_resource_data(
         return {"error": f"HTTP {e.response.status_code} al bajar el recurso"}
     except httpx.HTTPError as e:
         return {"error": f"Error de red bajando recurso: {e}"}
+    except NetGuardError as e:
+        return {"error": str(e)}
+
+    if looks_like_html(data):
+        return {
+            "error": (
+                "La URL devolvió una página HTML, no un archivo de datos — el portal "
+                "probablemente respondió con una página web (HTTP 200) a un enlace de "
+                "descarga caído o restringido."
+            ),
+            "hint": "Abrir la URL del recurso en un navegador para confirmar.",
+        }
 
     if kind in ("csv", "tsv"):
         out = _preview_csv(data, rows, sample)

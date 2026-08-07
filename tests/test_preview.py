@@ -133,3 +133,23 @@ async def test_preview_resource_data_csv_via_http_mock(httpx_mock, sample_csv_by
     assert out["bytes_downloaded"] == len(sample_csv_bytes)
     assert out["download_truncated"] is False
     assert out["rows_returned"] == 3
+
+
+async def test_preview_rejects_html_error_page(httpx_mock):
+    """Portals answer dead download links with a styled page and HTTP 200.
+    Parsed as CSV that becomes fake data; it must be reported as an error."""
+    url = "https://example.test/dead.csv"
+    httpx_mock.add_response(
+        url=url,
+        method="GET",
+        content=b"<!DOCTYPE html>\n<html><body>Archivo no disponible</body></html>",
+    )
+    out = await preview.preview_resource_data(url, "csv")
+    assert "error" in out
+    assert "HTML" in out["error"]
+
+
+async def test_preview_returns_netguard_error_as_result(monkeypatch):
+    monkeypatch.delenv("DATOSGOBDO_ALLOW_HOSTS", raising=False)
+    out = await preview.preview_resource_data("https://nonexistent.invalid/d.csv", "csv")
+    assert "error" in out

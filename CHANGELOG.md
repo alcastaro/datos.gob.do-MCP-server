@@ -4,6 +4,69 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.2] — 2026-08-07
+
+Robustness fixes found by running the analytics pipeline against a sample of
+the real datos.gob.do catalog rather than against test fixtures. All three
+defects were invisible to the hermetic suite because the fixtures are
+well-formed and the real catalog is not.
+
+### Fixed
+
+- **Handled failures escaped as unhandled exceptions.** `NetGuardError` — most
+  often raised for a resource whose host no longer resolves in DNS, which is
+  common in a catalog spanning 266 institutions — was caught nowhere, so the
+  MCP client received a protocol-level traceback instead of a readable error.
+  The same applied to any failure occurring *after* a tool's `ensure_cached`
+  call, such as identifier validation. Every analytics tool is now wrapped in
+  a single error envelope covering `httpx.HTTPError`, `AnalyticsError`,
+  `duckdb.Error`, `NetGuardError` and `OSError`; `download_resource_preview`
+  handles `NetGuardError` too.
+- **Real government column names were rejected as invalid identifiers.** The
+  allowlist accepted only word characters, dots and spaces, so headers like
+  `Sueldo Bruto (RD$)`, `% Abastecimiento de la Demanda`,
+  `RANGO DE EDAD 60 - 70` and `FECHA DE REGISTRO / ADQUISICIÓN` failed
+  validation and made the entire file unqueryable. The character class now
+  covers the punctuation that actually appears in these files; the substring
+  denylist (`--`, `/*`, `*/`, `;`), the control-character rejection and the
+  double-quote escaping that provides the real protection are unchanged.
+  Headers that wrap across spreadsheet lines are whitespace-normalized when
+  the file is opened, and a single unusable column name now degrades that
+  column's samples instead of failing the whole call.
+- **A single ODS file could exhaust the machine's memory and hang the server
+  indefinitely.** ODS was read with `odf.opendocument.load()`, which builds the
+  entire document as a Python object tree. Measured on a real catalog file: a
+  **0.70 MB spreadsheet peaked at 0.41 GB of RSS** — roughly 580x — and took
+  8–12 s. Since the download cap is 100 MB, the worst case was tens of
+  gigabytes; the sweep hit exactly that, reaching **9.3 GB RSS with a core
+  pinned at 100% for over 15 minutes** before being killed. DuckDB's
+  `memory_limit` does not apply (this is pure Python), and because the parse
+  ran synchronously on the event loop, no timeout could fire — the timers
+  themselves were blocked. ODS is about a third of this catalog, so this was
+  not an edge case.
+
+  `content.xml` is now parsed as a stream, keeping memory proportional to one
+  row. On the same file: **0.4 s and 0.053 GB**, byte-identical CSV output
+  (11,788 lines). Grid-padding repeat counts are dropped rather than expanded.
+- **Blocking work moved off the event loop.** ODS transcoding, encoding
+  detection and the DuckDB→Parquet conversion now run in worker threads
+  (`asyncio.to_thread`), so the server keeps responding during a cold-path
+  load and the query-timeout interrupt can actually fire. The Parquet
+  conversion also goes through `_execute_guarded`, so
+  `DATOSGOBDO_QUERY_TIMEOUT` now bounds ingestion, not just user SQL.
+- **HTML error pages were parsed as data.** Several portals answer a dead or
+  gated download link with a styled web page and **HTTP 200**. Read as CSV,
+  such a page became a one-column table named `<!DOCTYPE html>` that the
+  assistant would relay to the user as real data. Downloads are now checked
+  for HTML markup before parsing, in both the analytics and preview paths, and
+  rejected with an explanation. A wrong answer is worse than a failed one.
+
+### Added
+
+- `sweep/` (development only, not shipped): a catalog sweep harness that walks
+  datos.gob.do through this server's own pipeline and records per-resource
+  outcomes. It found all three defects above.
+
 ## [0.7.1] — 2026-08-07
 
 Install-breakage hotfix. Anyone who ran `uvx dominican-open-data-mcp` or

@@ -116,6 +116,24 @@ async def download_to_file(
     return bytes_written, truncated
 
 
+_HTML_MARKERS = (b"<!doctype html", b"<html", b"<head", b"<?xml-stylesheet", b"<body")
+
+
+def looks_like_html(head: bytes) -> bool:
+    """True if these opening bytes are an HTML page rather than tabular data.
+
+    Government portals routinely answer a dead or gated download link with a
+    styled "not found" / "session expired" page and **HTTP 200**. Parsed as
+    CSV that page becomes a one-column table named `<!DOCTYPE html>`, which
+    the assistant would then report to the user as if it were real data. A
+    wrong answer is worse than a failed one, so this is checked before parsing.
+    """
+    probe = head[:2048].lstrip().lower()
+    if probe.startswith(b"\xef\xbb\xbf"):  # UTF-8 BOM ahead of the markup
+        probe = probe[3:].lstrip()
+    return any(probe.startswith(m) for m in _HTML_MARKERS)
+
+
 def normalize_format(fmt: str | None) -> str:
     """Normalize CKAN format string to lowercase, no leading dot."""
     return (fmt or "").lower().strip().lstrip(".")

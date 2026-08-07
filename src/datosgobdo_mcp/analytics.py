@@ -15,12 +15,15 @@ v0.4 will add raw query_resource + XLSX/ODS analytics.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import os
 import re
 import tempfile
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 import duckdb
 import httpx
@@ -31,7 +34,9 @@ from .download import (
     ANALYTICS_MAX_BYTES,
     classify_format,
     download_to_file,
+    looks_like_html,
 )
+from .netguard import NetGuardError
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +45,31 @@ SUMMARIZE_MAX_TOP_N = 50
 FILTER_MAX_LIMIT = 1000
 AGGREGATE_MAX_LIMIT = 1000
 
-# Identifier guard: only word chars + dot + space (for column names like
-# "Sueldo Bruto" or "data.column"). We always pass identifiers through
-# double-quote escaping anyway; this is the second line of defense.
-# We explicitly forbid SQL-comment sequences and statement terminators.
+# Identifier guard. The real protection is that every identifier is emitted
+# inside double quotes with embedded quotes doubled; this allowlist is the
+# second line of defence, plus a denylist of SQL-comment sequences and
+# statement terminators.
+#
+# The character set is wider than "word chars + dot + space" because real
+# Dominican government spreadsheets use punctuation in their headers. A
+# catalog sweep (2026-08-07) turned up, among others:
+#     "Sueldo Bruto (RD$)"   "% Abastecimiento de la Demanda"
+#     "RANGO DE EDAD 60 - 70"   "FECHA DE REGISTRO / ADQUISICIÓN"
+#     "ALIMÉNTATE-COMER ES PRIMERO (PCP)"
+# The old class rejected all of them, so every tool call against those files
+# failed — a false positive that blocked legitimate public data.
+#
 # \A…\Z (not ^…$): in Python, $ also matches just before a trailing newline, so
 # `^[...]+$` would accept an identifier like "col\n". \Z anchors the true end.
-_IDENT_OK = re.compile(r"\A[\w .À-ſ]+\Z", re.UNICODE)
+# Embedded newlines/tabs are normalized to spaces before this runs (headers
+# spanning two spreadsheet lines are common), so they never reach the class.
+_IDENT_OK = re.compile(r"\A[\w .\-()%/,:#&+'°ºª¡¿?!@*\[\]À-ſ$]+\Z", re.UNICODE)
 _IDENT_FORBIDDEN_SUBSTR = ("--", "/*", "*/", ";")
+# Anything in the C0/C1 control ranges is rejected outright: no legitimate
+# column name contains one, and they are the only characters that could do
+# something surprising inside a quoted identifier.
+_IDENT_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_IDENT_WHITESPACE = re.compile(r"\s+")
 
 ALLOWED_AGG_FNS = {
     "count",
@@ -112,23 +134,73 @@ class AnalyticsError(RuntimeError):
     pass
 
 
+# Every failure a tool can plausibly hit while talking to a government portal or
+# to DuckDB. Anything in this tuple becomes an `{"error": ...}` result the model
+# can read and act on; anything outside it is a bug in this server and should
+# surface as a real traceback rather than be silently swallowed.
+_ENVELOPE_ERRORS = (httpx.HTTPError, AnalyticsError, duckdb.Error, NetGuardError, OSError)
+
+_T = TypeVar("_T", bound=Callable[..., Awaitable[dict[str, Any]]])
+
+
+def _tool_envelope(fn: _T) -> _T:
+    """Return handled failures as `{"error": ...}` instead of raising.
+
+    Individual tools also catch around `ensure_cached` to attach context like
+    "Could not load resource". This decorator is the backstop for everything
+    *after* that point: a dead-DNS host, an exotic column name, a malformed
+    file that only blows up at query time. Before it existed, those escaped as
+    unhandled exceptions and the MCP client saw a protocol error with a
+    traceback instead of a sentence the assistant could relay to the user.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        try:
+            return await fn(*args, **kwargs)
+        except _ENVELOPE_ERRORS as e:
+            logger.warning("%s failed: %s: %s", fn.__name__, type(e).__name__, e)
+            return {"error": str(e)}
+
+    return wrapper  # type: ignore[return-value]
+
+
 def _quote_ident(name: str) -> str:
     """Quote a column identifier safely.
 
-    Two layers of defence:
-        1. Allowlist regex on chars (letters, digits, underscore, dot, space,
-           Latin-1/extended accents).
-        2. Denylist of forbidden substrings (--, /*, */, ;) so a name that
+    Layers of defence, outermost first:
+        1. Control characters rejected outright.
+        2. Allowlist regex on the remaining chars (see `_IDENT_OK`).
+        3. Denylist of forbidden substrings (--, /*, */, ;) so a name that
            somehow passes the regex still can't smuggle SQL syntax.
+        4. The identifier is emitted double-quoted with embedded quotes
+           doubled — the actual guarantee; 1-3 are belt and braces.
 
-    Anything that fails either check raises AnalyticsError.
+    Anything that fails a check raises AnalyticsError. Note the caller passes
+    the *original* column name from the file; this function only validates and
+    quotes it, so callers that need the DuckDB-visible name unchanged still get
+    it verbatim inside the quotes.
     """
-    if not name or not _IDENT_OK.match(name):
+    if not name or _IDENT_CONTROL.search(name):
+        raise AnalyticsError(f"Invalid column identifier: {name!r}")
+    if not _IDENT_OK.match(name):
         raise AnalyticsError(f"Invalid column identifier: {name!r}")
     for bad in _IDENT_FORBIDDEN_SUBSTR:
         if bad in name:
             raise AnalyticsError(f"Forbidden substring in identifier: {name!r}")
     return '"' + name.replace('"', '""') + '"'
+
+
+def _normalize_header(name: str) -> str:
+    """Collapse whitespace in a column name read from a file.
+
+    Spreadsheet headers routinely wrap across lines ("Presupuesto\\nAprobado")
+    or carry trailing tabs. DuckDB keeps those characters in the column name,
+    which then fails identifier validation and makes the whole file unusable.
+    Normalizing at read time keeps the data reachable; the name the user sees
+    is the normalized one, which is also the one they would have typed.
+    """
+    return _IDENT_WHITESPACE.sub(" ", name).strip()
 
 
 def _quote_literal(value: Any) -> str:
@@ -253,43 +325,109 @@ async def _head_metadata(url: str) -> tuple[str | None, str | None]:
         return None, None
 
 
+_ODS_NS_TABLE = "urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+_ODS_NS_TEXT = "urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+_ODS_TABLE = f"{{{_ODS_NS_TABLE}}}table"
+_ODS_ROW = f"{{{_ODS_NS_TABLE}}}table-row"
+_ODS_CELL = f"{{{_ODS_NS_TABLE}}}table-cell"
+_ODS_P = f"{{{_ODS_NS_TEXT}}}p"
+_ODS_REPEAT_COLS = f"{{{_ODS_NS_TABLE}}}number-columns-repeated"
+_ODS_REPEAT_ROWS = f"{{{_ODS_NS_TABLE}}}number-rows-repeated"
+# ODS pads sheets to the spreadsheet grid with repeat counts in the millions.
+# Those repeats are always empty, so they are dropped rather than expanded;
+# this cap only bounds repeats of *non-empty* content.
+_ODS_MAX_REPEAT = 4096
+
+
 def _ods_to_csv(src: Path) -> Path:
-    """Convert ODS to CSV (first sheet only) using odfpy. Returns sibling .csv path.
+    """Convert the first sheet of an ODS file to CSV. Returns sibling .csv path.
 
-    DuckDB has no native ODS reader as of 1.x. We extract once on cold-path
-    download so Parquet conversion can proceed via the CSV pipeline.
+    DuckDB has no native ODS reader as of 1.x, so the file is transcoded once on
+    the cold path and the CSV pipeline takes it from there.
+
+    This parses `content.xml` as a stream. The obvious implementation —
+    `odf.opendocument.load()` — builds the whole document as a Python object
+    tree first, which a 2026-08-07 catalog sweep measured at roughly **580x the
+    file size in RAM**: a 0.7 MB spreadsheet peaked at 0.41 GB, and since the
+    download cap is 100 MB the worst case was tens of gigabytes. It also pinned
+    a core for minutes with no way to interrupt it. ODS is a third of this
+    catalog, so that was not an edge case. Streaming keeps memory proportional
+    to one row.
     """
-    try:
-        from odf.opendocument import load
-        from odf.table import Table, TableCell, TableRow
-        from odf.text import P
-    except ImportError as e:
-        raise AnalyticsError(f"odfpy not installed: {e}") from e
-
-    doc = load(str(src))
-    tables = doc.spreadsheet.getElementsByType(Table)
-    if not tables:
-        raise AnalyticsError("ODS file has no tables")
-    table = tables[0]
-    csv_path = src.with_suffix(src.suffix + ".csv")
     import csv as _csv
+    import zipfile
+    from xml.etree import ElementTree as ET
 
-    with csv_path.open("w", encoding="utf-8", newline="") as f:
-        writer = _csv.writer(f)
-        for row in table.getElementsByType(TableRow):
-            cells = row.getElementsByType(TableCell)
-            out_row: list[str] = []
-            for cell in cells:
-                # Handle repeated columns.
-                repeated = int(cell.getAttribute("numbercolumnsrepeated") or 1)
-                paragraphs = cell.getElementsByType(P)
-                text = "".join(str(p) for p in paragraphs)
-                out_row.extend([text] * repeated)
-            # Trim trailing empty repeats that pad the row.
-            while out_row and out_row[-1] == "":
-                out_row.pop()
-            writer.writerow(out_row)
+    csv_path = src.with_suffix(src.suffix + ".csv")
+    try:
+        archive = zipfile.ZipFile(src)
+    except zipfile.BadZipFile as e:
+        raise AnalyticsError(f"Not a readable ODS file: {e}") from e
+
+    with archive as z:
+        try:
+            content = z.open("content.xml")
+        except KeyError as e:
+            raise AnalyticsError("ODS file has no content.xml") from e
+
+        with content, csv_path.open("w", encoding="utf-8", newline="") as f:
+            writer = _csv.writer(f)
+            table_elem = None  # the first sheet; cleared as rows are consumed
+            depth = 0
+            saw_table = False
+
+            for event, elem in ET.iterparse(content, events=("start", "end")):
+                if event == "start":
+                    if elem.tag == _ODS_TABLE:
+                        depth += 1
+                        if depth == 1:
+                            table_elem, saw_table = elem, True
+                    continue
+
+                if elem.tag == _ODS_TABLE:
+                    depth -= 1
+                    if depth == 0:
+                        break  # first sheet only, as before
+                    continue
+
+                if elem.tag != _ODS_ROW or depth != 1:
+                    continue
+
+                row: list[str] = []
+                blanks = 0  # empty cells held back so trailing padding is dropped
+                for cell in elem.iterfind(_ODS_CELL):
+                    reps = _ods_repeat(cell.get(_ODS_REPEAT_COLS))
+                    text = "".join("".join(p.itertext()) for p in cell.iterfind(_ODS_P))
+                    if text:
+                        row.extend([""] * blanks)
+                        blanks = 0
+                        row.extend([text] * reps)
+                    else:
+                        blanks += reps
+
+                if row:
+                    for _ in range(_ods_repeat(elem.get(_ODS_REPEAT_ROWS))):
+                        writer.writerow(row)
+                elif blanks:
+                    writer.writerow([])  # a genuinely blank row inside the data
+
+                # Drop what has been consumed; without this the parent keeps
+                # every row alive and the streaming gains nothing.
+                if table_elem is not None:
+                    table_elem.clear()
+
+            if not saw_table:
+                raise AnalyticsError("ODS file has no tables")
+
     return csv_path
+
+
+def _ods_repeat(raw: str | None) -> int:
+    """Parse an ODS repeat attribute, clamped to a sane range."""
+    try:
+        return max(1, min(int(raw), _ODS_MAX_REPEAT)) if raw else 1
+    except (TypeError, ValueError):
+        return 1
 
 
 async def ensure_cached(
@@ -334,40 +472,64 @@ async def ensure_cached(
         if bytes_written == 0:
             raise AnalyticsError("Downloaded zero bytes")
 
+        with raw.open("rb") as fh:
+            if looks_like_html(fh.read(2048)):
+                raise AnalyticsError(
+                    "The URL returned an HTML page, not a data file — the portal "
+                    "likely answered a dead or gated download link with a web page "
+                    "(HTTP 200). Open the resource URL in a browser to confirm."
+                )
+
         effective_fmt = fmt
         if fmt == "ods":
             raw_ods = raw
-            raw_csv = _ods_to_csv(raw)
+            # Transcoding and encoding detection are CPU-bound and synchronous.
+            # Left on the event loop they freeze the whole server for the
+            # duration — and, worse, block the timers that are supposed to cut
+            # a long operation short. A thread keeps the loop answering.
+            raw_csv = await asyncio.to_thread(_ods_to_csv, raw)
             raw = raw_csv
             effective_fmt = "csv"
 
-        usable = _normalize_csv_encoding(raw) if effective_fmt in ("csv", "tsv") else raw
+        usable = (
+            await asyncio.to_thread(_normalize_csv_encoding, raw)
+            if effective_fmt in ("csv", "tsv")
+            else raw
+        )
         parquet_path = cache.put_path(key)
 
-        con = _new_con()
-        try:
-            src = str(usable).replace("'", "''")
-            dst = str(parquet_path).replace("'", "''")
-            if effective_fmt in ("csv", "tsv"):
-                con.execute(
-                    f"COPY (SELECT * FROM read_csv_auto('{src}', "
-                    f"SAMPLE_SIZE=-1, IGNORE_ERRORS=TRUE)) "
-                    f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
-                )
-            elif effective_fmt in ("xlsx", "xls", "xlsm"):
-                con.execute(
-                    f"COPY (SELECT * FROM read_xlsx('{src}')) "
-                    f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
-                )
-            elif effective_fmt == "json":
-                con.execute(
-                    f"COPY (SELECT * FROM read_json_auto('{src}')) "
-                    f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
-                )
-            else:
-                raise AnalyticsError(f"Format '{fmt}' not supported")
-        finally:
-            con.close()
+        src = str(usable).replace("'", "''")
+        dst = str(parquet_path).replace("'", "''")
+        if effective_fmt in ("csv", "tsv"):
+            copy_sql = (
+                f"COPY (SELECT * FROM read_csv_auto('{src}', "
+                f"SAMPLE_SIZE=-1, IGNORE_ERRORS=TRUE)) "
+                f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+            )
+        elif effective_fmt in ("xlsx", "xls", "xlsm"):
+            copy_sql = (
+                f"COPY (SELECT * FROM read_xlsx('{src}')) "
+                f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+            )
+        elif effective_fmt == "json":
+            copy_sql = (
+                f"COPY (SELECT * FROM read_json_auto('{src}')) "
+                f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+            )
+        else:
+            raise AnalyticsError(f"Format '{fmt}' not supported")
+
+        def _convert() -> None:
+            con = _new_con()
+            try:
+                _execute_guarded(con, copy_sql)
+            finally:
+                con.close()
+
+        # Same reasoning as the transcode above: parsing a 100 MB spreadsheet is
+        # seconds to minutes of blocking work, and _execute_guarded's interrupt
+        # timer can only fire if something else is free to run.
+        await asyncio.to_thread(_convert)
 
         cache.finalize(key, url=url)  # store URL for future warm-path lookups
         logger.info(
@@ -389,9 +551,44 @@ async def ensure_cached(
             _safe_unlink(raw_ods)
 
 
+def _raw_quote(name: str) -> str:
+    """Quote a name that came from DuckDB itself, not from the model.
+
+    `_quote_ident` validates because its input is model- or user-supplied. The
+    column names DuckDB reports for a file it just parsed are neither, so they
+    only need escaping — and they must NOT be rejected, or an odd header would
+    make the file unreadable.
+    """
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _select_list(con: duckdb.DuckDBPyConnection, parquet: Path) -> str:
+    """Build a SELECT list that renames headers needing whitespace normalization.
+
+    Returns `*` when every column name is already clean, so the common case
+    stays a plain passthrough.
+    """
+    p = str(parquet).replace("'", "''")
+    names = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{p}')").fetchall()]
+    if all(_normalize_header(n) == n for n in names):
+        return "*"
+
+    parts, seen = [], set()
+    for n in names:
+        clean = _normalize_header(n) or n
+        # Normalization can collide two headers ("A\nB" and "A B"); keep the
+        # later one distinct rather than silently dropping a column.
+        while clean in seen:
+            clean += "_"
+        seen.add(clean)
+        parts.append(_raw_quote(n) if clean == n else f"{_raw_quote(n)} AS {_raw_quote(clean)}")
+    return ", ".join(parts)
+
+
 def _open_view(con: duckdb.DuckDBPyConnection, parquet: Path) -> None:
     p = str(parquet).replace("'", "''")
-    con.execute(f"CREATE OR REPLACE VIEW data AS SELECT * FROM read_parquet('{p}')")
+    cols = _select_list(con, parquet)
+    con.execute(f"CREATE OR REPLACE VIEW data AS SELECT {cols} FROM read_parquet('{p}')")
 
 
 def _open_sandboxed(con: duckdb.DuckDBPyConnection, parquet: Path) -> None:
@@ -405,7 +602,8 @@ def _open_sandboxed(con: duckdb.DuckDBPyConnection, parquet: Path) -> None:
     query runs entirely against the in-memory `data` table.
     """
     p = str(parquet).replace("'", "''")
-    con.execute(f"CREATE TABLE data AS SELECT * FROM read_parquet('{p}')")
+    cols = _select_list(con, parquet)
+    con.execute(f"CREATE TABLE data AS SELECT {cols} FROM read_parquet('{p}')")
     con.execute("SET enable_external_access=false")
     con.execute("SET lock_configuration=true")
 
@@ -413,6 +611,7 @@ def _open_sandboxed(con: duckdb.DuckDBPyConnection, parquet: Path) -> None:
 # ─── Public analytics tools ───────────────────────────────────────────────────
 
 
+@_tool_envelope
 async def get_resource_schema(
     url: str,
     fmt: str | None,
@@ -437,7 +636,14 @@ async def get_resource_schema(
 
         n = min(max(int(sample_rows), 1), SCHEMA_SAMPLE_ROWS)
         for col in columns_meta:
-            quoted = _quote_ident(col["name"])
+            # One unusable column name must not cost the caller the whole
+            # schema: report the column, skip its samples, say why.
+            try:
+                quoted = _quote_ident(col["name"])
+            except AnalyticsError as e:
+                col["sample_values"] = []
+                col["note"] = str(e)
+                continue
             try:
                 vals = con.execute(
                     f"SELECT DISTINCT {quoted} FROM data WHERE {quoted} IS NOT NULL LIMIT {n}"
@@ -529,6 +735,7 @@ def _column_stats(
     return stats
 
 
+@_tool_envelope
 async def summarize_resource(
     url: str,
     fmt: str | None,
@@ -705,6 +912,7 @@ _NUMERIC_TYPE_FRAGMENTS = (
 )
 
 
+@_tool_envelope
 async def quantiles_resource(
     url: str,
     fmt: str | None,
@@ -807,6 +1015,7 @@ async def quantiles_resource(
     }
 
 
+@_tool_envelope
 async def find_duplicates_resource(
     url: str,
     fmt: str | None,
@@ -886,6 +1095,7 @@ async def find_duplicates_resource(
     }
 
 
+@_tool_envelope
 async def detect_outliers_resource(
     url: str,
     fmt: str | None,
@@ -987,6 +1197,7 @@ async def detect_outliers_resource(
     }
 
 
+@_tool_envelope
 async def save_query_to_csv(
     url: str,
     fmt: str | None,
@@ -1100,6 +1311,7 @@ async def save_query_to_csv(
     }
 
 
+@_tool_envelope
 async def filter_resource(
     url: str,
     fmt: str | None,
@@ -1164,6 +1376,7 @@ async def filter_resource(
     }
 
 
+@_tool_envelope
 async def aggregate_resource(
     url: str,
     fmt: str | None,
@@ -1266,6 +1479,7 @@ def _validate_sql(sql: str) -> str:
     return s
 
 
+@_tool_envelope
 async def query_resource(
     url: str,
     fmt: str | None,

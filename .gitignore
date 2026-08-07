@@ -50,6 +50,7 @@ workplan.md
 Roadmap.md
 gcp-roadmap.md
 docs/
+sweep/
 
 # Test artifacts
 .coverage

@@ -50,6 +50,38 @@ def test_quote_ident_rejects_invalid(name):
         analytics._quote_ident(name)
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        # Verbatim column headers found in datos.gob.do files during the
+        # 2026-08-07 catalog sweep. Every one of these was rejected by the
+        # original allowlist, which made the whole file unusable.
+        "Sueldo Bruto (RD$)",
+        "% Abastecimiento de la Demanda",
+        "RANGO DE EDAD 60 - 70",
+        "FECHA DE REGISTRO / ADQUISICIÓN",
+        "ALIMÉNTATE-COMER ES PRIMERO (PCP)",
+        "Cantidad, total",
+        "N° de expediente",
+    ],
+)
+def test_quote_ident_accepts_real_government_headers(name):
+    assert analytics._quote_ident(name) == f'"{name}"'
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("Presupuesto \nAprobado", "Presupuesto Aprobado"),
+        ("REGION\n", "REGION"),
+        ("  spaced  out  ", "spaced out"),
+        ("already clean", "already clean"),
+    ],
+)
+def test_normalize_header_collapses_whitespace(raw, expected):
+    assert analytics._normalize_header(raw) == expected
+
+
 # ─── _quote_literal ───────────────────────────────────────────────────────────
 
 
@@ -765,3 +797,209 @@ def test_quote_ident_rejects_forbidden_substring_block_comment():
 def test_quote_ident_rejects_semicolon():
     with pytest.raises(analytics.AnalyticsError):
         analytics._quote_ident("col;drop")
+
+
+# ─── error envelope: handled failures must never escape as exceptions ─────────
+#
+# Found by the 2026-08-07 catalog sweep: a resource hosted on a domain whose DNS
+# no longer resolves made netguard raise NetGuardError, which no tool caught —
+# so the MCP client got a protocol-level traceback instead of a readable error.
+# Same shape for a column name the identifier guard rejects: it was validated
+# after the tool's only try block, so it escaped too.
+
+
+async def test_netguard_error_is_returned_not_raised(tmp_cache_dir, monkeypatch):
+    """A blocked/unresolvable host yields {"error": ...}, never an exception."""
+    monkeypatch.delenv("DATOSGOBDO_ALLOW_HOSTS", raising=False)
+    # .invalid is reserved by RFC 2606 and never resolves.
+    out = await analytics.get_resource_schema("https://nonexistent.invalid/data.csv", "csv")
+    assert "error" in out
+    assert "invalid" in out["error"].lower()
+
+
+@pytest.mark.parametrize(
+    "tool,kwargs",
+    [
+        ("summarize_resource", {}),
+        ("filter_resource", {}),
+        ("query_resource", {"sql": "SELECT 1"}),
+        ("aggregate_resource", {"aggregations": [{"col": None, "fn": "count"}]}),
+    ],
+)
+async def test_every_tool_wraps_netguard_error(tool, kwargs, tmp_cache_dir, monkeypatch):
+    monkeypatch.delenv("DATOSGOBDO_ALLOW_HOSTS", raising=False)
+    out = await getattr(analytics, tool)("https://nonexistent.invalid/d.csv", "csv", **kwargs)
+    assert "error" in out
+
+
+async def test_html_error_page_is_rejected_not_parsed(tmp_cache_dir, httpx_mock):
+    """A portal answering a dead link with an HTML page and HTTP 200 must fail
+    loudly, not become a one-column table the assistant reports as data."""
+    url = "https://example.test/gone.csv"
+    page = b"<!DOCTYPE html>\n<html><head><title>404</title></head><body>No existe</body></html>"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "e1"})
+    httpx_mock.add_response(url=url, method="GET", content=page)
+    out = await analytics.get_resource_schema(url, "csv")
+    assert "error" in out
+    assert "html" in out["error"].lower()
+
+
+async def test_header_with_embedded_newline_is_usable(tmp_cache_dir, httpx_mock):
+    """Headers that wrap across spreadsheet lines are normalized, so the file
+    stays queryable instead of failing identifier validation."""
+    url = "https://example.test/wrapped.csv"
+    content = '"Presupuesto \nAprobado";Año\n1000;2026\n'.encode()
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "e1"})
+    httpx_mock.add_response(url=url, method="GET", content=content)
+    out = await analytics.get_resource_schema(url, "csv")
+    assert "error" not in out, out
+    assert "Presupuesto Aprobado" in [c["name"] for c in out["columns"]]
+
+
+# ─── ODS streaming parser ─────────────────────────────────────────────────────
+#
+# The previous implementation loaded the whole document into an odfpy object
+# tree. A sweep of the real catalog measured a 0.70 MB spreadsheet peaking at
+# 0.41 GB of RSS and taking 8-12 s — roughly 580x the file size — with the
+# 100 MB download cap implying tens of gigabytes worst case. It ran
+# synchronously on the event loop, so nothing could interrupt it.
+
+
+def _make_ods(rows: list[list[str]], extra_sheet: list[list[str]] | None = None) -> bytes:
+    """Build a minimal but valid ODS in memory."""
+    import io
+    import zipfile
+    from xml.sax.saxutils import escape
+
+    def sheet(name: str, data: list[list[str]]) -> str:
+        out = [f'<table:table table:name="{name}">']
+        for r in data:
+            out.append("<table:table-row>")
+            for c in r:
+                out.append(f"<table:table-cell><text:p>{escape(c)}</text:p></table:table-cell>")
+            out.append("</table:table-row>")
+        out.append("</table:table>")
+        return "".join(out)
+
+    body = sheet("Hoja1", rows) + (sheet("Hoja2", extra_sheet) if extra_sheet else "")
+    content = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<office:document-content "
+        'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+        'xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" '
+        'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">'
+        f"<office:body><office:spreadsheet>{body}</office:spreadsheet></office:body>"
+        "</office:document-content>"
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("mimetype", "application/vnd.oasis.opendocument.spreadsheet")
+        z.writestr("content.xml", content)
+    return buf.getvalue()
+
+
+def test_ods_to_csv_reads_first_sheet_only(tmp_path):
+    src = tmp_path / "x.ods"
+    src.write_bytes(_make_ods([["a", "b"], ["1", "2"]], extra_sheet=[["ignored"]]))
+    out = analytics._ods_to_csv(src).read_text(encoding="utf-8").splitlines()
+    assert out == ["a,b", "1,2"]
+
+
+def test_ods_to_csv_drops_trailing_padding_cells(tmp_path):
+    """ODS pads rows to the grid width; those repeats must not become columns."""
+    import zipfile
+
+    src = tmp_path / "pad.ods"
+    src.write_bytes(_make_ods([["a", "b"]]))
+    with zipfile.ZipFile(src) as z:
+        content = z.read("content.xml").decode()
+    content = content.replace(
+        "</table:table-row>",
+        '<table:table-cell table:number-columns-repeated="16384"/></table:table-row>',
+        1,
+    )
+    padded = tmp_path / "pad2.ods"
+    with zipfile.ZipFile(padded, "w") as z:
+        z.writestr("content.xml", content)
+    assert analytics._ods_to_csv(padded).read_text(encoding="utf-8").splitlines() == ["a,b"]
+
+
+def test_ods_to_csv_expands_repeated_value_cells(tmp_path):
+    import zipfile
+
+    src = tmp_path / "rep.ods"
+    src.write_bytes(_make_ods([["x"]]))
+    with zipfile.ZipFile(src) as z:
+        content = z.read("content.xml").decode()
+    content = content.replace(
+        "<table:table-cell>", '<table:table-cell table:number-columns-repeated="3">', 1
+    )
+    rep = tmp_path / "rep2.ods"
+    with zipfile.ZipFile(rep, "w") as z:
+        z.writestr("content.xml", content)
+    assert analytics._ods_to_csv(rep).read_text(encoding="utf-8").splitlines() == ["x,x,x"]
+
+
+@pytest.mark.parametrize("raw,expected", [(None, 1), ("", 1), ("0", 1), ("7", 7), ("bad", 1)])
+def test_ods_repeat_clamped(raw, expected):
+    assert analytics._ods_repeat(raw) == expected
+
+
+def test_ods_repeat_caps_absurd_padding():
+    assert analytics._ods_repeat("1048576") == analytics._ODS_MAX_REPEAT
+
+
+def test_ods_to_csv_rejects_non_zip(tmp_path):
+    src = tmp_path / "bad.ods"
+    src.write_bytes(b"this is not a zip archive")
+    with pytest.raises(analytics.AnalyticsError):
+        analytics._ods_to_csv(src)
+
+
+def test_ods_to_csv_rejects_zip_without_content_xml(tmp_path):
+    import zipfile
+
+    src = tmp_path / "empty.ods"
+    with zipfile.ZipFile(src, "w") as z:
+        z.writestr("mimetype", "application/vnd.oasis.opendocument.spreadsheet")
+    with pytest.raises(analytics.AnalyticsError):
+        analytics._ods_to_csv(src)
+
+
+def test_ods_to_csv_rejects_document_with_no_table(tmp_path):
+    import zipfile
+
+    src = tmp_path / "notable.ods"
+    with zipfile.ZipFile(src, "w") as z:
+        z.writestr(
+            "content.xml",
+            '<?xml version="1.0"?><office:document-content '
+            'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"/>',
+        )
+    with pytest.raises(analytics.AnalyticsError):
+        analytics._ods_to_csv(src)
+
+
+async def test_cold_path_does_not_block_the_event_loop(mock_ods_endpoint, tmp_cache_dir):
+    """Transcoding runs in a worker thread, so other coroutines keep running.
+
+    Before this, a single large spreadsheet froze the whole server — including
+    the timers meant to cut a runaway conversion short.
+    """
+    import asyncio
+
+    ticks = 0
+
+    async def heartbeat():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.001)
+            ticks += 1
+
+    beat = asyncio.create_task(heartbeat())
+    try:
+        out = await analytics.get_resource_schema(mock_ods_endpoint, "ods")
+    finally:
+        beat.cancel()
+    assert "error" not in out, out
+    assert ticks > 0, "event loop never got control during the cold path"
