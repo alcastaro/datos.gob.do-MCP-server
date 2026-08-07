@@ -34,6 +34,7 @@ from .download import (
     ANALYTICS_MAX_BYTES,
     classify_format,
     download_to_file,
+    err_text,
     looks_like_html,
 )
 from .netguard import NetGuardError
@@ -140,6 +141,7 @@ class AnalyticsError(RuntimeError):
 # surface as a real traceback rather than be silently swallowed.
 _ENVELOPE_ERRORS = (httpx.HTTPError, AnalyticsError, duckdb.Error, NetGuardError, OSError)
 
+
 _T = TypeVar("_T", bound=Callable[..., Awaitable[dict[str, Any]]])
 
 
@@ -160,7 +162,7 @@ def _tool_envelope(fn: _T) -> _T:
             return await fn(*args, **kwargs)
         except _ENVELOPE_ERRORS as e:
             logger.warning("%s failed: %s: %s", fn.__name__, type(e).__name__, e)
-            return {"error": str(e)}
+            return {"error": err_text(e)}
 
     return wrapper  # type: ignore[return-value]
 
@@ -500,6 +502,7 @@ async def ensure_cached(
 
         src = str(usable).replace("'", "''")
         dst = str(parquet_path).replace("'", "''")
+        fallback_sql: str | None = None
         if effective_fmt in ("csv", "tsv"):
             copy_sql = (
                 f"COPY (SELECT * FROM read_csv_auto('{src}', "
@@ -509,6 +512,16 @@ async def ensure_cached(
         elif effective_fmt in ("xlsx", "xls", "xlsm"):
             copy_sql = (
                 f"COPY (SELECT * FROM read_xlsx('{src}')) "
+                f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+            )
+            # Government workbooks routinely put a numeric column's total,
+            # a footnote or a "#REF!" thousands of rows below the data, after
+            # DuckDB has already inferred DOUBLE from the top of the column.
+            # Rather than lose the file, retry with every column as text: worse
+            # types beat no data, and the sweep showed this recovers ~6% of the
+            # catalog that otherwise failed outright.
+            fallback_sql = (
+                f"COPY (SELECT * FROM read_xlsx('{src}', all_varchar=true)) "
                 f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
             )
         elif effective_fmt == "json":
@@ -522,7 +535,13 @@ async def ensure_cached(
         def _convert() -> None:
             con = _new_con()
             try:
-                _execute_guarded(con, copy_sql)
+                try:
+                    _execute_guarded(con, copy_sql)
+                except duckdb.Error:
+                    if fallback_sql is None:
+                        raise
+                    logger.info("typed read failed, retrying as all-text: %s", url)
+                    _execute_guarded(con, fallback_sql)
             finally:
                 con.close()
 
@@ -623,7 +642,7 @@ async def get_resource_schema(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {e}"}
+        return {"error": f"Could not load resource: {err_text(e)}"}
 
     con = _new_con()
     try:
@@ -747,7 +766,7 @@ async def summarize_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {e}"}
+        return {"error": f"Could not load resource: {err_text(e)}"}
 
     top_n = min(max(int(max_categorical_top_n), 1), SUMMARIZE_MAX_TOP_N)
     con = _new_con()
@@ -939,7 +958,7 @@ async def quantiles_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {e}"}
+        return {"error": f"Could not load resource: {err_text(e)}"}
 
     con = _new_con()
     try:
@@ -1033,7 +1052,7 @@ async def find_duplicates_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {e}"}
+        return {"error": f"Could not load resource: {err_text(e)}"}
 
     con = _new_con()
     try:
@@ -1118,7 +1137,7 @@ async def detect_outliers_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {e}"}
+        return {"error": f"Could not load resource: {err_text(e)}"}
 
     con = _new_con()
     try:
@@ -1248,7 +1267,7 @@ async def save_query_to_csv(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {e}"}
+        return {"error": f"Could not load resource: {err_text(e)}"}
 
     con = _new_con()
     try:
@@ -1328,7 +1347,7 @@ async def filter_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {e}"}
+        return {"error": f"Could not load resource: {err_text(e)}"}
 
     limit = min(max(int(limit), 1), FILTER_MAX_LIMIT)
     offset = max(int(offset), 0)
@@ -1396,7 +1415,7 @@ async def aggregate_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {e}"}
+        return {"error": f"Could not load resource: {err_text(e)}"}
 
     limit = min(max(int(limit), 1), AGGREGATE_MAX_LIMIT)
 
@@ -1503,7 +1522,7 @@ async def query_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {e}"}
+        return {"error": f"Could not load resource: {err_text(e)}"}
 
     limit = min(max(int(limit), 1), SQL_MAX_LIMIT)
     wrapped = f"SELECT * FROM ({cleaned}) AS _user_q LIMIT {limit}"

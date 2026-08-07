@@ -116,6 +116,19 @@ async def download_to_file(
     return bytes_written, truncated
 
 
+def err_text(e: BaseException) -> str:
+    """Describe an exception, never returning an empty string.
+
+    Several httpx timeout classes carry no message at all — a real
+    `ConnectTimeout('')` from the catalog turned into the error message
+    "Could not load resource:" with nothing after the colon, which tells the
+    user and the assistant precisely nothing. Falling back to the class name at
+    least names the failure.
+    """
+    text = str(e).strip()
+    return text or type(e).__name__
+
+
 _HTML_MARKERS = (b"<!doctype html", b"<html", b"<head", b"<?xml-stylesheet", b"<body")
 
 

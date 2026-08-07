@@ -19,6 +19,7 @@ from .download import (
     _detect_encoding,
     classify_format,
     download_capped,
+    err_text,
     looks_like_html,
 )
 from .netguard import NetGuardError
@@ -197,9 +198,9 @@ async def preview_resource_data(
     except httpx.HTTPStatusError as e:
         return {"error": f"HTTP {e.response.status_code} al bajar el recurso"}
     except httpx.HTTPError as e:
-        return {"error": f"Error de red bajando recurso: {e}"}
+        return {"error": f"Error de red bajando recurso: {err_text(e)}"}
     except NetGuardError as e:
-        return {"error": str(e)}
+        return {"error": err_text(e)}
 
     if looks_like_html(data):
         return {

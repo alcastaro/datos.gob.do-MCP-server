@@ -88,3 +88,35 @@ async def test_download_to_file_respects_cap(httpx_mock, tmp_path):
     assert n == 2000
     assert dest.stat().st_size == 2000
     assert truncated is True
+
+
+# ─── err_text ─────────────────────────────────────────────────────────────────
+
+
+def test_err_text_falls_back_to_class_name_when_message_empty():
+    """Real ConnectTimeout instances from the catalog carry no message, which
+    produced the error "Could not load resource:" with nothing after it."""
+    import httpx
+
+    assert download.err_text(httpx.ConnectTimeout("")) == "ConnectTimeout"
+
+
+def test_err_text_uses_the_message_when_there_is_one():
+    assert download.err_text(ValueError("  boom  ")) == "boom"
+
+
+@pytest.mark.parametrize(
+    "head,expected",
+    [
+        (b"<!DOCTYPE html>\n<html>", True),
+        (b"  \n <html lang='es'>", True),
+        (b"\xef\xbb\xbf<!doctype HTML>", True),
+        (b"<body>hola</body>", True),
+        (b"nombre;sueldo\nANA;100", False),
+        (b'{"a": 1}', False),
+        (b"", False),
+        (b"PK\x03\x04", False),  # xlsx/ods are zip archives
+    ],
+)
+def test_looks_like_html(head, expected):
+    assert download.looks_like_html(head) is expected

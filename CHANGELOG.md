@@ -61,11 +61,21 @@ well-formed and the real catalog is not.
   for HTML markup before parsing, in both the analytics and preview paths, and
   rejected with an explanation. A wrong answer is worse than a failed one.
 
+- **Spreadsheets were lost to a single stray cell.** Government workbooks put
+  totals, footnotes or `#REF!` thousands of rows below the data, after DuckDB
+  has already inferred `DOUBLE` from the top of the column; the load then
+  failed outright. A failed typed read now retries with every column as text.
+  Worse types beat no data — this recovers about 6% of the sampled catalog.
+- **Some errors said nothing at all.** Several httpx timeout classes carry an
+  empty message, so a real failure surfaced as `Could not load resource:` with
+  nothing after the colon. Error text now falls back to the exception class
+  name.
+
 ### Added
 
 - `sweep/` (development only, not shipped): a catalog sweep harness that walks
   datos.gob.do through this server's own pipeline and records per-resource
-  outcomes. It found all three defects above.
+  outcomes. It found every defect listed above.
 
 ## [0.7.1] — 2026-08-07
 

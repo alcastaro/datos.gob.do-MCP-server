@@ -1003,3 +1003,44 @@ async def test_cold_path_does_not_block_the_event_loop(mock_ods_endpoint, tmp_ca
         beat.cancel()
     assert "error" not in out, out
     assert ticks > 0, "event loop never got control during the cold path"
+
+
+async def test_xlsx_falls_back_to_all_text_when_type_inference_fails(tmp_cache_dir, httpx_mock):
+    """Workbooks put totals, footnotes and #REF! below a numeric column, after
+    DuckDB has already inferred DOUBLE from the top of it. Losing the whole
+    file over that is worse than reading every column as text.
+    """
+    import io
+
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["codigo", "monto"])
+    for i in range(1, 60):
+        ws.append([f"c{i}", i * 100])
+    ws.append(["TOTAL", "#REF!"])  # the cell that breaks inference
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    url = "https://example.test/mixed.xlsx"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "x1"})
+    httpx_mock.add_response(url=url, method="GET", content=buf.getvalue())
+
+    out = await analytics.get_resource_schema(url, "xlsx")
+    assert "error" not in out, out
+    assert out["row_count"] == 60
+    assert [c["name"] for c in out["columns"]] == ["codigo", "monto"]
+
+
+async def test_error_message_is_never_empty(tmp_cache_dir, httpx_mock):
+    """httpx.ConnectTimeout('') produced 'Could not load resource:' and nothing
+    else — an error the assistant cannot relay and the user cannot act on."""
+    import httpx
+
+    url = "https://example.test/slow.csv"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "s1"})
+    httpx_mock.add_exception(httpx.ConnectTimeout(""), url=url, method="GET")
+    out = await analytics.get_resource_schema(url, "csv")
+    assert "error" in out
+    assert out["error"].rstrip().endswith("ConnectTimeout")
