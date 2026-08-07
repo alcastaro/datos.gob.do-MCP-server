@@ -553,14 +553,22 @@ async def test_detect_outliers_no_outliers(mock_csv_endpoint, tmp_cache_dir):
     assert "lower_fence" in out and "upper_fence" in out
 
 
-async def test_detect_outliers_zero_iqr_returns_error(tmp_cache_dir, httpx_mock):
+async def test_detect_outliers_zero_iqr_is_a_result_not_an_error(tmp_cache_dir, httpx_mock):
+    """A flat column has no outliers — that is an answer, not a failure.
+
+    Reporting it as an error made the tool look broken on 13 of 113 real
+    columns in the catalog audit (years, constants, small repeated sets) and
+    left the assistant with nothing to tell the user.
+    """
     uniform_csv = b"val\n5\n5\n5\n5\n5\n"
     url = "https://example.test/uniform.csv"
     httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "u1"})
     httpx_mock.add_response(url=url, method="GET", content=uniform_csv)
     out = await analytics.detect_outliers_resource(url, "csv", column="val")
-    assert "error" in out
-    assert "IQR" in out["error"] or "iqr" in out["error"].lower()
+    assert "error" not in out, out
+    assert out["outliers"] == []
+    assert out["iqr"] == 0
+    assert "no spread" in out["note"]
 
 
 async def test_detect_outliers_nonexistent_column(mock_outliers_endpoint, tmp_cache_dir):
@@ -1044,3 +1052,41 @@ async def test_error_message_is_never_empty(tmp_cache_dir, httpx_mock):
     out = await analytics.get_resource_schema(url, "csv")
     assert "error" in out
     assert out["error"].rstrip().endswith("ConnectTimeout")
+
+
+# ─── audit fixes: context cost, invisible characters ──────────────────────────
+
+
+async def test_schema_sample_default_is_small(mock_csv_endpoint, tmp_cache_dir):
+    """The tool the server tells the model to call first must not be the most
+    expensive one. Defaulting to the 1000-value ceiling produced a 352 KB reply
+    against a real catalog file — roughly 88k tokens to learn column names.
+    """
+    assert analytics.SCHEMA_SAMPLE_DEFAULT <= 10
+    out = await analytics.get_resource_schema(mock_csv_endpoint, "csv")
+    for col in out["columns"]:
+        assert len(col["sample_values"]) <= analytics.SCHEMA_SAMPLE_DEFAULT
+
+    wide = await analytics.get_resource_schema(
+        mock_csv_endpoint, "csv", sample_rows=analytics.SCHEMA_SAMPLE_ROWS
+    )
+    assert "error" not in wide  # the ceiling stays available on request
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("Cod.Capí\xadtulo", "Cod.Capítulo"),  # soft hyphen, invisible
+        ("A​B", "AB"),  # zero-width space
+        ("‏RTL", "RTL"),  # bidi mark
+        ("normal", "normal"),
+    ],
+)
+def test_normalize_header_strips_invisible_characters(raw, expected):
+    """A name rejected for a character nobody can see is impossible to act on."""
+    assert analytics._normalize_header(raw) == expected
+
+
+def test_quote_ident_accepts_name_after_invisible_chars_removed():
+    cleaned = analytics._normalize_header("Cod.Capí\xadtulo")
+    assert analytics._quote_ident(cleaned) == '"Cod.Capítulo"'

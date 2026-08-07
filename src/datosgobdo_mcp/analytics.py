@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import tempfile
+import unicodedata
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal, TypeVar
@@ -42,6 +43,14 @@ from .netguard import NetGuardError
 logger = logging.getLogger(__name__)
 
 SCHEMA_SAMPLE_ROWS = 1000
+# What `get_resource_schema` returns when the caller does not ask for more.
+# It used to default to the 1000-value ceiling, which made the tool the server
+# itself recommends calling *first* also the most expensive thing it can do:
+# measured against the real catalog, a single reply reached 352 KB — roughly
+# 88k tokens of an assistant's context spent on recognising column names. Six
+# distinct values identify a column; enumerating a category is a deliberate
+# request, not a default.
+SCHEMA_SAMPLE_DEFAULT = 6
 SUMMARIZE_MAX_TOP_N = 50
 FILTER_MAX_LIMIT = 1000
 AGGREGATE_MAX_LIMIT = 1000
@@ -194,15 +203,23 @@ def _quote_ident(name: str) -> str:
 
 
 def _normalize_header(name: str) -> str:
-    """Collapse whitespace in a column name read from a file.
+    """Clean a column name read from a file so it stays usable.
 
-    Spreadsheet headers routinely wrap across lines ("Presupuesto\\nAprobado")
-    or carry trailing tabs. DuckDB keeps those characters in the column name,
-    which then fails identifier validation and makes the whole file unusable.
-    Normalizing at read time keeps the data reachable; the name the user sees
-    is the normalized one, which is also the one they would have typed.
+    Two problems, both from real files:
+
+    Spreadsheet headers wrap across lines ("Presupuesto\\nAprobado") or carry
+    trailing tabs, and DuckDB keeps those characters in the column name.
+
+    Worse, they carry *invisible* characters — the catalog audit found
+    "Cod.Capí\\xadtulo", where \\xad is a soft hyphen. Nothing about that name
+    looks wrong to a person reading it, so a rejection was impossible to act
+    on: the user is told to fix a column name that already looks correct.
+    Unicode format characters (category Cf, which includes soft hyphen, zero
+    width space and the bidi marks) carry no meaning in a field name and are
+    dropped rather than rejected.
     """
-    return _IDENT_WHITESPACE.sub(" ", name).strip()
+    cleaned = "".join(c for c in name if unicodedata.category(c) != "Cf")
+    return _IDENT_WHITESPACE.sub(" ", cleaned).strip()
 
 
 def _quote_literal(value: Any) -> str:
@@ -430,6 +447,20 @@ def _ods_repeat(raw: str | None) -> int:
         return max(1, min(int(raw), _ODS_MAX_REPEAT)) if raw else 1
     except (TypeError, ValueError):
         return 1
+
+
+def warm_parquet_for(url: str) -> Path | None:
+    """Return the cached Parquet for this URL, or None — never touches the network.
+
+    Lets a caller ask "have we already read this?" without paying for a HEAD
+    request, which is the difference between reusing a copy and asking the
+    portal about it again.
+    """
+    try:
+        hit = get_cache().get_by_url(url)
+    except OSError:  # pragma: no cover — unreadable cache dir
+        return None
+    return hit[0] if hit else None
 
 
 async def ensure_cached(
@@ -1163,11 +1194,22 @@ async def detect_outliers_resource(
         q1, q3 = stats_row[0], stats_row[1]
         iqr = q3 - q1
         if iqr == 0:
+            # Not a failure. The question "which values are outliers?" has a
+            # correct answer here — none — and the column being flat is itself
+            # the finding. Reporting it as an error made a working tool look
+            # broken on 13 of 113 real columns during the catalog audit, and
+            # left the assistant with nothing to tell the user.
             return {
-                "error": f"IQR is 0 for column '{column}' — all values are identical or the distribution has no spread. Outlier detection is undefined.",
+                "outliers": [],
+                "column": column,
                 "q1": q1,
                 "q3": q3,
                 "iqr": 0,
+                "note": (
+                    f"Column '{column}' has no spread: the first and third quartiles are "
+                    f"both {q1}, so no value can be an outlier. This usually means the "
+                    f"column holds a constant, a year, or only a handful of repeated values."
+                ),
             }
 
         lower_fence = q1 - 1.5 * iqr

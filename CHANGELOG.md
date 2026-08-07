@@ -4,6 +4,43 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.3] — 2026-08-07
+
+Findings from running every tool over the MCP protocol — a real stdio client
+session, not in-process calls — against 129 files from the live catalog.
+Measured over the same 1,121 calls before and after: success **91.5% → 94.0%**,
+errors **51 → 10**, total response payload **4.69 MB → 1.29 MB**.
+
+### Fixed
+
+- **`get_resource_schema` returned up to 352 KB.** `sample_rows` defaulted to
+  its own 1000 ceiling, so the tool the server tells the model to call *first*
+  ("cheap reconnaissance step") was also the most expensive thing it could do —
+  roughly 88k tokens of an assistant's context spent learning column names. The
+  default is now 6 distinct values per column, enough to recognise what a column
+  holds; the 1000 ceiling remains available on request. Largest reply in the
+  same benchmark fell to **7.4 KB**.
+- **`download_resource_preview` never used the cache.** It called the download
+  path directly, so it re-fetched the file on every call: **20-25× slower than
+  every other tool** (median 0.77 s against 0.03 s, worst 11.25 s) and a fresh
+  request to a government portal each time an assistant glanced at a file it had
+  already read. It now reads from the Parquet cache when the resource is already
+  there. Median **0.77 s → 0.017 s**.
+- **`download_resource_preview` refused ODS**, which is about a third of this
+  catalog, while the analytics tools read the same files without trouble — 27 of
+  129 resources failed for this reason alone. ODS now goes through the cached
+  path. Success rate **79% → 100%**.
+- **Column names were rejected for characters nobody can see.** A real header
+  read `Cod.Capí\xadtulo`, where `\xad` is a soft hyphen. The name looks correct
+  on screen, so the error was impossible to act on. Unicode format characters
+  (soft hyphen, zero-width space, bidi marks) are now stripped rather than
+  rejected.
+- **`detect_outliers_resource` reported an error when a column had no spread.**
+  "Which values are outliers?" has a correct answer there — none — and the
+  column being flat is itself worth knowing. It returned an error on 13 of 113
+  real columns (years, constants, small repeated sets), leaving the assistant
+  with nothing to report. It now returns an empty result with an explanation.
+
 ## [0.7.2] — 2026-08-07
 
 Robustness fixes found by running the analytics pipeline against a sample of

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from datosgobdo_mcp import preview
+from datosgobdo_mcp import analytics, preview
 
 # ─── Sample selection ─────────────────────────────────────────────────────────
 
@@ -153,3 +153,32 @@ async def test_preview_returns_netguard_error_as_result(monkeypatch):
     monkeypatch.delenv("DATOSGOBDO_ALLOW_HOSTS", raising=False)
     out = await preview.preview_resource_data("https://nonexistent.invalid/d.csv", "csv")
     assert "error" in out
+
+
+async def test_preview_supports_ods_via_cache(mock_ods_endpoint, tmp_cache_dir):
+    """ODS is about a third of this catalog; refusing it made preview useless
+    there while the analytics tools read the same files fine."""
+    out = await preview.preview_resource_data(mock_ods_endpoint, "ods", rows=3)
+    assert "error" not in out, out
+    assert out["columns"]
+    assert out["source"] == "parquet-cache"
+
+
+async def test_preview_reuses_the_warm_cache_without_touching_the_network(
+    sample_csv_url, sample_csv_bytes, tmp_cache_dir, httpx_mock
+):
+    """Once analytics has read a resource, preview must not download it again.
+
+    Measured before this: preview was 20-25x slower than every other tool and
+    put a fresh request on the portal each time an assistant glanced at a file
+    it had already read.
+    """
+    httpx_mock.add_response(url=sample_csv_url, method="HEAD", headers={"etag": "w1"})
+    httpx_mock.add_response(url=sample_csv_url, method="GET", content=sample_csv_bytes)
+    await analytics.get_resource_schema(sample_csv_url, "csv")
+    before = len(httpx_mock.get_requests())
+
+    out = await preview.preview_resource_data(sample_csv_url, "csv", rows=3)
+    assert "error" not in out, out
+    assert out["source"] == "parquet-cache"
+    assert len(httpx_mock.get_requests()) == before, "preview hit the network again"

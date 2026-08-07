@@ -160,6 +160,54 @@ def _preview_json(data: bytes, rows: int, sample: SampleMode) -> dict[str, Any]:
     return {"format": "json-scalar", "value": obj}
 
 
+async def _preview_via_cache(url: str, kind: str, rows: int, sample: SampleMode) -> dict[str, Any]:
+    """Read a preview out of the Parquet cache instead of off the network.
+
+    Imported lazily: preview is the cheap first-contact tool and importing
+    DuckDB at module load would make the whole server slower to start.
+    """
+    from .analytics import AnalyticsError, ensure_cached
+
+    try:
+        parquet, meta = await ensure_cached(url, kind)
+    except (httpx.HTTPError, AnalyticsError, NetGuardError, OSError) as e:
+        return {"error": f"No se pudo cargar el recurso: {err_text(e)}"}
+
+    import duckdb
+
+    con = duckdb.connect(":memory:")
+    try:
+        p = str(parquet).replace("'", "''")
+        described = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{p}')").fetchall()
+        columns = [r[0] for r in described]
+        total = con.execute(f"SELECT COUNT(*) FROM read_parquet('{p}')").fetchone()[0]  # type: ignore[index]
+        order = {
+            "head": "",
+            "tail": f"OFFSET {max(0, total - rows)}",
+            "random": f"USING SAMPLE {rows} ROWS",
+        }[sample]
+        if sample == "random":
+            sql = f"SELECT * FROM read_parquet('{p}') {order}"
+        else:
+            sql = f"SELECT * FROM read_parquet('{p}') LIMIT {rows} {order}"
+        out_rows = [list(r) for r in con.execute(sql).fetchall()]
+    except duckdb.Error as e:
+        return {"error": f"No se pudo leer el recurso: {e}"}
+    finally:
+        con.close()
+
+    return {
+        "format": kind,
+        "columns": columns,
+        "total_rows_in_download": total,
+        "rows_returned": len(out_rows),
+        "sample_mode": sample,
+        "rows": [[_jsonable(v) for v in r] for r in out_rows],
+        "source": "parquet-cache",
+        "cache": meta.get("cache"),
+    }
+
+
 async def preview_resource_data(
     url: str,
     fmt: str | None,
@@ -182,16 +230,29 @@ async def preview_resource_data(
     """
     rows = min(max(int(rows), 1), MAX_ROWS)
     kind = classify_format(fmt)
-    if kind is None or kind == "ods":
+    if kind is None:
         return {
             "error": f"Formato '{fmt}' no soportado para preview",
-            "supported": ["CSV", "TSV", "XLSX", "JSON"],
-            "hint": (
-                "Para ODS usar las herramientas de analytics (get_resource_schema, "
-                "summarize_resource, filter_resource) que sí lo soportan. "
-                "Otros formatos: descargar manualmente desde la URL del recurso."
-            ),
+            "supported": ["CSV", "TSV", "XLSX", "ODS", "JSON"],
+            "hint": "Descargar manualmente desde la URL del recurso.",
         }
+
+    if kind == "ods":
+        # ODS is a zip of XML, so there are no raw rows to slice: it has to be
+        # transcoded before anything can read it. Rather than refuse — which is
+        # what this tool used to do, and ODS is about a third of this catalog —
+        # go through the cached analytics path, which already knows how.
+        return await _preview_via_cache(url, kind, rows, sample)
+
+    # If the analytics tools already pulled this resource, reuse their copy.
+    # The audit measured the alternative: preview re-downloaded on every call,
+    # which made it 20-25x slower than every other tool (p50 0.77s against
+    # 0.03s) and put a fresh request on a government portal each time an
+    # assistant glanced at a file it had already read.
+    from .analytics import warm_parquet_for
+
+    if warm_parquet_for(url) is not None:
+        return await _preview_via_cache(url, kind, rows, sample)
 
     try:
         data, truncated = await download_capped(url, PREVIEW_MAX_BYTES)

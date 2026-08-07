@@ -16,6 +16,9 @@ from pydantic import Field
 
 from . import __version__, ckan
 from .analytics import (
+    SCHEMA_SAMPLE_DEFAULT,
+)
+from .analytics import (
     aggregate_resource as _aggregate_resource,
 )
 from .analytics import (
@@ -257,11 +260,15 @@ async def get_resource_schema(
     sample_rows: Annotated[
         int,
         Field(
-            description="Distinct values per column to include as samples (1-1000).",
+            description=(
+                "Distinct sample values to show per column (1-1000). The default of 6 "
+                "is enough to recognise what a column holds; raise it only when you "
+                "need to enumerate a category's values, and expect a much larger reply."
+            ),
             ge=1,
             le=1000,
         ),
-    ] = 1000,
+    ] = SCHEMA_SAMPLE_DEFAULT,
 ) -> SchemaResult:
     """Return column names, inferred types, and sample values for a resource.
 
