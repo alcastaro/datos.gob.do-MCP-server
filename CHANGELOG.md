@@ -4,9 +4,40 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [0.7.0] — 2026-06-10
+## [0.7.1] — 2026-08-07
 
-> Local build — not yet published to PyPI / MCP Registry.
+Install-breakage hotfix. Anyone who ran `uvx dominican-open-data-mcp` or
+installed fresh after 2026-07-28 hit one of the two failures below.
+
+### Fixed
+
+- **`ModuleNotFoundError: No module named 'mcp.server.fastmcp'` on fresh
+  installs.** The MCP Python SDK released **v2.0.0** on 2026-07-28 (the
+  `2026-07-28` protocol revision), which renamed `FastMCP` to `MCPServer` and
+  removed the old import path with no compatibility shim. Our dependency was
+  pinned `mcp>=1.9.0` with no upper bound, so any fresh resolution pulled 2.x
+  and the server failed at import. Now pinned `mcp>=1.9.0,<2`, with a
+  regression test. Migration to the v2 SDK is tracked separately; the SDK v2
+  serves older protocol revisions, so there is no client-side urgency.
+  Workaround for anyone on an older release:
+  `uvx --with "mcp<2" --from dominican-open-data-mcp datosgobdo-mcp`.
+- **`uvx dominican-open-data-mcp` failed with "An executable named
+  dominican-open-data-mcp is not provided by package".** The distribution
+  shipped only the short `datosgobdo-mcp` console script, but the MCP Registry
+  entry (`runtimeHint: uvx` + the PyPI identifier) implies a command matching
+  the distribution name — which is also what third-party install pages print.
+  A `dominican-open-data-mcp` alias entry point now exists; both names launch
+  the same server. Pre-existing bug, unrelated to the SDK break.
+- **`serverInfo.version` reported the MCP SDK version instead of the package
+  version** (clients saw e.g. `1.27.1`). `FastMCP` accepts no `version`
+  argument, so the low-level server fell back to the installed SDK version.
+
+### Changed
+
+- Test suite verified against both `mcp` 1.27.1 and 1.29.0 (316 tests, 88%
+  coverage, no omits).
+
+## [0.7.0] — 2026-06-10
 
 ### Added (hosted readiness, experimental)
 
@@ -46,8 +77,6 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   log a warning.
 
 ## [0.6.2] — 2026-06-09
-
-> Local build — not yet published to PyPI / MCP Registry.
 
 ### Added
 

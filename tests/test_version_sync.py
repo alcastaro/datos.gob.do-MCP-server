@@ -43,3 +43,37 @@ def test_server_json_versions_match_package(repo_files):
 
 def test_user_agent_carries_package_version():
     assert __version__ in USER_AGENT
+
+
+def test_serverinfo_reports_package_version_not_sdk_version():
+    """serverInfo.version must be the package version.
+
+    FastMCP takes no `version` argument, so the low-level server defaulted to
+    the installed mcp SDK version and clients saw e.g. "1.27.1" as our version.
+    """
+    from datosgobdo_mcp.server import mcp
+
+    opts = mcp._mcp_server.create_initialization_options()
+    assert opts.server_version == __version__
+
+
+def test_console_scripts_include_pypi_named_alias(repo_files):
+    """`uvx dominican-open-data-mcp` (the command the Registry entry implies)
+    only works if a console script matches the distribution name.
+    """
+    pyproject_text, _ = repo_files
+    scripts = pyproject_text.split("[project.scripts]", 1)[1].split("\n[", 1)[0]
+    for name in ("datosgobdo-mcp", "dominican-open-data-mcp"):
+        assert re.search(
+            rf'^{re.escape(name)} = "datosgobdo_mcp\.server:main"$',
+            scripts,
+            re.MULTILINE,
+        ), f"missing console script: {name}"
+
+
+def test_mcp_dependency_has_upper_bound(repo_files):
+    """mcp 2.x removed `mcp.server.fastmcp`; an unbounded pin breaks installs."""
+    pyproject_text, _ = repo_files
+    assert re.search(r'"mcp>=[\d.]+,<2"', pyproject_text), (
+        "mcp dependency must keep an upper bound until the SDK v2 migration lands"
+    )

@@ -32,7 +32,7 @@ with **DuckDB**, and returns a slice to the model.
 
 ```bash
 # Any MCP client (Claude Desktop, Claude Code, Cursor, …) runs it via uvx:
-uvx --from dominican-open-data-mcp datosgobdo-mcp
+uvx dominican-open-data-mcp
 ```
 
 Claude Desktop config (`claude_desktop_config.json`):
@@ -42,7 +42,7 @@ Claude Desktop config (`claude_desktop_config.json`):
   "mcpServers": {
     "datosgobdo": {
       "command": "uvx",
-      "args": ["--from", "dominican-open-data-mcp", "datosgobdo-mcp"]
+      "args": ["dominican-open-data-mcp"]
     }
   }
 }

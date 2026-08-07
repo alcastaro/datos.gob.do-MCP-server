@@ -14,7 +14,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from . import ckan
+from . import __version__, ckan
 from .analytics import (
     aggregate_resource as _aggregate_resource,
 )
@@ -74,6 +74,9 @@ logging.basicConfig(
 logger = logging.getLogger("datosgobdo-mcp")
 
 mcp = FastMCP("datosgobdo-mcp")
+# FastMCP has no `version` constructor arg; the low-level server falls back to
+# the installed mcp SDK version, so clients saw the SDK version in serverInfo.
+mcp._mcp_server.version = __version__
 
 
 # ─── Tool annotations ─────────────────────────────────────────────────────────

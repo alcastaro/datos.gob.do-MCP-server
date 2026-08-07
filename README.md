@@ -172,13 +172,21 @@ and cache stats omit server paths.
 
 ### Option A — Via `uvx` from PyPI (recommended)
 
-Package: [`dominican-open-data-mcp`](https://pypi.org/project/dominican-open-data-mcp/) (entry-point binary keeps the short name `datosgobdo-mcp`):
+Package: [`dominican-open-data-mcp`](https://pypi.org/project/dominican-open-data-mcp/).
+
+```bash
+uvx dominican-open-data-mcp
+```
+
+The package also ships a short binary, `datosgobdo-mcp` — both commands launch the same server:
 
 ```bash
 uvx --from dominican-open-data-mcp datosgobdo-mcp
 ```
 
 `uvx` downloads the package, creates an isolated venv, and runs the server. First run takes a few seconds; subsequent runs are instant.
+
+> **Upgrading from ≤ 0.7.0?** Those releases pinned `mcp>=1.9.0` with no upper bound, and the MCP Python SDK 2.0 (released 2026-07-28) removed the `mcp.server.fastmcp` import path — so a fresh install fails with `ModuleNotFoundError`. Install 0.7.1 or later, or pin the SDK yourself: `uvx --with "mcp<2" --from dominican-open-data-mcp datosgobdo-mcp`.
 
 ### Option B — Via `uvx` from GitHub (latest dev version)
 
@@ -212,23 +220,23 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
   "mcpServers": {
     "datosgobdo": {
       "command": "/Users/YOUR_USERNAME/.local/bin/uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/alcastaro/datos.gob.do-MCP-server.git",
-        "datosgobdo-mcp"
-      ]
+      "args": ["dominican-open-data-mcp"]
     }
   }
 }
 ```
+
+Use the absolute path to `uvx` — Claude Desktop does not inherit your shell `PATH`. To track the development version instead, replace the args with `["--from", "git+https://github.com/alcastaro/datos.gob.do-MCP-server.git", "datosgobdo-mcp"]`.
 
 Restart Claude Desktop completely (Cmd+Q, not just closing the window). Settings → Developer → Local MCP servers should show `datosgobdo` in **running** state.
 
 ### Claude Code configuration
 
 ```bash
-claude mcp add datosgobdo -- uvx --from git+https://github.com/alcastaro/datos.gob.do-MCP-server.git datosgobdo-mcp
+claude mcp add datosgobdo -- uvx dominican-open-data-mcp
 ```
+
+Development version: `claude mcp add datosgobdo -- uvx --from git+https://github.com/alcastaro/datos.gob.do-MCP-server.git datosgobdo-mcp`
 
 ### Cursor / other clients
 
@@ -355,7 +363,7 @@ The server logs to stderr:
 When you edit code:
 
 1. Commit + push to `main` on GitHub.
-2. Clear the `uvx` cache to force a refresh: `uv cache clean datosgobdo-mcp`.
+2. Clear the `uvx` cache to force a refresh: `uv cache clean dominican-open-data-mcp` (the cache is keyed on the distribution name, not the binary name).
 3. Restart the MCP client.
 
 For faster iteration, configure the client to point to your local clone instead of the GitHub repo: `command: /path/to/clone/.venv/bin/datosgobdo-mcp`.

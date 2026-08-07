@@ -33,7 +33,7 @@ al modelo.
 
 ```bash
 # Cualquier cliente MCP (Claude Desktop, Claude Code, Cursor, …) lo corre con uvx:
-uvx --from dominican-open-data-mcp datosgobdo-mcp
+uvx dominican-open-data-mcp
 ```
 
 Config de Claude Desktop (`claude_desktop_config.json`):
@@ -43,7 +43,7 @@ Config de Claude Desktop (`claude_desktop_config.json`):
   "mcpServers": {
     "datosgobdo": {
       "command": "uvx",
-      "args": ["--from", "dominican-open-data-mcp", "datosgobdo-mcp"]
+      "args": ["dominican-open-data-mcp"]
     }
   }
 }
