@@ -164,7 +164,7 @@ and cache stats omit server paths.
 | `DATOSGOBDO_HOST` / `DATOSGOBDO_PORT` | `127.0.0.1` / `8000` | HTTP bind address. |
 | `DATOSGOBDO_DUCKDB_MEMORY` | `2GB` | DuckDB memory ceiling per connection. |
 | `DATOSGOBDO_DUCKDB_THREADS` | `4` | DuckDB thread cap. |
-| `DATOSGOBDO_QUERY_TIMEOUT` | `0` (off) | Wall-clock seconds before a `query_resource` SQL run is interrupted. |
+| `DATOSGOBDO_QUERY_TIMEOUT` | `0` (off) | Wall-clock seconds before a DuckDB run is interrupted. Covers both `query_resource` SQL and the conversion of a freshly downloaded file into the Parquet cache. |
 
 ---
 

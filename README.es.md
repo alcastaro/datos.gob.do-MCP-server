@@ -165,7 +165,7 @@ cache compartida) y las estadísticas de cache omiten rutas del servidor.
 | `DATOSGOBDO_HOST` / `DATOSGOBDO_PORT` | `127.0.0.1` / `8000` | Dirección HTTP. |
 | `DATOSGOBDO_DUCKDB_MEMORY` | `2GB` | Techo de memoria DuckDB por conexión. |
 | `DATOSGOBDO_DUCKDB_THREADS` | `4` | Tope de hilos DuckDB. |
-| `DATOSGOBDO_QUERY_TIMEOUT` | `0` (off) | Segundos de reloj antes de interrumpir un SQL de `query_resource`. |
+| `DATOSGOBDO_QUERY_TIMEOUT` | `0` (off) | Segundos de reloj antes de interrumpir una ejecución de DuckDB. Cubre tanto el SQL de `query_resource` como la conversión de un archivo recién descargado al cache Parquet. |
 
 ---
 
