@@ -57,3 +57,6 @@ mirror/
 # Test artifacts
 .coverage
 htmlcov/
+REPORTE_MCP.md
+workplan.md
+plan_*.md
