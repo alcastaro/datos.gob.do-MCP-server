@@ -581,3 +581,49 @@ async def test_every_tool_declares_an_output_schema():
     tools = await mcp.list_tools()
     missing = [t.name for t in tools if not t.outputSchema]
     assert not missing, f"tools without outputSchema: {missing}"
+
+
+async def test_the_schemas_carry_no_generated_boilerplate():
+    """Every conversation pays for these schemas before a question is asked.
+
+    Pydantic titles each field, so `non_null_count` would arrive with
+    `"title": "Non Null Count"`, and stamps `"default": null` on every optional
+    one. The property key already carries the name and an absent optional field
+    is absent, so both are pure cost — about 5 KB across the tool list.
+    """
+    import json
+
+    from datosgobdo_mcp.server import mcp
+
+    tools = await mcp.list_tools()
+    for tool in tools:
+        schema = dict(getattr(tool, "outputSchema", None) or {})
+        if not schema:
+            continue
+        # FastMCP names the wrapper it synthesises for tools returning a plain
+        # dict ("get_datasetDictOutput"). That one is the framework's and costs
+        # ~40 bytes; what this test guards is the per-field boilerplate inside
+        # our own result models.
+        schema.pop("title", None)
+        text = json.dumps(schema)
+        assert '"title": "' not in text.replace('"title": "Result"', ""), (
+            f"{tool.name} carries generated field titles"
+        )
+        assert '"default": null' not in text, f"{tool.name} carries null defaults"
+
+
+async def test_the_tool_list_stays_under_its_context_budget():
+    """A ceiling, not a target.
+
+    Measured 43,582 bytes before the schema cleanup and 38,719 after. The number
+    only matters as a tripwire: a tool added with a verbose result model can put
+    several KB into every conversation in this project, and nothing else would
+    notice.
+    """
+    import json
+
+    from datosgobdo_mcp.server import mcp
+
+    tools = await mcp.list_tools()
+    total = len(json.dumps([t.model_dump() for t in tools], ensure_ascii=False, default=str))
+    assert total < 41_000, f"the tool list grew to {total:,} bytes"

@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.1] — 2026-08-08
+
+### Changed
+
+- **The tool list costs 4,863 fewer bytes of context**, 43,582 → 38,719, with
+  nothing removed that a reader uses. Every conversation pays for these 23
+  schemas before the user asks anything.
+
+  The plan called this a "description diet", and measuring it first showed the
+  plan was aimed at the wrong target: the prose descriptions are only 6,083 of
+  the 43,582 bytes. The weight is in the schemas — 15,930 output, 14,797 input —
+  and a third of the output half was boilerplate Pydantic generates. Every field
+  arrived titled (`non_null_count` carrying `"title": "Non Null Count"`) and
+  every optional one stamped `"default": null`. The property key already carries
+  the name, and an absent optional field is absent.
+
+  The prose was left alone deliberately. The largest failure mode measured
+  across the catalog was malformed calls, and the guidance that prevents them is
+  worth more than the bytes it costs.
+
+  Two tests hold the line: no generated field titles in any schema, and a
+  41,000-byte ceiling on the whole tool list — a tripwire, not a target, since a
+  single verbose result model can otherwise add kilobytes to every conversation
+  in a project without anyone noticing.
+
 ## [0.9.0] — 2026-08-08
 
 ### Added

@@ -31,7 +31,40 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 
-class _Result(BaseModel):
+def _strip_noise(node: Any) -> Any:
+    """Drop the parts of a generated JSON Schema that tell a reader nothing.
+
+    Every conversation pays for these 23 schemas before the user asks anything.
+    Measured: 43,582 bytes, of which the prose descriptions are only 6,083 — the
+    weight is in the schemas themselves, and a third of *that* is noise. Pydantic
+    titles every field, so `non_null_count` arrives with `"title": "Non Null
+    Count"`, and stamps `"default": null` on every optional one. The property key
+    already carries the name, and an absent optional field is absent.
+
+    Removing them costs no meaning and returns roughly 6 KB per conversation.
+    The prose stays: the campaign's largest failure mode was malformed calls, and
+    trimming the guidance that prevents them to save bytes would be a bad trade.
+    """
+    if isinstance(node, dict):
+        return {
+            k: _strip_noise(v)
+            for k, v in node.items()
+            if not (k == "title" or (k == "default" and v is None))
+        }
+    if isinstance(node, list):
+        return [_strip_noise(v) for v in node]
+    return node
+
+
+class _Lean(BaseModel):
+    """Base that emits its schema without the generated boilerplate."""
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema: Any, handler: Any) -> Any:
+        return _strip_noise(handler(core_schema))
+
+
+class _Result(_Lean):
     """Base: every tool result may carry an error + recovery hint instead of data."""
 
     model_config = ConfigDict(extra="allow")
@@ -50,7 +83,7 @@ class _AnalyticsResult(_Result):
 # ─── Schema / summarize (column-stat payloads) ────────────────────────────────
 
 
-class SchemaColumn(BaseModel):
+class SchemaColumn(_Lean):
     model_config = ConfigDict(extra="allow")
     name: str
     type: str
@@ -64,7 +97,7 @@ class SchemaResult(_AnalyticsResult):
     columns: list[SchemaColumn] = []
 
 
-class SummaryColumn(BaseModel):
+class SummaryColumn(_Lean):
     model_config = ConfigDict(extra="allow")
     name: str
     type: str
@@ -84,7 +117,7 @@ class SummaryResult(_AnalyticsResult):
     columns: list[SummaryColumn] = []
 
 
-class QuantileColumn(BaseModel):
+class QuantileColumn(_Lean):
     # Percentile keys (p25, p50, …) are dynamic → preserved via extra="allow".
     model_config = ConfigDict(extra="allow")
     name: str
