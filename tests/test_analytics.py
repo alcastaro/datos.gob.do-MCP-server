@@ -1192,3 +1192,27 @@ def test_repair_csv_leaves_a_normal_file_alone(tmp_path):
     f = tmp_path / "ok.csv"
     f.write_text("a;b;c\n1;2;3\n4;5;6\n", encoding="utf-8")
     assert analytics._repair_csv_text(f) == f
+
+
+async def test_zip_formats_reject_a_web_page_before_duckdb_sees_it(httpx_mock, tmp_cache_dir):
+    """Portals answer a gated download with a login page under the original
+    filename and HTTP 200. DuckDB then says "Failed to open zip for reading",
+    which reads like a bug in this server rather than a fact about the file."""
+    url = "https://example.test/gated.xlsx"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "z1"})
+    httpx_mock.add_response(url=url, method="GET", content=b"<html><body>Ingrese</body></html>")
+    out = await analytics.get_resource_schema(url, "xlsx")
+    assert "error" in out
+    assert "XLSX" in out["error"] or "HTML" in out["error"]
+
+
+def test_repair_leaves_a_multiline_quoted_header_alone(tmp_path):
+    """A header wrapped across two lines inside a quoted field is legal CSV.
+    The structure repair must not treat it as a collapsed table; recovering it
+    is the strict_mode=false fallback's job, not this one's."""
+    f = tmp_path / "precios.csv"
+    f.write_text(
+        'Orden;"Presentación y/o \nunidad de medida";07-Aug-23\n1;Libra;25\n2;Unidad;30\n',
+        encoding="utf-8",
+    )
+    assert analytics._repair_csv_text(f) == f

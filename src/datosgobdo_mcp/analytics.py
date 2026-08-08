@@ -675,6 +675,22 @@ async def ensure_cached(
                     "(HTTP 200). Open the resource URL in a browser to confirm."
                 )
 
+        if fmt in ("xlsx", "xls", "xlsm", "ods"):
+            # These are all zip containers. Portals answer a gated or moved
+            # download with a login page carrying the original filename and
+            # HTTP 200, and that page is not always shaped like the HTML the
+            # guard above recognises. Checking the magic bytes turns "IO Error:
+            # Failed to open zip for reading" — which reads like a bug in this
+            # server — into a sentence about the file.
+            with raw.open("rb") as fh:
+                magic = fh.read(4)
+            if not magic.startswith(b"PK") and fmt != "xls":
+                raise AnalyticsError(
+                    f"The file is not a valid {fmt.upper()} — it does not start "
+                    "like a spreadsheet. The portal most likely served a web "
+                    "page or an error document under a spreadsheet filename."
+                )
+
         effective_fmt = fmt
         if fmt == "ods":
             raw_ods = raw
@@ -700,6 +716,16 @@ async def ensure_cached(
             copy_sql = (
                 f"COPY (SELECT * FROM read_csv_auto('{src}', "
                 f"SAMPLE_SIZE=-1, IGNORE_ERRORS=TRUE)) "
+                f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+            )
+            # A header wrapped across two lines inside a quoted field is legal
+            # CSV, and a real price series in this catalog has one — but the
+            # sniffer refuses the whole file over it. Relaxing strict mode reads
+            # it correctly (153 columns) at the cost of a laxer dialect guess,
+            # which is only paid by files that already failed.
+            fallback_sql = (
+                f"COPY (SELECT * FROM read_csv_auto('{src}', "
+                f"SAMPLE_SIZE=-1, IGNORE_ERRORS=TRUE, strict_mode=false)) "
                 f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
             )
         elif effective_fmt in ("xlsx", "xls", "xlsm"):

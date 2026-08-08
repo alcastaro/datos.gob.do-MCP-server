@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.6] — 2026-08-08
+
+Found while scaling the protocol run from 129 to 500 datasets.
+
+### Fixed
+
+- **A header wrapped across two lines inside a quoted field killed the file.**
+  That is legal CSV, and a live price series publishes one; DuckDB's sniffer
+  refuses the whole resource over it. A `strict_mode=false` retry — paid only by
+  files that already failed — reads it correctly: 153 columns instead of an
+  error.
+- **"IO Error: Failed to open zip for reading."** Portals answer a gated or
+  moved download with a login page carrying the original filename and HTTP 200,
+  and not every such page is shaped like the HTML the existing guard
+  recognises. Zip-container formats (XLSX/XLSM/ODS) now check the magic bytes
+  first, so the caller is told the portal served a web page instead of being
+  handed a message that reads like a bug in this server.
+
 ## [0.7.5] — 2026-08-08
 
 ### Fixed
