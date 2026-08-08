@@ -3,8 +3,10 @@
 Designed as a swappable backend. v0.3 ships LocalDiskCache; future versions
 can add S3/object-storage backends without changing the analytics layer.
 
-Key format: <resource_id_or_url_hash>__<last_modified_or_etag>.parquet
-- ETag/last_modified ensures cache invalidates when source changes.
+Key format: <url_hash>__<last_modified_or_etag>__<parser_build>.parquet
+- ETag/last_modified ensures cache invalidates when the *source* changes.
+- parser_build ensures it also invalidates when *we* change, which the first
+  two do not. See _parser_build().
 - LRU eviction keeps total bytes under MAX_CACHE_BYTES.
 """
 
@@ -18,6 +20,8 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol
+
+from . import __version__
 
 try:  # POSIX cross-process lock; absent on Windows → per-process no-op
     import fcntl
@@ -43,10 +47,50 @@ def _hash_url(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
 
 
+_parser_build_cached: str | None = None
+
+
+def _parser_build() -> str:
+    """Identify the code that produced a cached Parquet.
+
+    A cache keyed only on URL + ETag answers "is the source still the same?"
+    It cannot answer "would we parse it the same way today?", and those are
+    different questions. When 0.7.5 fixed the codepage detection, ten Parquets
+    written by 0.7.4 stayed valid by that key and kept serving `A隳` and
+    `Informaci≤n` to every caller — a fix that shipped and did nothing, which is
+    worse than no fix, because the tests said it worked. They had to be deleted
+    by hand.
+
+    Two inputs decide the bytes we write:
+
+    - our own version, which this project's convention bumps on every change
+      that touches the parsers; and
+    - DuckDB's, because its CSV sniffer picks the column types. A `uv sync`
+      that upgrades it changes our output without changing a line of our code.
+
+    Hashing both is deliberately coarse. It discards a cache entry on releases
+    that could not have altered the parse, and that is the trade we want: the
+    cost of over-invalidating is one re-download inside a 1 GB LRU, and the
+    cost of under-invalidating is silently serving corrupted data from a tool
+    whose entire purpose is to be trusted about what the file says.
+    """
+    global _parser_build_cached
+    if _parser_build_cached is None:
+        try:
+            import duckdb
+
+            engine = duckdb.__version__
+        except Exception:  # pragma: no cover — duckdb is a hard dependency
+            engine = "unknown"
+        material = f"{__version__}|duckdb{engine}"
+        _parser_build_cached = hashlib.sha256(material.encode("utf-8")).hexdigest()[:8]
+    return _parser_build_cached
+
+
 def _build_key(url: str, etag: str | None, last_modified: str | None) -> str:
     version_tag = etag or last_modified or "no-version"
     version_safe = hashlib.sha256(version_tag.encode("utf-8")).hexdigest()[:12]
-    return f"{_hash_url(url)}__{version_safe}"
+    return f"{_hash_url(url)}__{version_safe}__{_parser_build()}"
 
 
 class LocalDiskCache:
@@ -128,17 +172,28 @@ class LocalDiskCache:
             with self._lock():
                 self._index.setdefault(key, {})["bytes"] = p.stat().st_size
                 self._index[key]["accessed_at"] = time.time()
+                self._index[key]["build"] = _parser_build()
                 if url is not None:
                     self._index[key]["url"] = url
                 self._save_index()
                 self._evict_to_fit_locked(self.max_bytes)
 
     def get_by_url(self, url: str) -> tuple[Path, str] | None:
-        """Return (path, key) for the most recently accessed entry matching url, or None."""
+        """Return (path, key) for the most recently accessed entry matching url, or None.
+
+        This is the warm path the analytics tools take, and it never computes a
+        key — it matches on URL alone, so putting the parser build into the key
+        does not reach it. An entry written by different code is therefore
+        rejected here explicitly, by the build stamped at finalize(). Entries
+        predating the stamp carry no build and are treated as stale, which is
+        the right answer for them: they were written before we started tracking
+        this, so we cannot claim they match.
+        """
+        build = _parser_build()
         best_key: str | None = None
         best_accessed: float = -1.0
         for key, meta in self._index.items():
-            if meta.get("url") == url:
+            if meta.get("url") == url and meta.get("build") == build:
                 p = self._entry_path(key)
                 if p.exists():
                     accessed = meta.get("accessed_at", 0.0)
@@ -187,11 +242,18 @@ class LocalDiskCache:
             for k in self._index
             if self._entry_path(k).exists()
         ]
+        current = _parser_build()
         return {
             "cache_dir": str(self.cache_dir),
             "entries": len(entries),
             "total_bytes": sum(s for _, s in entries),
             "max_bytes": self.max_bytes,
+            "parser_build": current,
+            # Written by an older parser: still on disk, never served, and the
+            # next eviction pass reclaims them.
+            "stale_entries": sum(
+                1 for k, _ in entries if self._index.get(k, {}).get("build") != current
+            ),
         }
 
     def clear(self) -> int:

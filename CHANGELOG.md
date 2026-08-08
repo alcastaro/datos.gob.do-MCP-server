@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.10] — 2026-08-08
+
+### Fixed
+
+- **The cache could not tell that we had changed.** Entries were keyed on URL +
+  ETag, which answers "is the source still the same?" but not "would we parse
+  it the same way today?" When 0.7.5 corrected the codepage detection, ten
+  Parquet files written wrongly by 0.7.4 stayed valid under that key and kept
+  serving `A隳` and `Informaci≤n` to every caller. The fix shipped, the tests
+  passed, and nothing changed for anyone whose cache was already warm; the
+  files had to be deleted by hand. The key now also carries a **parser build**
+  — this package's version and DuckDB's, since its CSV sniffer decides the
+  column types and a dependency upgrade changes our output without changing
+  our code.
+- **The warm path needed its own check.** `ensure_cached` matches on URL alone
+  and returns before the HEAD request, so it never computes a key and the fix
+  above does not reach it. Entries now carry the build that wrote them, and one
+  written by different code is refused there explicitly. Entries predating the
+  stamp are treated as stale, which also clears any 0.7.4 leftovers still in a
+  user's cache.
+
+Invalidation is deliberately coarse: a release that could not have altered the
+parse still drops its entries. Over-invalidating costs one re-download inside a
+1 GB LRU. Under-invalidating means silently serving corrupted data from a tool
+whose whole purpose is to be trusted about what a file says.
+
+### Changed
+
+- `get_cache_stats` reports `parser_build` and `stale_entries`.
+
 ## [0.7.9] — 2026-08-08
 
 Two more error messages turned into instructions, from the directed battery run

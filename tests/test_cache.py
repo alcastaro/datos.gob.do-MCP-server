@@ -25,6 +25,83 @@ def test_build_cache_key_no_version_tag_stable():
     assert k1 == k2
 
 
+def test_same_source_but_a_different_parser_is_a_different_key(monkeypatch):
+    """An unchanged file parsed by changed code is not the same artifact.
+
+    Keying on URL + ETag alone let 0.7.5's encoding fix ship without evicting
+    the ten Parquets 0.7.4 had written wrong; they kept being served as valid.
+    """
+    before = cache_mod.build_cache_key("https://a/x.csv", etag="unchanged")
+    monkeypatch.setattr(cache_mod, "_parser_build_cached", None)
+    monkeypatch.setattr(cache_mod, "__version__", "99.0.0")
+    after = cache_mod.build_cache_key("https://a/x.csv", etag="unchanged")
+    monkeypatch.setattr(cache_mod, "_parser_build_cached", None)
+    assert before != after
+
+
+def test_parser_build_tracks_the_duckdb_version(monkeypatch):
+    """DuckDB's sniffer picks the column types, so its version is ours too.
+
+    A `uv sync` that upgrades DuckDB changes the Parquet we write without
+    changing a line of this package.
+    """
+    import duckdb
+
+    monkeypatch.setattr(cache_mod, "_parser_build_cached", None)
+    baseline = cache_mod._parser_build()
+    monkeypatch.setattr(cache_mod, "_parser_build_cached", None)
+    monkeypatch.setattr(duckdb, "__version__", "0.0.0-not-a-real-release")
+    upgraded = cache_mod._parser_build()
+    monkeypatch.setattr(cache_mod, "_parser_build_cached", None)
+    assert baseline != upgraded
+
+
+def test_get_by_url_refuses_an_entry_written_by_another_parser(tmp_path, monkeypatch):
+    """The warm path never computes a key, so the key alone cannot protect it.
+
+    `ensure_cached` matches on URL and returns before the HEAD request. Without
+    this check the poisoned entry is served forever, whatever the key says.
+    """
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path)
+    url = "https://example.test/data.csv"
+    key = cache_mod.build_cache_key(url, etag="v1")
+    c.put_path(key).write_bytes(b"parquet written by the old parser")
+    c.finalize(key, url=url)
+    assert c.get_by_url(url) is not None
+
+    monkeypatch.setattr(cache_mod, "_parser_build_cached", None)
+    monkeypatch.setattr(cache_mod, "__version__", "99.0.0")
+    try:
+        assert c.get_by_url(url) is None
+    finally:
+        monkeypatch.setattr(cache_mod, "_parser_build_cached", None)
+
+
+def test_get_by_url_ignores_entries_predating_the_build_stamp(tmp_path):
+    """Entries in a cache dir written before this version carry no build.
+
+    We cannot claim they match, so they are stale — which also evicts any
+    0.7.4 stragglers still sitting in a user's cache.
+    """
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path)
+    url = "https://example.test/legacy.csv"
+    key = "legacy_key"
+    c.put_path(key).write_bytes(b"parquet")
+    c.finalize(key, url=url)
+    del c._index[key]["build"]  # as an older release left it
+    assert c.get_by_url(url) is None
+
+
+def test_stats_counts_entries_no_longer_servable(tmp_path):
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path)
+    c.put_path("k1").write_bytes(b"parquet")
+    c.finalize("k1", url="https://example.test/a.csv")
+    c._index["k1"]["build"] = "deadbeef"
+    stats = c.stats()
+    assert stats["stale_entries"] == 1
+    assert stats["parser_build"] == cache_mod._parser_build()
+
+
 def test_localdiskcache_put_and_get(tmp_path):
     c = cache_mod.LocalDiskCache(cache_dir=tmp_path)
     key = "abc123"
