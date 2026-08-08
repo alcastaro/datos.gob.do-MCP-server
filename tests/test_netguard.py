@@ -170,3 +170,54 @@ async def test_download_capped_blocks_redirect_to_private(httpx_mock, monkeypatc
     )
     with pytest.raises(netguard.NetGuardError, match="non-public"):
         await download.download_capped("https://example.test/redir.csv")
+
+
+async def test_head_metadata_is_guarded_like_the_download(monkeypatch):
+    """The version probe must not be a hole the download closes.
+
+    `ensure_cached` HEADs the URL before downloading it, to build the cache
+    key. That request went out without the guard, so a caller naming an
+    internal address got a real HEAD delivered to it — and its ETag back in the
+    key — while the download that followed was correctly refused. Blind, but a
+    working network probe from inside the perimeter.
+    """
+    monkeypatch.setenv("DATOSGOBDO_NETGUARD", "public-only")
+    monkeypatch.delenv("DATOSGOBDO_ALLOW_HOSTS", raising=False)
+    from datosgobdo_mcp import analytics
+
+    # It raises rather than returning empty: the guard error is not an
+    # httpx.HTTPError, so it travels past the transport-error handling this
+    # function does for unreachable hosts. That is the behaviour we want —
+    # "this URL is not allowed" is a different fact from "this host did not
+    # answer", and the caller is told which one it got.
+    with pytest.raises(netguard.NetGuardError, match="non-public"):
+        await analytics._head_metadata("http://169.254.169.254/latest/meta-data/")
+
+
+async def test_head_metadata_respects_strict_mode(monkeypatch, public_dns):
+    """A host outside the allowlist is refused on this path too.
+
+    Publicly routable, so the public-only check would wave it through; only the
+    strict allowlist stops it, and that check was never reached from here.
+    """
+    monkeypatch.setenv("DATOSGOBDO_NETGUARD", "strict")
+    monkeypatch.delenv("DATOSGOBDO_ALLOW_HOSTS", raising=False)
+    from datosgobdo_mcp import analytics
+
+    with pytest.raises(netguard.NetGuardError, match="strict allowlist"):
+        await analytics._head_metadata("https://ajeno.example/x.csv")
+
+
+def test_resource_requests_declare_their_fetch_context():
+    """Three hosts' worth of the catalog is gated on these headers.
+
+    Not a disguise: the User-Agent stays ours, and the values describe what this
+    client actually does. Asserted so a future edit cannot quietly drop them and
+    turn 16 datasets back into 403s that look like the publisher's fault.
+    """
+    from datosgobdo_mcp import download
+
+    assert download.RESOURCE_HEADERS["Sec-Fetch-Mode"] == "cors"
+    assert download.RESOURCE_HEADERS["Sec-Fetch-Dest"] == "empty"
+    assert download.RESOURCE_HEADERS["Sec-Fetch-Site"] == "cross-site"
+    assert download.RESOURCE_HEADERS["User-Agent"].startswith("datosgobdo-mcp/")

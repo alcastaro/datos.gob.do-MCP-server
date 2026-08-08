@@ -16,6 +16,31 @@ from .netguard import guard_request_hook
 
 DEFAULT_TIMEOUT = 60.0  # bigger files = longer timeout vs preview
 
+# Fetch-metadata headers, sent on every resource request.
+#
+# A sweep of the whole catalog found 67 hosts answering HTTP 403 to this
+# server. Two of them — deepblue.simv.gob.do and migracion.gob.do, 16 datasets
+# between them — answer 200 the moment these three headers are present, and
+# 403 without them, reproducibly. The User-Agent turned out to be irrelevant:
+# an honest `datosgobdo-mcp/…` and a Chrome string get the same answer either
+# way, so nothing here is a disguise. The WAF is checking that the client
+# states its request context at all, which browsers have done since 2020 and
+# most HTTP libraries still do not.
+#
+# The values are the true ones for what this client does: a cross-site
+# programmatic fetch whose destination is not a document. Claiming
+# `navigate`/`document` also passes, and would be a lie about the request.
+#
+# The other 65 hosts refuse every header combination tried, which is consistent
+# with a block on the network path rather than on the request.
+_FETCH_METADATA = {
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "cross-site",
+    "Sec-Fetch-Dest": "empty",
+}
+
+RESOURCE_HEADERS = {"User-Agent": USER_AGENT, **_FETCH_METADATA}
+
 # Caps per call-site. Preview keeps the conservative 5 MB. Analytics tools
 # (get_resource_schema, summarize_resource, aggregate_resource, etc.) opt into
 # the bigger cap explicitly.
@@ -155,7 +180,7 @@ async def download_capped(
     async with httpx.AsyncClient(
         follow_redirects=True,
         timeout=DEFAULT_TIMEOUT,
-        headers={"User-Agent": USER_AGENT},
+        headers=RESOURCE_HEADERS,
         # SSRF guard validates the initial URL and every redirect hop.
         event_hooks={"request": [guard_request_hook]},
     ) as client:
@@ -187,7 +212,7 @@ async def download_to_file(
     async with httpx.AsyncClient(
         follow_redirects=True,
         timeout=DEFAULT_TIMEOUT,
-        headers={"User-Agent": USER_AGENT},
+        headers=RESOURCE_HEADERS,
         event_hooks={"request": [guard_request_hook]},
     ) as client:
         async with client.stream("GET", url) as r:

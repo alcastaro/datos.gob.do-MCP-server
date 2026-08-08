@@ -30,16 +30,16 @@ from typing import Any, Literal, TypeVar
 import duckdb
 import httpx
 
-from . import USER_AGENT
 from .cache import LocalDiskCache, build_cache_key, get_cache
 from .download import (
     ANALYTICS_MAX_BYTES,
+    RESOURCE_HEADERS,
     classify_format,
     download_to_file,
     err_text,
     looks_like_html,
 )
-from .netguard import NetGuardError
+from .netguard import NetGuardError, guard_request_hook
 
 logger = logging.getLogger(__name__)
 
@@ -493,12 +493,24 @@ def _safe_unlink(path: Path) -> None:
 
 
 async def _head_metadata(url: str) -> tuple[str | None, str | None]:
-    """Fetch ETag + Last-Modified via HEAD. Used as cache version tag."""
+    """Fetch ETag + Last-Modified via HEAD. Used as cache version tag.
+
+    The SSRF guard belongs here as much as on the download. P2a installed it
+    "on downloads", and a HEAD is not a download — so this request went out
+    unguarded, ahead of the guarded one, to whatever host the caller named. A
+    HEAD against 127.0.0.1 reached a local service and returned its ETag while
+    the download that followed was correctly refused, which makes the server a
+    blind network-probe primitive: existence and liveness of internal addresses
+    are observable through the timing and through the version tag reaching the
+    cache key. It also let `strict` mode be bypassed, since the hostname was
+    never checked on this path.
+    """
     try:
         async with httpx.AsyncClient(
             follow_redirects=True,
             timeout=15.0,
-            headers={"User-Agent": USER_AGENT},
+            headers=RESOURCE_HEADERS,
+            event_hooks={"request": [guard_request_hook]},
         ) as client:
             r = await client.head(url)
             return r.headers.get("etag"), r.headers.get("last-modified")

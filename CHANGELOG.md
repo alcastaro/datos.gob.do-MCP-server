@@ -4,6 +4,42 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.11] — 2026-08-08
+
+### Security
+
+- **The HEAD request that builds the cache key bypassed the SSRF guard.**
+  `ensure_cached` probes a resource for its ETag before downloading it, and
+  that probe went out with no guard installed — so a caller naming an internal
+  address had a real request delivered to it, ahead of the download the guard
+  correctly refused. Demonstrated against a loopback service: the HEAD arrived
+  and its ETag came back, landing in the cache key. Blind, but a working
+  network-probe primitive from inside the perimeter — enough to test liveness
+  of cloud metadata endpoints, internal panels and open ports through timing
+  and through the version tag. It also let `strict` mode be bypassed, since the
+  hostname was never checked on this path. The guard is now installed on that
+  client, and the request raises rather than returning empty: "this URL is not
+  allowed" is a different fact from "this host did not answer".
+
+  Introduced in 0.6.0 (P2a), which wired the guard into downloads. A HEAD is
+  not a download. Matters most for hosted deployments, where the caller is not
+  necessarily the operator.
+
+### Fixed
+
+- **Resource requests now state their fetch context.** A sweep of all 1,056
+  datasets found 67 hosts answering HTTP 403. Two of them —
+  `deepblue.simv.gob.do` and `migracion.gob.do`, **16 datasets** between them —
+  answer 200 as soon as `Sec-Fetch-Mode`, `Sec-Fetch-Site` and `Sec-Fetch-Dest`
+  are present, and 403 without them, reproducibly across repeats. The
+  User-Agent is not the discriminator: an honest `datosgobdo-mcp/…` and a
+  Chrome string get the same answer either way, so nothing here impersonates a
+  browser. The values sent are the true ones for this client — a cross-site
+  programmatic fetch whose destination is not a document.
+
+  The other 65 hosts refuse every header combination tried, which points at the
+  network path rather than the request. That question is still open.
+
 ## [0.7.10] — 2026-08-08
 
 ### Fixed
