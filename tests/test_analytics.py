@@ -1226,7 +1226,7 @@ async def test_sum_over_a_text_column_explains_itself(httpx_mock, tmp_cache_dir)
     httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "m1"})
     httpx_mock.add_response(
         url=url, method="GET",
-        content="Departamento;Monto\nSalud;1000\nEducacion;N/D\n".encode(),
+        content=b"Departamento;Monto\nSalud;1000\nEducacion;N/D\n",
     )
     out = await analytics.aggregate_resource(
         url, "csv",

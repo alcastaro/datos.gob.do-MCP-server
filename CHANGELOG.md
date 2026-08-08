@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.8] — 2026-08-08
+
+### Fixed
+
+- **Encoding detection asked the wrong question.** It scored how *suspicious* a
+  decoding looked, but every candidate renders the same bytes as some odd
+  symbol, so a byte that is odd under all of them is noise. In a real payroll
+  one such character recurred 132 times in the body and outvoted the header,
+  choosing the reading that turned `AÑO` into `A¥O`. The score now measures how
+  much Spanish a decoding *recovers* — `Año`, `Región`, `ÁREA` against `A¥o`,
+  `A±o`, `┴REA` — with an absolute penalty only for scripts that cannot occur
+  here at all. Across the 146 non-UTF-8 files in the mirror, 145 now decode
+  correctly.
+- The one that does not is a file encoded in **two codepages at once**: its body
+  is CP1252 (132 correctly recovered accented letters) while its header's `Ñ`
+  is a CP850 byte. No single codepage is right for it; CP1252 is the correct
+  global choice and the header's one character stays wrong.
+
 ## [0.7.7] — 2026-08-08
 
 ### Changed

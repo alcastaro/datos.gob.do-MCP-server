@@ -137,10 +137,15 @@ def test_detect_encoding_prefers_cp850_over_cp1252_for_dos_exports():
     assert data.decode(enc).splitlines()[0].endswith("Año")
 
 
-def test_mojibake_score_flags_the_wrong_decoding():
+def test_mojibake_score_prefers_the_decoding_that_recovers_spanish():
+    """Scoring suspicious characters was the wrong question: every candidate
+    renders the same bytes as some odd symbol, and one character repeated 132
+    times in a body outvoted the header. What separates a right decoding from a
+    wrong one is how much Spanish it recovers."""
     data = "Sueldo Bruto;Año\n1000;2024\n".encode("cp850")
-    assert download._mojibake_score(data.decode("cp1252")) > 0
-    assert download._mojibake_score(data.decode("cp850")) == 0
+    assert download._mojibake_score(data.decode("cp850")) < download._mojibake_score(
+        data.decode("cp1252")
+    )
 
 
 def test_detect_encoding_keeps_utf8_fast_path():
@@ -152,8 +157,9 @@ def test_mojibake_score_penalises_dos_misreadings():
     misread that way becomes `A±o` and `investigación` becomes `investigaci≤n`.
     Those characters cannot occur in this catalog and are the tell."""
     data = "Año;investigación;Préstamos\n".encode("cp1252")
-    assert download._mojibake_score(data.decode("cp1252")) == 0
-    assert download._mojibake_score(data.decode("cp437")) > 0
+    assert download._mojibake_score(data.decode("cp1252")) < download._mojibake_score(
+        data.decode("cp437")
+    )
     assert download._detect_encoding(data) == "cp1252"
 
 
@@ -163,3 +169,12 @@ def test_detect_encoding_ignores_implausible_low_confidence_guesses():
     evidence. Only the codepages this catalog actually contains compete."""
     data = "Consulado;Cantidad;Mes;Año\n".encode("cp1252")
     assert download._detect_encoding(data) in download._CODEPAGE_LADDER
+
+
+def test_a_repeated_body_character_cannot_outvote_the_header():
+    """The failure this scorer was rewritten for: a real CP850 file whose body
+    repeats one character 130+ times. Under the old occurrence-counting score
+    that repetition alone chose the reading that turned `AÑO` into `A¥O`."""
+    text = "MES;AÑO\n" + "".join(f"Mitad;{i}\n" for i in range(140))
+    data = text.encode("cp850")
+    assert download._detect_encoding(data) == "cp850"

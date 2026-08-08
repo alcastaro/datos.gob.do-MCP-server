@@ -23,33 +23,44 @@ PREVIEW_MAX_BYTES = 5 * 1024 * 1024
 ANALYTICS_MAX_BYTES = 100 * 1024 * 1024
 
 
-# Characters that are almost never intended in Spanish-language government
-# data, but appear the moment a single-byte codepage is decoded as the wrong
-# one. 0xA4/0xA5 are ñ/Ñ in CP850 and CP437 (the DOS codepages Excel still
-# emits on Windows in Latin America) and ¤/¥ in CP1252.
-_MOJIBAKE_CHARS = "¤¥£¦§¨©ª«¬®¯°±²³´µ¶·¸¹º»¼½¾¿×÷ÿþýüûúùø÷"
-_MOJIBAKE_PAIRS = ("Ã", "Â", "â€", "Ã‚", "ï¿½", "�")
+# What a correct decoding of this catalog recovers. 0xA4/0xA5 are ñ/Ñ in CP850
+# and CP437 — the DOS codepages Excel still emits on Windows in Latin America —
+# and ¤/¥ in CP1252, which is how `AÑO` reached users as `A¥O`.
+_SPANISH_LETTERS = "áéíóúüñÁÉÍÓÚÜÑ¿¡"
+
+# Sequences that only appear when UTF-8 was decoded as a single-byte codepage,
+# or when a decoder gave up. Unlike the ambiguous symbols, these are never
+# produced by a correct reading.
+_MOJIBAKE_PAIRS = ("Ã¡", "Ã©", "Ã­", "Ã³", "Ãº", "Ã±", "Â¿", "â€", "ï¿½", "�")
 
 # Ordered by how often each turns up in this catalog; ties broken by the first.
 _CODEPAGE_LADDER: tuple[str, ...] = ("cp1252", "cp850", "cp437", "iso-8859-1")
 
 
 def _mojibake_score(text: str) -> int:
-    """How wrong a decoding looks. Lower is better; 0 means nothing suspicious.
+    """How wrong a decoding looks. Lower is better.
 
-    Counts characters that would be extraordinary in a Spanish column header or
-    value. Accented letters, ñ and the currency symbols a real file does use are
-    deliberately not penalised.
+    Scoring the *suspicious* characters turned out to be the wrong question.
+    Every candidate decoding of the same bytes renders the same positions as
+    some odd symbol, so a byte that is odd under all of them is noise — and
+    counting it let one character repeated 132 times in a long body outvote the
+    header, choosing the reading that turned `AÑO` into `A¥O`.
 
-    CJK and other far-from-Latin scripts weigh heaviest: Latin-1 byte sequences
-    decode "successfully" as GB18030 or Big5 all the time, and chardet will
-    volunteer one of those with single-digit confidence. A Dominican payroll
-    with Han characters in its headers is not a payroll we have decoded.
+    What actually separates a right decoding from a wrong one in this catalog is
+    how much Spanish it recovers: the correct codepage yields `Año`, `Región`,
+    `ÁREA`; the wrong one yields `A¥o`, `A±o`, `┴REA`. So the score counts
+    accented Spanish letters and rewards them.
+
+    The one absolute penalty left is for scripts that cannot occur here at all —
+    Latin-1 bytes decode "successfully" as GB18030 or Big5, and chardet will
+    volunteer one of those at single-digit confidence, so "it decoded" is no
+    evidence. A Dominican payroll with Han characters in its headers is not a
+    payroll we have decoded.
     """
-    score = sum(text.count(c) for c in _MOJIBAKE_CHARS)
-    score += sum(text.count(p) * 2 for p in _MOJIBAKE_PAIRS)
-    score += 3 * sum(1 for c in text if _is_alien(ord(c)))
-    return score
+    spanish = sum(text.count(c) for c in _SPANISH_LETTERS)
+    alien = sum(1 for c in text if _is_alien(ord(c)))
+    mangled = sum(text.count(p) for p in _MOJIBAKE_PAIRS)
+    return 5 * alien + 2 * mangled - spanish
 
 
 # Scripts and symbol blocks that cannot occur in this catalog but appear the
