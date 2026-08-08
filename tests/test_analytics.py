@@ -1216,3 +1216,31 @@ def test_repair_leaves_a_multiline_quoted_header_alone(tmp_path):
         encoding="utf-8",
     )
     assert analytics._repair_csv_text(f) == f
+
+
+async def test_sum_over_a_text_column_explains_itself(httpx_mock, tmp_cache_dir):
+    """A spreadsheet that mixes "N/D" into a numeric column loads that column as
+    text, and DuckDB then reports that sum(VARCHAR) does not exist — true and
+    useless. The fix is a cast, and the caller cannot infer that from the text."""
+    url = "https://example.test/mixto.csv"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "m1"})
+    httpx_mock.add_response(
+        url=url, method="GET",
+        content="Departamento;Monto\nSalud;1000\nEducacion;N/D\n".encode(),
+    )
+    out = await analytics.aggregate_resource(
+        url, "csv",
+        aggregations=[{"col": "Monto", "fn": "sum", "alias": "total"}],
+        group_by=["Departamento"],
+    )
+    assert "error" in out, out
+    assert "text" in out["error"].lower()
+    assert "query_resource" in out["hint"]
+
+
+def test_duckdb_error_passes_other_messages_through():
+    import duckdb as _d
+
+    out = analytics._duckdb_error(_d.Error("Binder Error: something else"))
+    assert out["error"].startswith("DuckDB:")
+    assert "hint" not in out

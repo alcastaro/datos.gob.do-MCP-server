@@ -1099,6 +1099,42 @@ def _build_order_by(order_by: list[dict] | None, available: list[str] | None = N
     return "ORDER BY " + ", ".join(parts)
 
 
+_NUMERIC_FN_ON_TEXT = re.compile(
+    r"No function matches the given name and argument types '"
+    r"(sum|avg|median|stddev|variance|min|max)\(VARCHAR\)",
+    re.IGNORECASE,
+)
+
+
+def _duckdb_error(e: duckdb.Error, sql: str | None = None) -> dict[str, Any]:
+    """Turn a DuckDB message into one the caller can act on.
+
+    The common case by far: a spreadsheet mixes text into a numeric column
+    ("N/D", a footnote, a thousands separator), so the whole column loads as
+    text and `sum` fails. The DuckDB message says the function does not exist,
+    which is true and useless — the fix is a cast, and the caller has no way to
+    know that from the text alone.
+    """
+    out: dict[str, Any] = {"error": f"DuckDB: {e}"}
+    m = _NUMERIC_FN_ON_TEXT.search(str(e))
+    if m:
+        fn = m.group(1).lower()
+        out["error"] = (
+            f"The column is stored as text, so {fn.upper()} cannot be applied to it "
+            "directly — the file mixes non-numeric values (a total, a footnote, "
+            '"N/D", or a thousands separator) into a numeric column, so it was '
+            "loaded as text."
+        )
+        out["hint"] = (
+            "Use query_resource with an explicit cast, e.g. "
+            "SELECT SUM(CAST(REPLACE(\"columna\", ',', '') AS DOUBLE)) FROM data — "
+            "or call get_resource_schema first to see which columns are VARCHAR."
+        )
+    if sql is not None:
+        out["sql"] = sql
+    return out
+
+
 def _build_agg_expr(agg: dict, available: list[str] | None = None) -> str:
     col = agg.get("col")
     fn = (agg.get("fn") or "").lower()
@@ -1308,7 +1344,7 @@ async def find_duplicates_resource(
         try:
             count_row = con.execute(count_sql).fetchone()
         except duckdb.Error as e:
-            return {"error": f"DuckDB: {e}"}
+            return _duckdb_error(e)
 
         duplicate_groups = count_row[0] if count_row else 0  # type: ignore[index]
         total_dup_rows = count_row[1] if count_row else 0  # type: ignore[index]
@@ -1324,7 +1360,7 @@ async def find_duplicates_resource(
         try:
             rs = con.execute(main_sql)
         except duckdb.Error as e:
-            return {"error": f"DuckDB: {e}"}
+            return _duckdb_error(e)
         col_names = [d[0] for d in rs.description]
         rows = rs.fetchall()
     finally:
@@ -1432,7 +1468,7 @@ async def detect_outliers_resource(
             col_names = [d[0] for d in rs.description]
             rows = rs.fetchall()
         except duckdb.Error as e:
-            return {"error": f"DuckDB: {e}"}
+            return _duckdb_error(e)
     finally:
         con.close()
 
@@ -1522,7 +1558,7 @@ async def save_query_to_csv(
                 # other free-form SQL entry point.
                 rs = _execute_guarded(con, wrapped)
             except duckdb.Error as e:
-                return {"error": f"DuckDB: {e}"}
+                return _duckdb_error(e)
         else:
             available = _open_view(con, parquet)
             select_clause = "*"
@@ -1538,7 +1574,7 @@ async def save_query_to_csv(
             try:
                 rs = con.execute(f"SELECT {select_clause} FROM data {where} LIMIT {limit}".strip())
             except duckdb.Error as e:
-                return {"error": f"DuckDB: {e}"}
+                return _duckdb_error(e)
 
         col_names = [d[0] for d in rs.description]
         rows = rs.fetchall()
@@ -1610,7 +1646,7 @@ async def filter_resource(
         try:
             rs = con.execute(sql)
         except duckdb.Error as e:
-            return {"error": f"DuckDB: {e}", "sql": sql}
+            return _duckdb_error(e, sql)
         col_names = [d[0] for d in rs.description]
         rows = rs.fetchall()
         # Estimate total matching rows (separate count query).
@@ -1708,7 +1744,7 @@ async def aggregate_resource(
         try:
             rs = con.execute(sql)
         except duckdb.Error as e:
-            return {"error": f"DuckDB: {e}", "sql": sql}
+            return _duckdb_error(e, sql)
         col_names = [d[0] for d in rs.description]
         rows = rs.fetchall()
     finally:
@@ -1783,7 +1819,7 @@ async def query_resource(
         try:
             rs = _execute_guarded(con, wrapped)
         except duckdb.Error as e:
-            return {"error": f"DuckDB: {e}", "sql": wrapped}
+            return _duckdb_error(e, wrapped)
         col_names = [d[0] for d in rs.description]
         rows = rs.fetchall()
     finally:

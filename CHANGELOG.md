@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.7] — 2026-08-08
+
+### Changed
+
+- **`SUM` over a text column now says why and what to do instead.** The single
+  largest remaining class of failure in the directed battery (23 of 487 calls):
+  a spreadsheet mixes a footnote, a total or `"N/D"` into a numeric column, the
+  whole column loads as text, and DuckDB answers that `sum(VARCHAR)` does not
+  exist — true, and useless to a caller with no way to know the fix is a cast.
+  The reply now names the cause and hands over a working `query_resource` query.
+  Other DuckDB messages pass through unchanged.
+
 ## [0.7.6] — 2026-08-08
 
 Found while scaling the protocol run from 129 to 500 datasets.
