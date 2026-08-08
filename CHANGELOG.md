@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.9] — 2026-08-08
+
+Two more error messages turned into instructions, from the directed battery run
+over 450 files (1,679 calls written by analyst agents).
+
+### Changed
+
+- **A failed `CAST` now names the value that broke it and offers `TRY_CAST`.**
+  This was the single largest remaining failure class — **112 of 284 errors
+  (39 %)**. The values are stereotyped across this catalog: thousands
+  separators (`1,145`, `41,300.00`), a non-breaking space glued to a number
+  (`159065.95\xa0`), and placeholders standing in for missing data (`N/A`,
+  `-`, `#REF!`, `PROCESO CANCELADO`). The reply now says which value stopped
+  the cast and hands over a query that survives it.
+- **`query_resource` naming a column that does not exist now lists the real
+  ones**, instead of relaying DuckDB's "Referenced column not found". Same
+  treatment the typed tools already got in 0.7.4.
+
 ## [0.7.8] — 2026-08-08
 
 ### Fixed

@@ -836,7 +836,7 @@ def _open_view(con: duckdb.DuckDBPyConnection, parquet: Path) -> list[str]:
     return [r[0] for r in con.execute("DESCRIBE data").fetchall()]
 
 
-def _open_sandboxed(con: duckdb.DuckDBPyConnection, parquet: Path) -> None:
+def _open_sandboxed(con: duckdb.DuckDBPyConnection, parquet: Path) -> list[str]:
     """Materialize the resource into an in-memory table, then revoke external access.
 
     Used by query_resource, whose SQL is model-supplied. Without this, a SELECT
@@ -849,8 +849,10 @@ def _open_sandboxed(con: duckdb.DuckDBPyConnection, parquet: Path) -> None:
     p = str(parquet).replace("'", "''")
     cols = _select_list(con, parquet)
     con.execute(f"CREATE TABLE data AS SELECT {cols} FROM read_parquet('{p}')")
+    names = [r[0] for r in con.execute("DESCRIBE data").fetchall()]
     con.execute("SET enable_external_access=false")
     con.execute("SET lock_configuration=true")
+    return names
 
 
 # ─── Public analytics tools ───────────────────────────────────────────────────
@@ -1106,7 +1108,20 @@ _NUMERIC_FN_ON_TEXT = re.compile(
 )
 
 
-def _duckdb_error(e: duckdb.Error, sql: str | None = None) -> dict[str, Any]:
+# What a failed CAST looks like from DuckDB. The values that trip it in this
+# catalog are stereotyped: thousands separators, a non-breaking space glued to
+# a number, and placeholders standing in for "no data".
+_CAST_FAILED = re.compile(r"Could not convert string '([^']*)' to", re.IGNORECASE)
+_COLUMN_NOT_FOUND = re.compile(
+    r'Referenced column "([^"]+)" (?:not found|was not found)', re.IGNORECASE
+)
+
+
+def _duckdb_error(
+    e: duckdb.Error,
+    sql: str | None = None,
+    available: list[str] | None = None,
+) -> dict[str, Any]:
     """Turn a DuckDB message into one the caller can act on.
 
     The common case by far: a spreadsheet mixes text into a numeric column
@@ -1116,6 +1131,31 @@ def _duckdb_error(e: duckdb.Error, sql: str | None = None) -> dict[str, Any]:
     know that from the text alone.
     """
     out: dict[str, Any] = {"error": f"DuckDB: {e}"}
+    conv = _CAST_FAILED.search(str(e))
+    if conv:
+        bad = conv.group(1)
+        out["error"] = (
+            f"The cast failed on the value {bad!r}. Columns in this catalog mix "
+            "thousands separators, non-breaking spaces and placeholders "
+            '("N/A", "-", "#REF!", "PROCESO CANCELADO") into otherwise numeric '
+            "data, so a plain CAST stops at the first one."
+        )
+        out["hint"] = (
+            "Use TRY_CAST, which yields NULL instead of failing, and strip the "
+            "separators first: "
+            "TRY_CAST(REPLACE(REPLACE(\"columna\", ',', ''), CHR(160), '') AS DOUBLE). "
+            "Wrap it in an aggregate to skip the NULLs."
+        )
+        return out
+    if available:
+        missing = _COLUMN_NOT_FOUND.search(str(e))
+        if missing:
+            shown = ", ".join(repr(c) for c in available[:20])
+            out["error"] = (
+                f"Column {missing.group(1)!r} does not exist in this resource. "
+                f"Columns are: {shown}"
+            )
+            return out
     m = _NUMERIC_FN_ON_TEXT.search(str(e))
     if m:
         fn = m.group(1).lower()
@@ -1551,14 +1591,14 @@ async def save_query_to_csv(
                 cleaned = _validate_sql(sql)
             except AnalyticsError as e:
                 return {"error": str(e)}
-            _open_sandboxed(con, parquet)
+            available = _open_sandboxed(con, parquet)
             wrapped = f"SELECT * FROM ({cleaned}) AS _q LIMIT {limit}"
             try:
                 # Same wall-clock backstop as query_resource — this is the
                 # other free-form SQL entry point.
                 rs = _execute_guarded(con, wrapped)
             except duckdb.Error as e:
-                return _duckdb_error(e)
+                return _duckdb_error(e, available=available)
         else:
             available = _open_view(con, parquet)
             select_clause = "*"
@@ -1815,11 +1855,11 @@ async def query_resource(
 
     con = _new_con()
     try:
-        _open_sandboxed(con, parquet)
+        available = _open_sandboxed(con, parquet)
         try:
             rs = _execute_guarded(con, wrapped)
         except duckdb.Error as e:
-            return _duckdb_error(e, wrapped)
+            return _duckdb_error(e, wrapped, available)
         col_names = [d[0] for d in rs.description]
         rows = rs.fetchall()
     finally:

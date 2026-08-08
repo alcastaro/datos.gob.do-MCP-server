@@ -1244,3 +1244,23 @@ def test_duckdb_error_passes_other_messages_through():
     out = analytics._duckdb_error(_d.Error("Binder Error: something else"))
     assert out["error"].startswith("DuckDB:")
     assert "hint" not in out
+
+
+async def test_failed_cast_names_the_value_and_offers_try_cast(mock_csv_endpoint, tmp_cache_dir):
+    """The largest error class in the directed battery: analysts write a plain
+    CAST and the column carries thousands separators, non-breaking spaces or
+    placeholders ("N/A", "-", "#REF!", "PROCESO CANCELADO")."""
+    out = await analytics.query_resource(
+        mock_csv_endpoint, "csv", sql='SELECT CAST("Estatus" AS DOUBLE) FROM data'
+    )
+    assert "error" in out, out
+    assert "cast failed" in out["error"].lower()
+    assert "TRY_CAST" in out["hint"]
+
+
+async def test_unknown_column_in_sql_lists_the_real_ones(mock_csv_endpoint, tmp_cache_dir):
+    out = await analytics.query_resource(
+        mock_csv_endpoint, "csv", sql='SELECT "Sueldos" FROM data'
+    )
+    assert "error" in out, out
+    assert "Sueldo" in out["error"]
