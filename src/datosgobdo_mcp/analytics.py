@@ -30,6 +30,7 @@ from typing import Any, Literal, TypeVar
 import duckdb
 import httpx
 
+from . import pagelink
 from .cache import LocalDiskCache, build_cache_key, get_cache
 from .download import (
     ANALYTICS_MAX_BYTES,
@@ -143,6 +144,19 @@ _FORBIDDEN_DEST_PREFIXES = (
 
 class AnalyticsError(RuntimeError):
     pass
+
+
+class PageInsteadOfDataError(AnalyticsError):
+    """The URL served a page. Carries whatever data files that page linked.
+
+    The candidates travel on the exception because the whole point is that a
+    caller who cannot be given the file can still be given the choice. An error
+    string would drop them.
+    """
+
+    def __init__(self, message: str, candidates: list[dict] | None = None) -> None:
+        super().__init__(message)
+        self.candidates = candidates or []
 
 
 # Every failure a tool can plausibly hit while talking to a government portal or
@@ -492,6 +506,25 @@ def _safe_unlink(path: Path) -> None:
 # ─── Cache layer ──────────────────────────────────────────────────────────────
 
 
+def _load_error(e: BaseException) -> dict[str, Any]:
+    """Turn a failure to load a resource into a reply the caller can act on.
+
+    When the URL served a page, whatever data files that page linked travel
+    back with the error. A caller told only "the URL returned HTML" has nowhere
+    to go; one handed three candidate files can pick the right one and ask
+    again — and it holds the user's actual question, which this server does not.
+    """
+    out: dict[str, Any] = {"error": f"Could not load resource: {err_text(e)}"}
+    linked = getattr(e, "candidates", None)
+    if linked:
+        out["linked_files"] = linked
+        out["next_step"] = (
+            "This URL is a page. Call the same tool again with the `url` of "
+            "whichever linked file answers your question."
+        )
+    return out
+
+
 async def _head_metadata(url: str) -> tuple[str | None, str | None]:
     """Fetch ETag + Last-Modified via HEAD. Used as cache version tag.
 
@@ -674,18 +707,40 @@ async def ensure_cached(
     os.close(fd)
     raw = Path(tmp_path_str)
     raw_ods: Path | None = None  # declared here so finally block can always reference it
+    resolved_from: dict[str, str] | None = None
     try:
         bytes_written, truncated = await download_to_file(url, raw, max_bytes=ANALYTICS_MAX_BYTES)
         if bytes_written == 0:
             raise AnalyticsError("Downloaded zero bytes")
 
         with raw.open("rb") as fh:
-            if looks_like_html(fh.read(2048)):
-                raise AnalyticsError(
-                    "The URL returned an HTML page, not a data file — the portal "
-                    "likely answered a dead or gated download link with a web page "
-                    "(HTTP 200). Open the resource URL in a browser to confirm."
-                )
+            head = fh.read(2048)
+        if looks_like_html(head):
+            # A page is not necessarily a dead end. Often it is the download
+            # page and the file is one link away, so try to resolve it before
+            # giving up — and when the links cannot be told apart, hand them to
+            # the caller instead of refusing. See pagelink.py.
+            page = raw.read_bytes().decode("utf-8", errors="replace")
+            target, found = pagelink.resolve(page, url, fmt)
+            if target is None:
+                raise PageInsteadOfDataError(pagelink.describe(page), found)
+            logger.info("page resolved to a linked file: %s -> %s", url, target)
+            bytes_written, truncated = await download_to_file(
+                target, raw, max_bytes=ANALYTICS_MAX_BYTES
+            )
+            if bytes_written == 0:
+                raise AnalyticsError("The linked file downloaded zero bytes")
+            with raw.open("rb") as fh:
+                # One hop only. A page that links another page is not a file,
+                # and following the chain would eventually follow the site's
+                # navigation into something that merely parses.
+                if looks_like_html(fh.read(2048)):
+                    raise PageInsteadOfDataError(
+                        "The URL returned a page, and the file it links is itself a "
+                        "page. Only one hop is followed.",
+                        found,
+                    )
+            resolved_from = {"page": url, "followed": target}
 
         if fmt in ("xlsx", "xls", "xlsm", "ods"):
             # These are all zip containers. Portals answer a gated or moved
@@ -791,6 +846,9 @@ async def ensure_cached(
         return parquet_path, {
             "cache": "miss",
             "key": key,
+            # The caller asked for a URL and got data from another one. Saying
+            # so is not optional in an audit tool.
+            **({"resolved_from": resolved_from} if resolved_from else {}),
             "source_bytes": bytes_written,
             "source_truncated": truncated,
             "parquet_bytes": parquet_path.stat().st_size,
@@ -882,7 +940,7 @@ async def get_resource_schema(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {err_text(e)}"}
+        return _load_error(e)
 
     con = _new_con()
     try:
@@ -1004,7 +1062,7 @@ async def summarize_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {err_text(e)}"}
+        return _load_error(e)
 
     top_n = min(max(int(max_categorical_top_n), 1), SUMMARIZE_MAX_TOP_N)
     con = _new_con()
@@ -1399,7 +1457,7 @@ async def quantiles_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {err_text(e)}"}
+        return _load_error(e)
 
     con = _new_con()
     try:
@@ -1520,7 +1578,7 @@ async def find_duplicates_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {err_text(e)}"}
+        return _load_error(e)
 
     con = _new_con()
     try:
@@ -1602,7 +1660,7 @@ async def detect_outliers_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {err_text(e)}"}
+        return _load_error(e)
 
     con = _new_con()
     try:
@@ -1760,7 +1818,7 @@ async def save_query_to_csv(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {err_text(e)}"}
+        return _load_error(e)
 
     con = _new_con()
     try:
@@ -1841,7 +1899,7 @@ async def filter_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {err_text(e)}"}
+        return _load_error(e)
 
     limit = min(max(int(limit), 1), FILTER_MAX_LIMIT)
     offset = max(int(offset), 0)
@@ -1910,7 +1968,7 @@ async def aggregate_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {err_text(e)}"}
+        return _load_error(e)
 
     limit = min(max(int(limit), 1), AGGREGATE_MAX_LIMIT)
 
@@ -2044,7 +2102,7 @@ async def query_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return {"error": f"Could not load resource: {err_text(e)}"}
+        return _load_error(e)
 
     limit = min(max(int(limit), 1), SQL_MAX_LIMIT)
     wrapped = f"SELECT * FROM ({cleaned}) AS _user_q LIMIT {limit}"

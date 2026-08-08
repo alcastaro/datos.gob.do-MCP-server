@@ -4,6 +4,54 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] — 2026-08-08
+
+### Added
+
+- **A resource URL that serves a web page is no longer a dead end.** In a census
+  of the whole catalog, 37 of 1,056 resources answered with a page instead of a
+  file, and the reply was "the URL returned an HTML page" — true, and nowhere to
+  go. Opening all 37 showed they are five different situations, not one, so the
+  server now tries to resolve them and says which situation it found.
+
+  **Measured against those 37 over the protocol: 6 resolve to their file
+  (12,596 rows recovered), 4 come back as a choice, 27 are genuinely dead** —
+  15 link no data file at all, 7 are logins, 3 hold the data in an HTML table.
+
+  There is deliberately **no per-portal knowledge** in this. A curated map of
+  how each institution lays out its site would rot with the next redesign and
+  would be useless for the other countries in the regional catalog. What
+  replaces it is the request itself: the URL the caller asked for usually names
+  the resource, so the links a page offers are scored against it. Measured, the
+  URL-derived hint resolves 6 while fetching CKAN metadata for the resource name
+  resolves only 4 — the cheaper signal is also the better one.
+
+  The decisive signal turned out to be the **declared format**. These portals
+  publish the same file three times, as `.csv`, `.ods` and `.xlsx`; the three
+  names are identical so they score within 0.001 of each other, and no name
+  matching can separate them. It does not have to — the caller already said
+  which format the resource is registered as.
+
+- **When the links cannot be told apart, the caller gets them.** An ambiguous
+  page returns `linked_files` with each candidate's URL, name and score instead
+  of an error. The caller is an assistant holding the user's actual question,
+  and it chooses better than a string-similarity ratio can. Two real cases could
+  never be resolved by any algorithm — one portal names its files `clss.csv` and
+  `xls.csv`, another offers six navigation links — so guessing would have put a
+  plausible wrong table in front of someone with no way to check it.
+
+- **Following a link is declared.** `resolved_from: {page, followed}` travels in
+  the response. The caller asked for one URL and received data from another;
+  staying silent about that would break the trail an audit depends on. Only one
+  hop is followed, and it passes the SSRF guard like any other download.
+
+### Changed
+
+- The failure message now names which of the four situations a page is — no
+  linked file, a login, an HTML table, or a chain of pages. Thirty-seven
+  resources used to share one sentence, and the reader's next move differs in
+  each.
+
 ## [0.8.0] — 2026-08-08
 
 ### Added

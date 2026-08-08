@@ -849,7 +849,10 @@ async def test_html_error_page_is_rejected_not_parsed(tmp_cache_dir, httpx_mock)
     httpx_mock.add_response(url=url, method="GET", content=page)
     out = await analytics.get_resource_schema(url, "csv")
     assert "error" in out
-    assert "html" in out["error"].lower()
+    # The wording moved from "HTML" to "web page" in 0.9.0; what the test is
+    # actually about is that a page never becomes a one-column table.
+    assert "page" in out["error"].lower()
+    assert "columns" not in out
 
 
 async def test_header_with_embedded_newline_is_usable(tmp_cache_dir, httpx_mock):
@@ -1203,7 +1206,7 @@ async def test_zip_formats_reject_a_web_page_before_duckdb_sees_it(httpx_mock, t
     httpx_mock.add_response(url=url, method="GET", content=b"<html><body>Ingrese</body></html>")
     out = await analytics.get_resource_schema(url, "xlsx")
     assert "error" in out
-    assert "XLSX" in out["error"] or "HTML" in out["error"]
+    assert "XLSX" in out["error"] or "page" in out["error"].lower()
 
 
 def test_repair_leaves_a_multiline_quoted_header_alone(tmp_path):
