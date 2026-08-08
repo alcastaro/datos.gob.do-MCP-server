@@ -1090,3 +1090,105 @@ def test_normalize_header_strips_invisible_characters(raw, expected):
 def test_quote_ident_accepts_name_after_invisible_chars_removed():
     cleaned = analytics._normalize_header("Cod.Capí\xadtulo")
     assert analytics._quote_ident(cleaned) == '"Cod.Capítulo"'
+
+
+# ─── v0.7.4: shape tolerance, identifier resolution, CSV structure repair ────
+
+
+def test_column_names_accepts_both_spellings():
+    """Three of four list params on these tools take {"col": ...} objects and
+    one takes bare strings; models generalise from the majority. In the
+    directed battery that shape error alone accounted for 190 of 487 calls."""
+    assert analytics._column_names(["Año", {"col": "Mes"}]) == ["Año", "Mes"]
+    assert analytics._column_names(None) is None
+
+
+def test_column_names_rejects_junk():
+    with pytest.raises(analytics.AnalyticsError):
+        analytics._column_names([{"nope": 1}])
+    with pytest.raises(analytics.AnalyticsError):
+        analytics._column_names([12])
+
+
+async def test_aggregate_accepts_group_by_as_objects(mock_csv_endpoint, tmp_cache_dir):
+    out = await analytics.aggregate_resource(
+        mock_csv_endpoint,
+        "csv",
+        aggregations=[{"col": None, "fn": "count", "alias": "n"}],
+        group_by=[{"col": "Estatus"}],
+    )
+    assert "error" not in out, out
+    assert out["rows"]
+
+
+def test_quote_ident_resolves_against_the_real_columns():
+    """Membership in DuckDB's own column list is a stronger guarantee than a
+    character allowlist, and it lets an odd header stay queryable."""
+    assert analytics._quote_ident("A¤o", ["A¤o", "Mes"]) == '"A¤o"'
+    # Case and whitespace differences are what a model actually produces.
+    assert analytics._quote_ident("año", ["AÑO"]) == '"AÑO"'
+
+
+def test_quote_ident_names_the_real_columns_when_it_cannot_resolve():
+    with pytest.raises(analytics.AnalyticsError) as e:
+        analytics._quote_ident("Sueldos", ["Sueldo", "Mes"])
+    assert "Sueldo" in str(e.value)
+
+
+def test_quote_ident_stays_strict_without_a_column_list():
+    with pytest.raises(analytics.AnalyticsError):
+        analytics._quote_ident("x; DROP TABLE y")
+
+
+async def test_quantiles_accepts_percentile_zero_and_one(mock_csv_endpoint, tmp_cache_dir):
+    """0 and 1 are the min and max, which DuckDB computes happily."""
+    out = await analytics.quantiles_resource(
+        mock_csv_endpoint, "csv", columns=["Sueldo"], percentiles=[0, 0.5, 1]
+    )
+    assert "error" not in out, out
+
+
+def test_repair_csv_splits_a_semicolon_file_padded_with_empty_commas(tmp_path):
+    """Excel exports `a;b;c,,,,,`. Commas are the most consistent separator, so
+    the sniffer picks them and the whole record lands in column one."""
+    f = tmp_path / "seguros.csv"
+    f.write_text(
+        "Seguro;Cantidad;Mes;Año,,,,,\n"
+        "Aspectos Generales;1621;Septiembre;2018,,,,,\n"
+        # A field containing the sniffed delimiter is exactly why it was wrong.
+        "Vejez, Discapacidad (SVDS);209;Septiembre;2018,,,,\n",
+        encoding="utf-8",
+    )
+    out = analytics._repair_csv_text(f)
+    assert out != f
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "Seguro;Cantidad;Mes;Año"
+    # The comma needs no quoting once ';' is the delimiter.
+    assert lines[2] == "Vejez, Discapacidad (SVDS);209;Septiembre;2018"
+
+
+def test_repair_csv_unwraps_a_doubly_quoted_file(tmp_path):
+    """Every line quoted as one field: parsing it is correct, and yields a
+    single column whose values are themselves CSV lines."""
+    f = tmp_path / "isbn.csv"
+    f.write_text(
+        '"ISBN,""EDITOR"",""TITULO"""\n'
+        '"978-9945,""LIBERTAD"",""LA FE"""\n'
+        '"978-9946,""ESDRAC"",""OTRO"""\n',
+        encoding="utf-8",
+    )
+    out = analytics._repair_csv_text(f)
+    assert out != f
+    assert out.read_text(encoding="utf-8").splitlines()[0] == "ISBN,EDITOR,TITULO"
+
+
+def test_repair_csv_leaves_a_genuine_single_column_file_alone(tmp_path):
+    f = tmp_path / "one.csv"
+    f.write_text("Nombre\nANA\nBENITO\n", encoding="utf-8")
+    assert analytics._repair_csv_text(f) == f
+
+
+def test_repair_csv_leaves_a_normal_file_alone(tmp_path):
+    f = tmp_path / "ok.csv"
+    f.write_text("a;b;c\n1;2;3\n4;5;6\n", encoding="utf-8")
+    assert analytics._repair_csv_text(f) == f

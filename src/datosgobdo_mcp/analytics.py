@@ -16,6 +16,7 @@ v0.4 will add raw query_resource + XLSX/ODS analytics.
 from __future__ import annotations
 
 import asyncio
+import csv
 import functools
 import logging
 import os
@@ -176,8 +177,33 @@ def _tool_envelope(fn: _T) -> _T:
     return wrapper  # type: ignore[return-value]
 
 
-def _quote_ident(name: str) -> str:
+def _match_column(name: str, available: list[str]) -> str | None:
+    """Find the real column a caller meant, or None.
+
+    Exact first, then case- and whitespace-insensitive, because a model reading
+    a schema reply routinely writes `Año` where the file says `AÑO`.
+    """
+    if name in available:
+        return name
+    wanted = _normalize_header(name).casefold()
+    for actual in available:
+        if _normalize_header(actual).casefold() == wanted:
+            return actual
+    return None
+
+
+def _quote_ident(name: str, available: list[str] | None = None) -> str:
     """Quote a column identifier safely.
+
+    When `available` is given — the columns the open view actually has — the
+    name is resolved against it and the *matched* name is escaped. Membership
+    in a list DuckDB itself produced is a stronger guarantee than any character
+    allowlist, and it lets a file with an odd header stay queryable instead of
+    being refused wholesale. It also turns a typo into "Column not found, here
+    are the real ones" rather than a SQL error.
+
+    Without `available` the strict path below applies. That is what aggregation
+    aliases use: they are invented by the model and have nothing to match.
 
     Layers of defence, outermost first:
         1. Control characters rejected outright.
@@ -192,6 +218,12 @@ def _quote_ident(name: str) -> str:
     quotes it, so callers that need the DuckDB-visible name unchanged still get
     it verbatim inside the quotes.
     """
+    if available is not None:
+        hit = _match_column(name, available)
+        if hit is not None:
+            return _raw_quote(hit)
+        shown = ", ".join(repr(c) for c in available[:15])
+        raise AnalyticsError(f"Column not found: {name!r}. Columns are: {shown}")
     if not name or _IDENT_CONTROL.search(name):
         raise AnalyticsError(f"Invalid column identifier: {name!r}")
     if not _IDENT_OK.match(name):
@@ -220,6 +252,36 @@ def _normalize_header(name: str) -> str:
     """
     cleaned = "".join(c for c in name if unicodedata.category(c) != "Cf")
     return _IDENT_WHITESPACE.sub(" ", cleaned).strip()
+
+
+def _column_names(value: list[Any] | None) -> list[str] | None:
+    """Accept a column list written either as strings or as {"col": ...} objects.
+
+    Three of the four list parameters on these tools (`filters`, `order_by`,
+    `having`) take objects keyed by `col`, and one (`group_by` / `columns`)
+    takes bare strings. Models generalise from the majority and write
+    `group_by: [{"col": "Año"}]` — in the directed battery that single shape
+    error accounted for 190 of 487 calls, and every one of them failed at
+    schema validation before the tool ran, so the caller got a Pydantic
+    traceback instead of an answer. Accepting both spellings is cheaper than
+    being right about which one we prefer.
+    """
+    if value is None:
+        return None
+    out: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, dict):
+            name = item.get("col") or item.get("column") or item.get("name")
+            if not isinstance(name, str):
+                raise AnalyticsError(
+                    f"Column entry must be a name or {{'col': name}}, got {item!r}"
+                )
+            out.append(name)
+        else:
+            raise AnalyticsError(f"Column entry must be a string, got {item!r}")
+    return out
 
 
 def _quote_literal(value: Any) -> str:
@@ -313,6 +375,106 @@ def _normalize_csv_encoding(path: Path) -> Path:
         if decoder_buf:
             dst.write(decoder_buf.decode(enc, errors="replace").encode("utf-8"))
     return utf8_path
+
+
+_REPAIR_DELIMS = (";", ",", "\t", "|")
+_REPAIR_SAMPLE_LINES = 50
+
+
+def _fields(line: str, delim: str) -> list[str]:
+    try:
+        return next(csv.reader([line], delimiter=delim))
+    except (csv.Error, StopIteration):
+        return [line]
+
+
+def _strip_padding(line: str, sniffed: str) -> str | None:
+    """Drop the empty columns Excel pads a line with; return the real record.
+
+    Returns None when the line does not have the shape this repair targets —
+    that is, when something other than padding survives. A field containing the
+    sniffed delimiter (`Vejez, Discapacidad y ...`) is rejoined rather than
+    treated as a second column, since that comma is exactly why the sniffer
+    guessed wrong in the first place.
+    """
+    fields = _fields(line, sniffed)
+    while fields and not fields[-1].strip():
+        fields.pop()
+    if not fields:
+        return None
+    return sniffed.join(fields)
+
+
+def _repair_csv_text(path: Path) -> Path:
+    """Rewrite a CSV whose real structure the sniffer cannot see. Else no-op.
+
+    Two shapes from this catalog defeat DuckDB's auto-detection, and both look
+    the same from the outside: the whole record ends up inside one field.
+
+    1. Excel exports a semicolon file with five empty trailing comma columns
+       (`Seguro;Cantidad;Mes;Año,,,,,`). Commas are the most consistent
+       separator in the file, so the sniffer picks them and the real record
+       becomes column one.
+    2. A file where every line was quoted as a single field
+       (`"ISBN,""EDITOR"",..."`). Parsing it is correct, and yields exactly one
+       column whose values are themselves CSV lines.
+
+    The repair is only attempted when the header, read under the delimiter the
+    sniffer would choose, collapses to one usable field while another delimiter
+    splits it into three or more — so a legitimately single-column file is left
+    alone.
+    """
+    try:
+        with path.open("r", encoding="utf-8", errors="replace", newline="") as f:
+            head = [next(f) for _ in range(_REPAIR_SAMPLE_LINES)]
+    except StopIteration:
+        with path.open("r", encoding="utf-8", errors="replace", newline="") as f:
+            head = f.readlines()
+    if not head:
+        return path
+    header = head[0].rstrip("\r\n")
+
+    # What the sniffer sees: the delimiter with the most fields on the header.
+    sniffed = max(_REPAIR_DELIMS, key=lambda d: len(_fields(header, d)))
+    record = _strip_padding(header, sniffed)
+    if record is None:
+        return path
+
+    best = max(_REPAIR_DELIMS, key=lambda d: len(_fields(record, d)))
+    width = len(_fields(record, best))
+    # Only rewrite when the repair actually changes the table's shape. A file
+    # the sniffer already reads correctly reaches this point too, and rewriting
+    # it would be a pointless copy.
+    if width < 3 or width == len(_fields(header, sniffed)):
+        return path
+
+    # Confirm on the body: a one-off odd header is not worth rewriting a file.
+    body = [x.rstrip("\r\n") for x in head[1:] if x.strip()]
+    if body:
+        agree = 0
+        for line in body:
+            rec = _strip_padding(line, sniffed)
+            if rec is not None and len(_fields(rec, best)) == width:
+                agree += 1
+        if agree < len(body) * 0.8:
+            return path
+
+    logger.info("repairing CSV structure: sniffed %r, real %r", sniffed, best)
+    out = path.with_suffix(path.suffix + ".fixed")
+    with (
+        path.open("r", encoding="utf-8", errors="replace", newline="") as src,
+        out.open("w", encoding="utf-8", newline="") as dst,
+    ):
+        writer = csv.writer(dst, delimiter=best, lineterminator="\n")
+        for line in src:
+            line = line.rstrip("\r\n")
+            if not line:
+                continue
+            rec = _strip_padding(line, sniffed)
+            if rec is None:
+                continue
+            writer.writerow(_fields(rec, best))
+    return out
 
 
 def _safe_unlink(path: Path) -> None:
@@ -524,11 +686,11 @@ async def ensure_cached(
             raw = raw_csv
             effective_fmt = "csv"
 
-        usable = (
-            await asyncio.to_thread(_normalize_csv_encoding, raw)
-            if effective_fmt in ("csv", "tsv")
-            else raw
-        )
+        if effective_fmt in ("csv", "tsv"):
+            usable = await asyncio.to_thread(_normalize_csv_encoding, raw)
+            usable = await asyncio.to_thread(_repair_csv_text, usable)
+        else:
+            usable = raw
         parquet_path = cache.put_path(key)
 
         src = str(usable).replace("'", "''")
@@ -635,10 +797,17 @@ def _select_list(con: duckdb.DuckDBPyConnection, parquet: Path) -> str:
     return ", ".join(parts)
 
 
-def _open_view(con: duckdb.DuckDBPyConnection, parquet: Path) -> None:
+def _open_view(con: duckdb.DuckDBPyConnection, parquet: Path) -> list[str]:
+    """Open the resource as view `data`. Returns its column names.
+
+    Callers hand those names to `_quote_ident` so a column reference is
+    checked against what the file actually has rather than against a
+    character class.
+    """
     p = str(parquet).replace("'", "''")
     cols = _select_list(con, parquet)
     con.execute(f"CREATE OR REPLACE VIEW data AS SELECT {cols} FROM read_parquet('{p}')")
+    return [r[0] for r in con.execute("DESCRIBE data").fetchall()]
 
 
 def _open_sandboxed(con: duckdb.DuckDBPyConnection, parquet: Path) -> None:
@@ -686,14 +855,11 @@ async def get_resource_schema(
 
         n = min(max(int(sample_rows), 1), SCHEMA_SAMPLE_ROWS)
         for col in columns_meta:
-            # One unusable column name must not cost the caller the whole
-            # schema: report the column, skip its samples, say why.
-            try:
-                quoted = _quote_ident(col["name"])
-            except AnalyticsError as e:
-                col["sample_values"] = []
-                col["note"] = str(e)
-                continue
+            # These names came from DuckDB's own DESCRIBE of a file it just
+            # parsed, not from the model, so they are escaped rather than
+            # validated. Validating them was the reason a header the publisher
+            # mangled ("A¤o") made every tool refuse the whole file.
+            quoted = _raw_quote(col["name"])
             try:
                 vals = con.execute(
                     f"SELECT DISTINCT {quoted} FROM data WHERE {quoted} IS NOT NULL LIMIT {n}"
@@ -720,7 +886,8 @@ def _column_stats(
     col_type: str,
     top_n: int,
 ) -> dict[str, Any]:
-    quoted = _quote_ident(col_name)
+    # col_name is a DESCRIBE result, not caller input: escape, do not validate.
+    quoted = _raw_quote(col_name)
     type_lower = col_type.lower()
     is_numeric = any(
         t in type_lower
@@ -841,7 +1008,7 @@ Op = Literal[
 ]
 
 
-def _build_filter_clause(f: dict[str, Any]) -> str:
+def _build_filter_clause(f: dict[str, Any], available: list[str] | None = None) -> str:
     col = f.get("col")
     op = f.get("op", "=")
     val = f.get("val")
@@ -849,7 +1016,7 @@ def _build_filter_clause(f: dict[str, Any]) -> str:
         raise AnalyticsError("filter.col must be a string")
     if op not in ALLOWED_OPS:
         raise AnalyticsError(f"Operator not allowed: {op}")
-    q = _quote_ident(col)
+    q = _quote_ident(col, available)
     if op in ("is_null",):
         return f"{q} IS NULL"
     if op in ("is_not_null",):
@@ -884,14 +1051,14 @@ def _build_filter_clause(f: dict[str, Any]) -> str:
     return f"{q} {cmp_op} {_quote_literal(val)}"
 
 
-def _build_where(filters: list[dict] | None) -> str:
+def _build_where(filters: list[dict] | None, available: list[str] | None = None) -> str:
     if not filters:
         return ""
-    parts = [_build_filter_clause(f) for f in filters]
+    parts = [_build_filter_clause(f, available) for f in filters]
     return "WHERE " + " AND ".join(parts)
 
 
-def _build_order_by(order_by: list[dict] | None) -> str:
+def _build_order_by(order_by: list[dict] | None, available: list[str] | None = None) -> str:
     if not order_by:
         return ""
     parts = []
@@ -902,11 +1069,11 @@ def _build_order_by(order_by: list[dict] | None) -> str:
         direction = (ob.get("dir") or "asc").lower()
         if direction not in ("asc", "desc"):
             raise AnalyticsError(f"Invalid order direction: {direction}")
-        parts.append(f"{_quote_ident(col)} {direction.upper()}")
+        parts.append(f"{_quote_ident(col, available)} {direction.upper()}")
     return "ORDER BY " + ", ".join(parts)
 
 
-def _build_agg_expr(agg: dict) -> str:
+def _build_agg_expr(agg: dict, available: list[str] | None = None) -> str:
     col = agg.get("col")
     fn = (agg.get("fn") or "").lower()
     alias = agg.get("alias") or f"{fn}_{col or 'all'}"
@@ -917,24 +1084,24 @@ def _build_agg_expr(agg: dict) -> str:
     elif fn == "count":
         if not isinstance(col, str):
             raise AnalyticsError("count requires col to be a string")
-        expr = f"COUNT({_quote_ident(col)})"
+        expr = f"COUNT({_quote_ident(col, available)})"
     elif fn == "count_distinct":
         if not isinstance(col, str):
             raise AnalyticsError("count_distinct requires col")
-        expr = f"COUNT(DISTINCT {_quote_ident(col)})"
+        expr = f"COUNT(DISTINCT {_quote_ident(col, available)})"
     elif fn in ("avg", "mean"):
         if not isinstance(col, str):
             raise AnalyticsError(f"{fn} requires col")
-        expr = f"AVG({_quote_ident(col)})"
+        expr = f"AVG({_quote_ident(col, available)})"
     elif fn == "median":
         if not isinstance(col, str):
             raise AnalyticsError("median requires col")
-        expr = f"MEDIAN({_quote_ident(col)})"
+        expr = f"MEDIAN({_quote_ident(col, available)})"
     elif fn in ("sum", "min", "max", "stddev", "variance"):
         if not isinstance(col, str):
             raise AnalyticsError(f"{fn} requires col")
         sql_fn = "STDDEV" if fn == "stddev" else ("VAR_SAMP" if fn == "variance" else fn.upper())
-        expr = f"{sql_fn}({_quote_ident(col)})"
+        expr = f"{sql_fn}({_quote_ident(col, available)})"
     else:
         raise AnalyticsError(f"Unhandled fn: {fn}")
     if not isinstance(alias, str):
@@ -966,11 +1133,12 @@ _NUMERIC_TYPE_FRAGMENTS = (
 async def quantiles_resource(
     url: str,
     fmt: str | None,
-    columns: list[str] | None = None,
+    columns: list[Any] | None = None,
     percentiles: list[float] | None = None,
     filters: list[dict] | None = None,
 ) -> dict[str, Any]:
     """Percentile distribution of numeric columns in a cached resource."""
+    columns = _column_names(columns)
     kind = classify_format(fmt)
     if kind is None:
         return {"error": f"Format '{fmt}' not supported"}
@@ -978,8 +1146,10 @@ async def quantiles_resource(
     if percentiles is None:
         percentiles = [0.25, 0.5, 0.75, 0.90, 0.95, 0.99]
     for p in percentiles:
-        if not (0 < p < 1):
-            return {"error": f"Percentile {p} must be in (0, 1) exclusive"}
+        # 0 and 1 are the min and max, which DuckDB computes happily. Rejecting
+        # them only sent callers who wrote [0, 0.5, 1] away empty-handed.
+        if not (0 <= p <= 1):
+            return {"error": f"Percentile {p} must be between 0 and 1"}
     pctile_keys_check = [f"p{int(round(p * 100))}" for p in percentiles]
     if len(set(pctile_keys_check)) != len(pctile_keys_check):
         return {
@@ -993,7 +1163,7 @@ async def quantiles_resource(
 
     con = _new_con()
     try:
-        _open_view(con, parquet)
+        available = _open_view(con, parquet)
         described = con.execute("DESCRIBE data").fetchall()
         row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]  # type: ignore[index]
 
@@ -1003,11 +1173,13 @@ async def quantiles_resource(
             if any(t in row[1].lower() for t in _NUMERIC_TYPE_FRAGMENTS)
         ]
         if columns is not None:
-            all_names = {row[0] for row in described}
+            resolved = []
             for c in columns:
-                if c not in all_names:
+                hit = _match_column(c, available)
+                if hit is None:
                     return {"error": f"Column '{c}' not found in resource"}
-            selected = [(n, t) for n, t in all_numeric if n in set(columns)]
+                resolved.append(hit)
+            selected = [(n, t) for n, t in all_numeric if n in set(resolved)]
         else:
             selected = all_numeric
 
@@ -1017,7 +1189,7 @@ async def quantiles_resource(
             }
 
         try:
-            where = _build_where(filters)
+            where = _build_where(filters, available)
         except AnalyticsError as e:
             return {"error": str(e)}
 
@@ -1026,7 +1198,7 @@ async def quantiles_resource(
 
         col_results = []
         for col_name, col_type in selected:
-            quoted = _quote_ident(col_name)
+            quoted = _raw_quote(col_name)
             try:
                 row = con.execute(
                     f"SELECT quantile_cont({quoted}, {pctile_arr}), "
@@ -1069,11 +1241,12 @@ async def quantiles_resource(
 async def find_duplicates_resource(
     url: str,
     fmt: str | None,
-    columns: list[str] | None = None,
+    columns: list[Any] | None = None,
     filters: list[dict] | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
     """Find rows duplicated on the specified columns (or all columns)."""
+    columns = _column_names(columns)
     kind = classify_format(fmt)
     if kind is None:
         return {"error": f"Format '{fmt}' not supported"}
@@ -1087,18 +1260,17 @@ async def find_duplicates_resource(
 
     con = _new_con()
     try:
-        _open_view(con, parquet)
+        available = _open_view(con, parquet)
         try:
-            where = _build_where(filters)
+            where = _build_where(filters, available)
         except AnalyticsError as e:
             return {"error": str(e)}
 
         if columns is None:
-            described = con.execute("DESCRIBE data").fetchall()
-            columns = [row[0] for row in described]
+            columns = list(available)
 
         try:
-            group_cols = ", ".join(_quote_ident(c) for c in columns)
+            group_cols = ", ".join(_quote_ident(c, available) for c in columns)
         except AnalyticsError as e:
             return {"error": str(e)}
 
@@ -1160,10 +1332,8 @@ async def detect_outliers_resource(
 
     limit = min(max(int(limit), 1), 500)
 
-    try:
-        _quote_ident(column)  # validate early
-    except AnalyticsError as e:
-        return {"error": str(e)}
+    if not isinstance(column, str) or not column:
+        return {"error": "column must be a non-empty string"}
 
     try:
         parquet, meta = await ensure_cached(url, kind)
@@ -1172,13 +1342,13 @@ async def detect_outliers_resource(
 
     con = _new_con()
     try:
-        _open_view(con, parquet)
+        available = _open_view(con, parquet)
         try:
-            where = _build_where(filters)
+            where = _build_where(filters, available)
         except AnalyticsError as e:
             return {"error": str(e)}
 
-        quoted = _quote_ident(column)
+        quoted = _quote_ident(column, available)
 
         try:
             stats_row = con.execute(
@@ -1265,7 +1435,7 @@ async def save_query_to_csv(
     dest: str | None = None,
     sql: str | None = None,
     filters: list[dict] | None = None,
-    columns: list[str] | None = None,
+    columns: list[Any] | None = None,
     limit: int = 10_000,
     overwrite: bool = False,
 ) -> dict[str, Any]:
@@ -1274,6 +1444,7 @@ async def save_query_to_csv(
     import datetime
     import re
 
+    columns = _column_names(columns)
     kind = classify_format(fmt)
     if kind is None:
         return {"error": f"Format '{fmt}' not supported"}
@@ -1327,15 +1498,15 @@ async def save_query_to_csv(
             except duckdb.Error as e:
                 return {"error": f"DuckDB: {e}"}
         else:
-            _open_view(con, parquet)
+            available = _open_view(con, parquet)
             select_clause = "*"
             if columns:
                 try:
-                    select_clause = ", ".join(_quote_ident(c) for c in columns)
+                    select_clause = ", ".join(_quote_ident(c, available) for c in columns)
                 except AnalyticsError as e:
                     return {"error": str(e)}
             try:
-                where = _build_where(filters)
+                where = _build_where(filters, available)
             except AnalyticsError as e:
                 return {"error": str(e)}
             try:
@@ -1377,12 +1548,13 @@ async def filter_resource(
     url: str,
     fmt: str | None,
     filters: list[dict] | None = None,
-    columns: list[str] | None = None,
+    columns: list[Any] | None = None,
     order_by: list[dict] | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
     """Typed WHERE/SELECT/ORDER BY/LIMIT against a cached resource."""
+    columns = _column_names(columns)
     kind = classify_format(fmt)
     if kind is None:
         return {"error": f"Format '{fmt}' not supported"}
@@ -1396,13 +1568,13 @@ async def filter_resource(
 
     con = _new_con()
     try:
-        _open_view(con, parquet)
+        available = _open_view(con, parquet)
         select_clause = "*"
         if columns:
-            select_clause = ", ".join(_quote_ident(c) for c in columns)
+            select_clause = ", ".join(_quote_ident(c, available) for c in columns)
         try:
-            where = _build_where(filters)
-            order = _build_order_by(order_by)
+            where = _build_where(filters, available)
+            order = _build_order_by(order_by, available)
         except AnalyticsError as e:
             return {"error": str(e)}
 
@@ -1442,13 +1614,14 @@ async def aggregate_resource(
     url: str,
     fmt: str | None,
     aggregations: list[dict],
-    group_by: list[str] | None = None,
+    group_by: list[Any] | None = None,
     filters: list[dict] | None = None,
     having: list[dict] | None = None,
     order_by: list[dict] | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
     """Typed GROUP BY + aggregations + optional HAVING."""
+    group_by = _column_names(group_by)
     kind = classify_format(fmt)
     if kind is None:
         return {"error": f"Format '{fmt}' not supported"}
@@ -1463,23 +1636,31 @@ async def aggregate_resource(
 
     con = _new_con()
     try:
-        _open_view(con, parquet)
+        available = _open_view(con, parquet)
         try:
-            agg_parts = [_build_agg_expr(a) for a in aggregations]
+            agg_parts = [_build_agg_expr(a, available) for a in aggregations]
         except AnalyticsError as e:
             return {"error": str(e)}
 
         group_parts: list[str] = []
         if group_by:
             try:
-                group_parts = [_quote_ident(c) for c in group_by]
+                group_parts = [_quote_ident(c, available) for c in group_by]
             except AnalyticsError as e:
                 return {"error": str(e)}
 
         select_clause = ", ".join([*group_parts, *agg_parts])
+        # ORDER BY and HAVING may legitimately name an aggregation alias, which
+        # is not a column of the file, so they see the columns plus the aliases
+        # this query just defined.
+        aliases = [
+            a.get("alias") or f"{(a.get('fn') or '').lower()}_{a.get('col') or 'all'}"
+            for a in aggregations
+        ]
+        selectable = available + [a for a in aliases if isinstance(a, str)]
         try:
-            where = _build_where(filters)
-            order = _build_order_by(order_by)
+            where = _build_where(filters, available)
+            order = _build_order_by(order_by, selectable)
         except AnalyticsError as e:
             return {"error": str(e)}
         group_clause = "GROUP BY " + ", ".join(group_parts) if group_parts else ""
@@ -1488,8 +1669,9 @@ async def aggregate_resource(
         having_clause = ""
         if having:
             try:
-                # HAVING refers to aliases which are valid identifiers — same path.
-                having_clause = "HAVING " + " AND ".join(_build_filter_clause(h) for h in having)
+                having_clause = "HAVING " + " AND ".join(
+                    _build_filter_clause(h, selectable) for h in having
+                )
             except AnalyticsError as e:
                 return {"error": str(e)}
 

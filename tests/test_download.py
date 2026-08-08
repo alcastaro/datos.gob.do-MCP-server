@@ -120,3 +120,28 @@ def test_err_text_uses_the_message_when_there_is_one():
 )
 def test_looks_like_html(head, expected):
     assert download.looks_like_html(head) is expected
+
+
+# ─── Codepage ladder (v0.7.4) ────────────────────────────────────────────────
+
+
+def test_detect_encoding_prefers_cp850_over_cp1252_for_dos_exports():
+    """`Año` in CP850/CP437 is 41 A4 6F. Decoded as CP1252 it reads `A¤o`.
+
+    Five files in the catalog sweep reached users that way, and chardet had
+    guessed right — at 5% confidence, below the old 0.7 threshold, so the guess
+    was thrown away in favour of a blind CP1252 fallback.
+    """
+    data = "Categoria;Cantidad;Mes;Año\nQuejas;4;octubre;2017\n".encode("cp850")
+    enc = download._detect_encoding(data)
+    assert data.decode(enc).splitlines()[0].endswith("Año")
+
+
+def test_mojibake_score_flags_the_wrong_decoding():
+    data = "Sueldo Bruto;Año\n1000;2024\n".encode("cp850")
+    assert download._mojibake_score(data.decode("cp1252")) > 0
+    assert download._mojibake_score(data.decode("cp850")) == 0
+
+
+def test_detect_encoding_keeps_utf8_fast_path():
+    assert download._detect_encoding("Año".encode()) == "utf-8"

@@ -333,7 +333,7 @@ async def filter_resource(
         ),
     ] = None,
     columns: Annotated[
-        list[str] | None,
+        list[str | dict] | None,
         Field(description="Columns to SELECT. None = all columns."),
     ] = None,
     order_by: Annotated[
@@ -388,7 +388,7 @@ async def aggregate_resource(
         ),
     ],
     group_by: Annotated[
-        list[str] | None,
+        list[str | dict] | None,
         Field(description='Columns to GROUP BY. Example: ["Estatus","Mes"].'),
     ] = None,
     filters: Annotated[
@@ -445,7 +445,7 @@ async def quantiles_resource(
         str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
     ],
     columns: Annotated[
-        list[str] | None,
+        list[str | dict] | None,
         Field(description="Numeric columns to analyze. None = all numeric columns."),
     ] = None,
     percentiles: Annotated[
@@ -482,7 +482,7 @@ async def find_duplicates_resource(
         str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
     ],
     columns: Annotated[
-        list[str] | None,
+        list[str | dict] | None,
         Field(
             description=(
                 "Columns to check for duplication. None = all columns. "
@@ -579,7 +579,7 @@ async def save_query_to_csv(
         Field(description="Same filter syntax as filter_resource. Used if sql is None."),
     ] = None,
     columns: Annotated[
-        list[str] | None,
+        list[str | dict] | None,
         Field(description="Columns to include. None = all. Ignored if sql is provided."),
     ] = None,
     limit: Annotated[

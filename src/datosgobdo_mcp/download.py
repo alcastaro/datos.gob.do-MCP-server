@@ -23,8 +23,51 @@ PREVIEW_MAX_BYTES = 5 * 1024 * 1024
 ANALYTICS_MAX_BYTES = 100 * 1024 * 1024
 
 
+# Characters that are almost never intended in Spanish-language government
+# data, but appear the moment a single-byte codepage is decoded as the wrong
+# one. 0xA4/0xA5 are ñ/Ñ in CP850 and CP437 (the DOS codepages Excel still
+# emits on Windows in Latin America) and ¤/¥ in CP1252.
+_MOJIBAKE_CHARS = "¤¥£¦§¨©ª«¬®¯°±²³´µ¶·¸¹º»¼½¾¿×÷ÿþýüûúùø÷"
+_MOJIBAKE_PAIRS = ("Ã", "Â", "â€", "Ã‚", "ï¿½", "�")
+
+# Ordered by how often each turns up in this catalog; ties broken by the first.
+_CODEPAGE_LADDER = ("cp1252", "cp850", "cp437", "iso-8859-1")
+
+
+def _mojibake_score(text: str) -> int:
+    """How wrong a decoding looks. Lower is better; 0 means nothing suspicious.
+
+    Counts only characters that would be extraordinary in a Spanish column
+    header or value. Accented letters, ñ and the currency symbols a real file
+    does use are deliberately not penalised.
+    """
+    score = sum(text.count(c) for c in _MOJIBAKE_CHARS)
+    score += sum(text.count(p) * 2 for p in _MOJIBAKE_PAIRS)
+    return score
+
+
+def _best_codepage(data: bytes) -> str:
+    """Pick the single-byte codepage that yields the least garbled text.
+
+    chardet gets these files right but reports ~5% confidence on them, so the
+    old threshold discarded a correct answer and fell back to CP1252 — which is
+    how `Año` reached users as `A¤o`. Scoring the candidate decodings settles it
+    from the bytes themselves rather than from a confidence number.
+    """
+    sample = data[: min(len(data), 100_000)]
+    best, best_score = _CODEPAGE_LADDER[0], None
+    for enc in _CODEPAGE_LADDER:
+        try:
+            score = _mojibake_score(sample.decode(enc, errors="replace"))
+        except LookupError:  # pragma: no cover - stdlib always has these
+            continue
+        if best_score is None or score < best_score:
+            best, best_score = enc, score
+    return best
+
+
 def _detect_encoding(data: bytes) -> str:
-    """Detect text encoding with chardet fallback."""
+    """Detect text encoding, preferring the decoding that looks least garbled."""
     if not data:
         return "utf-8"
     # Fast path: try UTF-8 first (most common).
@@ -38,16 +81,26 @@ def _detect_encoding(data: bytes) -> str:
         import chardet
 
         guess = chardet.detect(data[: min(len(data), 100_000)])
-        enc = guess.get("encoding")
+        enc = (guess.get("encoding") or "").lower()
+        # Normalize common Latin-1 family aliases to one spelling so the
+        # ladder membership test below means what it says.
+        if enc in ("iso-8859-1", "windows-1252", "latin-1", "latin_1"):
+            enc = "cp1252"
         if enc and guess.get("confidence", 0) > 0.7:
-            # Normalize common Latin-1 family detections.
-            if enc.lower() in ("iso-8859-1", "windows-1252"):
-                return "cp1252"
-            return enc.lower()
+            return enc
+        # A low-confidence *multi-byte* guess is still worth trying: the ladder
+        # below only knows single-byte codepages and would mangle UTF-16 or a
+        # CJK encoding outright. A low-confidence single-byte guess is exactly
+        # the case the ladder exists to settle, so it is ignored here.
+        if enc.startswith(("utf-16", "utf-32", "gb", "big5", "shift", "euc", "iso-2022")):
+            try:
+                data[:1000].decode(enc)
+                return enc
+            except (UnicodeDecodeError, LookupError):
+                pass
     except ImportError:
         pass
-    # Hard fallback.
-    return "cp1252"
+    return _best_codepage(data)
 
 
 async def download_capped(

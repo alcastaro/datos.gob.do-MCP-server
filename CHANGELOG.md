@@ -4,6 +4,46 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.4] — 2026-08-07
+
+The second pass of the same protocol audit, this time driving the tools with
+calls written by analyst agents that had only seen each file's schema — the
+closest thing to how an assistant actually uses this server. 129 files, 487
+calls. Two failure modes accounted for most of it, and neither was the data.
+
+### Fixed
+
+- **`group_by` and `columns` rejected `[{"col": "Año"}]`.** Three of the four
+  list parameters on these tools (`filters`, `order_by`, `having`) take objects
+  keyed by `col`, and one takes bare strings. Models generalise from the
+  majority: **190 of 487 directed calls** were written the object way, and every
+  one of them died in schema validation *before the tool ran*, so the caller got
+  a Pydantic traceback instead of an answer. Both spellings are now accepted.
+- **Column names were validated against a character class instead of being
+  resolved against the file.** A header the publisher had mangled (`A¤o`) made
+  every tool refuse the whole resource. Names supplied by the caller are now
+  matched against the columns the open view actually has — case- and
+  whitespace-insensitively, so `año` finds `AÑO` — and a name that matches
+  nothing returns "Column not found, columns are: …" instead of a SQL error.
+  Names that came from DuckDB's own `DESCRIBE` are escaped, never validated.
+  Aggregation aliases, which are invented by the model and have nothing to
+  match, keep the strict path.
+- **`Año` reached users as `A¤o`.** These files are CP850/CP437 — the DOS
+  codepages Excel still emits in Latin America, where `0xA4` is `ñ`. chardet
+  identified them correctly but at ~5% confidence, under the 0.7 threshold, so
+  the guess was discarded for a blind CP1252 fallback. Candidate decodings are
+  now scored for characters that would be extraordinary in Spanish text and the
+  cleanest one wins. Five files in the sample were affected.
+- **Two structurally broken CSVs are now readable.** One is a semicolon file
+  Excel padded with five empty comma columns, so commas were the most consistent
+  separator and the real record became column one. The other had every line
+  quoted as a single field. Both are detected — the table collapses to one
+  usable field under the sniffed delimiter while another delimiter splits it
+  into three or more — and rewritten before parsing. An 18,235-row book registry
+  went from 1 unusable column to 12; a complaints series from 6 to 4.
+- **`quantiles_resource` refused percentiles 0 and 1**, which are the minimum
+  and maximum and which DuckDB computes without complaint.
+
 ## [0.7.3] — 2026-08-07
 
 Findings from running every tool over the MCP protocol — a real stdio client
