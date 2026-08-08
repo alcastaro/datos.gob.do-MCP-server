@@ -1264,3 +1264,118 @@ async def test_unknown_column_in_sql_lists_the_real_ones(mock_csv_endpoint, tmp_
     out = await analytics.query_resource(mock_csv_endpoint, "csv", sql='SELECT "Sueldos" FROM data')
     assert "error" in out, out
     assert "Sueldo" in out["error"]
+
+
+# ─── Numbers stored as text (V8.1) ────────────────────────────────────────────
+
+
+async def test_sum_over_a_text_salary_column_now_answers(
+    mock_dirty_numeric_endpoint, tmp_cache_dir
+):
+    """The largest failure class in this catalog: 202 of 284 directed errors.
+
+    One `N/A` in a payroll makes the whole column VARCHAR, and every SUM over
+    it failed with a cast error — for a column that is unambiguously a measure.
+    """
+    out = await analytics.aggregate_resource(
+        mock_dirty_numeric_endpoint,
+        "csv",
+        aggregations=[{"col": "Sueldo Bruto (RD$)", "fn": "sum", "alias": "total"}],
+        group_by=["Mes"],
+    )
+    assert "error" not in out, out
+    totals = {r[0]: r[1] for r in out["rows"]}
+    assert totals["Enero"] == pytest.approx(sum(40000 + i * 500 for i in range(20)))
+    # RD$52,300.00 — the currency prefix is stripped, so Pedro is counted.
+    febrero = sum(52000 + i * 250 + 0.5 for i in range(17)) + 52300.00
+    assert totals["Febrero"] == pytest.approx(febrero)
+
+
+async def test_the_answer_declares_what_it_threw_away(mock_dirty_numeric_endpoint, tmp_cache_dir):
+    """Non-negotiable: this is an audit tool.
+
+    Silently absorbing a publisher's defect would make the server the last
+    place it is visible, and the caller would have no way to know the total it
+    just received skipped three rows — one of which is a header the publisher
+    left inside the data.
+    """
+    out = await analytics.aggregate_resource(
+        mock_dirty_numeric_endpoint,
+        "csv",
+        aggregations=[{"col": "Sueldo Bruto (RD$)", "fn": "avg", "alias": "media"}],
+    )
+    report = out["numeric_coercion"][0]
+    assert report["coerced"] is True
+    assert report["column"] == "Sueldo Bruto (RD$)"
+    assert report["values_used"] == 38
+    assert report["values_excluded"] == 3
+    excluded = {e["value"]: e["count"] for e in report["excluded_values"]}
+    assert excluded["N/A"] == 1
+    assert excluded["#REF!"] == 1
+    assert excluded["Sueldo Bruto (RD$)"] == 1  # the repeated header row
+
+
+async def test_counting_a_text_column_is_left_alone(mock_dirty_numeric_endpoint, tmp_cache_dir):
+    """COUNT over text is a legitimate question about text.
+
+    Coercing there would answer a different question — how many values happen
+    to parse as numbers — while looking like it answered the one asked.
+    """
+    out = await analytics.aggregate_resource(
+        mock_dirty_numeric_endpoint,
+        "csv",
+        aggregations=[{"col": "Empleado", "fn": "count", "alias": "n"}],
+    )
+    assert out["rows"][0][0] == 41
+    assert "numeric_coercion" not in out
+
+
+async def test_a_genuinely_textual_column_is_refused_not_coerced(
+    mock_dirty_numeric_endpoint, tmp_cache_dir
+):
+    """Below the threshold the column stays text, and the reply says why.
+
+    Coercing a column that is 30% numbers would answer a question about a
+    measure using an arbitrary subset of rows — a number with no reason to
+    doubt it, which is worse than a refusal.
+    """
+    out = await analytics.detect_outliers_resource(
+        mock_dirty_numeric_endpoint, "csv", column="Empleado"
+    )
+    assert "error" in out
+    report = out["numeric_coercion"][0]
+    assert report["coerced"] is False
+    assert report["values_numeric"] == 0
+
+
+async def test_quantiles_reach_a_column_stored_as_text(mock_dirty_numeric_endpoint, tmp_cache_dir):
+    """Asking for it by name is enough; the file's declared type is not the last word."""
+    out = await analytics.quantiles_resource(
+        mock_dirty_numeric_endpoint, "csv", columns=["Sueldo Bruto (RD$)"]
+    )
+    assert "error" not in out, out
+    col = out["columns"][0]
+    assert col["non_null_count"] == 38
+    assert col["min"] == pytest.approx(40000.00)
+    assert col["max"] == pytest.approx(56000.50)
+    assert out["numeric_coercion"][0]["values_excluded"] == 3
+
+
+async def test_outliers_work_on_a_text_measure(mock_dirty_numeric_endpoint, tmp_cache_dir):
+    out = await analytics.detect_outliers_resource(
+        mock_dirty_numeric_endpoint, "csv", column="Sueldo Bruto (RD$)"
+    )
+    assert "error" not in out, out
+    assert out["q1"] is not None and out["q3"] is not None
+    assert out["numeric_coercion"][0]["values_excluded"] == 3
+
+
+def test_the_cleanup_never_removes_a_value_separator():
+    """Measured and rejected: also stripping spaces.
+
+    It rescued one more column across the whole mirror and would read the
+    three codes `10 20 30` as the single number 102030. Removing a character a
+    number cannot contain is safe; removing one that separates values is not.
+    """
+    assert " ', ''" not in analytics._NUMERIC_TEXT_CLEAN.replace("' '", "")
+    assert "REPLACE({c}, ' ', '')" not in analytics._NUMERIC_TEXT_CLEAN

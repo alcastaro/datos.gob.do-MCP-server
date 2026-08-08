@@ -232,3 +232,41 @@ def mock_outliers_endpoint(httpx_mock, outliers_csv_url, sample_outliers_csv_byt
     httpx_mock.add_response(url=outliers_csv_url, method="HEAD", headers={"etag": "o1"})
     httpx_mock.add_response(url=outliers_csv_url, method="GET", content=sample_outliers_csv_bytes)
     return outliers_csv_url
+
+
+# A payroll shaped like the ones this catalog actually publishes: the salary
+# column is text because a few cells hold placeholders and the header row is
+# repeated inside the body — both taken from real files (`N/A`, `#REF!`, and 17
+# copies of `TOTAL DE PRUEBAS` sitting in the column of the same name).
+#
+# The proportions matter. Real files are 93% parseable, not 70%: the defect is
+# a handful of bad cells in an otherwise numeric column, which is exactly why
+# refusing the whole column was the wrong answer. A fixture dirtier than
+# reality would sit below the coercion threshold and test nothing.
+def _dirty_payroll() -> str:
+    rows = ["Empleado;Sueldo Bruto (RD$);Mes"]
+    for i in range(20):
+        rows.append(f"Empleado{i:02d};{40000 + i * 500:,}.00;Enero")
+    rows.append("Rosa;N/A;Enero")
+    rows.append("Empleado;Sueldo Bruto (RD$);Mes")  # header repeated mid-file
+    for i in range(17):
+        rows.append(f"Tecnico{i:02d};{52000 + i * 250:,}.50;Febrero")
+    rows.append("Pedro;RD$52,300.00;Febrero")
+    rows.append("Jose;#REF!;Febrero")
+    return "\n".join(rows) + "\n"
+
+
+SAMPLE_DIRTY_NUMERIC_CSV = _dirty_payroll()
+
+
+@pytest.fixture
+def dirty_numeric_csv_bytes() -> bytes:
+    return SAMPLE_DIRTY_NUMERIC_CSV.encode("utf-8")
+
+
+@pytest.fixture
+def mock_dirty_numeric_endpoint(httpx_mock, dirty_numeric_csv_bytes):
+    url = "https://example.test/nomina-sucia.csv"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "sucia1"})
+    httpx_mock.add_response(url=url, method="GET", content=dirty_numeric_csv_bytes)
+    return url

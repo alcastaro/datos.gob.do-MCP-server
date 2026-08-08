@@ -4,6 +4,41 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] — 2026-08-08
+
+### Added
+
+- **Columns holding numbers as text can now be measured.** This was the single
+  largest failure class in the catalog: **202 of 284 errors (71 %)** from the
+  battery of analyst-written calls, over **90 columns in 54 readable files**.
+  A payroll publishes `SUELDO BRUTO (RD$)` as text because a handful of cells
+  say `N/A`, and every `SUM` and `AVG` over it failed — for a column that is
+  unambiguously a measure, held hostage by three bad rows.
+
+  `aggregate_resource`, `quantiles_resource` and `detect_outliers_resource` now
+  read such a column as a number where each value permits it. The cleanup
+  removes thousands separators, non-breaking spaces and currency prefixes; the
+  values that still refuse — `N/A`, `-`, `#REF!`, `PROCESO CANCELADO`, and
+  header rows the publisher left inside the data — are excluded.
+
+  **The reply always says so.** A `numeric_coercion` block reports how many
+  values were used, how many were dropped and which ones, with counts. This is
+  an audit tool: absorbing a publisher's defect quietly would make the server
+  the last place that defect is visible, and the caller would receive a total
+  with no reason to doubt it.
+
+  Chosen by measurement over the 1,133 text columns in the mirror. The cleanup
+  rescues 41 columns that a plain cast cannot read at all — payroll
+  (`Sueldo bruto`, `AFP`, `ISR`, `NETO`), water quality
+  (`INDICE_POTABILIDAD_(%)`, `CLORO_RESIDUAL_(Mg/l)`), production volumes. A
+  variant that also stripped spaces was tested and rejected: it rescued one
+  further column and would have read the three codes `10 20 30` as 102030.
+
+  Two limits are deliberate. A column under 90 % parseable stays text and the
+  reply explains why — answering a question about a measure from an arbitrary
+  subset of rows is worse than refusing. And `count` / `count_distinct` are
+  never coerced: counting text is a legitimate question about text.
+
 ## [0.7.11] — 2026-08-08
 
 ### Security

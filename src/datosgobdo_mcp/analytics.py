@@ -1186,7 +1186,22 @@ def _duckdb_error(
     return out
 
 
-def _build_agg_expr(agg: dict, available: list[str] | None = None) -> str:
+def _build_agg_expr(
+    agg: dict,
+    available: list[str] | None = None,
+    numeric: Callable[[str], str] | None = None,
+) -> str:
+    """Build one aggregate expression.
+
+    `numeric` maps a column name to the SQL that reads it as a number. The
+    counting functions never use it: COUNT over a text column is a legitimate
+    question about text, and coercing there would silently answer a different
+    one.
+    """
+
+    def measure(name: str) -> str:
+        return numeric(name) if numeric else _quote_ident(name, available)
+
     col = agg.get("col")
     fn = (agg.get("fn") or "").lower()
     alias = agg.get("alias") or f"{fn}_{col or 'all'}"
@@ -1205,16 +1220,16 @@ def _build_agg_expr(agg: dict, available: list[str] | None = None) -> str:
     elif fn in ("avg", "mean"):
         if not isinstance(col, str):
             raise AnalyticsError(f"{fn} requires col")
-        expr = f"AVG({_quote_ident(col, available)})"
+        expr = f"AVG({measure(col)})"
     elif fn == "median":
         if not isinstance(col, str):
             raise AnalyticsError("median requires col")
-        expr = f"MEDIAN({_quote_ident(col, available)})"
+        expr = f"MEDIAN({measure(col)})"
     elif fn in ("sum", "min", "max", "stddev", "variance"):
         if not isinstance(col, str):
             raise AnalyticsError(f"{fn} requires col")
         sql_fn = "STDDEV" if fn == "stddev" else ("VAR_SAMP" if fn == "variance" else fn.upper())
-        expr = f"{sql_fn}({_quote_ident(col, available)})"
+        expr = f"{sql_fn}({measure(col)})"
     else:
         raise AnalyticsError(f"Unhandled fn: {fn}")
     if not isinstance(alias, str):
@@ -1240,6 +1255,118 @@ _NUMERIC_TYPE_FRAGMENTS = (
     "utinyint",
     "tinyint",
 )
+
+# ─── Numbers stored as text ───────────────────────────────────────────────────
+#
+# The single largest failure class in this catalog: 202 of 284 errors from the
+# directed battery, and 90 columns across 54 of the readable files. A payroll
+# publishes `SUELDO BRUTO (RD$)` as VARCHAR because one cell says `N/A`, and
+# every SUM and AVG over it fails — the column is a real measure, held hostage
+# by a handful of placeholder cells.
+#
+# The cleanup below was chosen by measurement, not by intuition. Over 1,133
+# VARCHAR columns in the mirror it rescues **41** that a plain cast cannot read
+# at all (under 50% parseable) and that become fully parseable (≥90%): payroll
+# (`Sueldo bruto`, `AFP`, `ISR`, `NETO`), water quality
+# (`INDICE_POTABILIDAD_(%)`, `CLORO_RESIDUAL_(Mg/l)`), production volumes. In
+# aggregate the gain looks tiny — 15.0% to 16.3% of all text values — because
+# most VARCHAR columns are genuinely names and categories. The per-column view
+# is the one that matters.
+#
+# A variant that also strips spaces was measured and rejected: it rescued one
+# more column and would silently read `10 20 30` as 102030. Removing separators
+# a number cannot contain is safe; removing a character that separates values
+# is not.
+_NUMERIC_TEXT_CLEAN = (
+    "NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE({c}, ',', ''), CHR(160), ''),"
+    " 'RD$', ''), '$', '')), '')"
+)
+
+# Below this share of parseable values the column is treated as text, not as a
+# damaged number. Coercing a column that is 60% numbers would answer a question
+# about a measure using an arbitrary subset of the rows, which is worse than
+# refusing: the caller gets a number and no reason to doubt it.
+_COERCION_MIN_RATIO = 0.9
+
+# How many distinct unparseable values to name back. Enough to recognise the
+# pattern (`N/A`, `-`, `#REF!`, `PROCESO CANCELADO`), not enough to flood the
+# assistant's context with one row per typo.
+_COERCION_EXAMPLES = 8
+
+
+def _as_number(quoted: str) -> str:
+    """SQL reading a text column as a number, NULL where it cannot."""
+    return f"TRY_CAST({_NUMERIC_TEXT_CLEAN.format(c=quoted)} AS DOUBLE)"
+
+
+def _and_where(where: str, condition: str) -> str:
+    """Append a condition to a possibly-empty WHERE clause."""
+    return f"{where} AND {condition}" if where else f"WHERE {condition}"
+
+
+def _is_numeric_type(sql_type: str) -> bool:
+    return any(t in (sql_type or "").lower() for t in _NUMERIC_TYPE_FRAGMENTS)
+
+
+def _numeric_ref(
+    con: duckdb.DuckDBPyConnection,
+    col_name: str,
+    types: dict[str, str],
+    where: str = "",
+) -> tuple[str, dict[str, Any] | None]:
+    """SQL to read a column as a number, and an account of what that cost.
+
+    Returns `(expression, report)`. `report` is None when the column is already
+    numeric and nothing was done to it. Otherwise it says how many values were
+    used, how many were dropped and which ones — because this is an audit tool.
+    Absorbing a publisher's defect silently would make the server the last place
+    the defect is visible, and the caller would have no way to know the average
+    it just received excluded 37 rows.
+    """
+    quoted = _raw_quote(col_name)
+    if _is_numeric_type(types.get(col_name, "")):
+        return quoted, None
+
+    expr = _as_number(quoted)
+    row = con.execute(f"SELECT count({quoted}), count({expr}) FROM data {where}").fetchone()
+    non_null, usable = (row or (0, 0))[0], (row or (0, 0))[1]
+    if not non_null or usable / non_null < _COERCION_MIN_RATIO:
+        return quoted, {
+            "column": col_name,
+            "coerced": False,
+            "values_present": non_null,
+            "values_numeric": usable,
+            "note": (
+                f"'{col_name}' is stored as text and only {usable} of {non_null} values "
+                "read as numbers, too few to treat it as a damaged numeric column. "
+                "Use query_resource with an explicit CAST if you know better."
+            ),
+        }
+
+    dropped = con.execute(
+        f"SELECT CAST({quoted} AS VARCHAR) AS v, count(*) FROM data "
+        f"{_and_where(where, f'{quoted} IS NOT NULL AND {expr} IS NULL')} "
+        f"GROUP BY 1 ORDER BY 2 DESC LIMIT {_COERCION_EXAMPLES}"
+    ).fetchall()
+    report: dict[str, Any] = {
+        "column": col_name,
+        "coerced": True,
+        "values_used": usable,
+        "values_excluded": non_null - usable,
+    }
+    if dropped:
+        report["excluded_values"] = [{"value": v, "count": n} for v, n in dropped]
+        report["note"] = (
+            f"'{col_name}' is stored as text in this file. Values were read as numbers "
+            f"where possible; {non_null - usable} could not be and were excluded from "
+            "this result."
+        )
+    else:
+        report["note"] = (
+            f"'{col_name}' is stored as text in this file but every value read as a "
+            "number. Nothing was excluded."
+        )
+    return expr, report
 
 
 @_tool_envelope
@@ -1280,11 +1407,20 @@ async def quantiles_resource(
         described = con.execute("DESCRIBE data").fetchall()
         row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]  # type: ignore[index]
 
-        all_numeric = [
-            (row[0], row[1])
-            for row in described
-            if any(t in row[1].lower() for t in _NUMERIC_TYPE_FRAGMENTS)
-        ]
+        types = {row[0]: row[1] for row in described}
+        all_numeric = [(n, t) for n, t in types.items() if _is_numeric_type(t)]
+
+        try:
+            where = _build_where(filters, available)
+        except AnalyticsError as e:
+            return {"error": str(e)}
+
+        # Columns the caller named are inspected even when stored as text; the
+        # rest of the file is not, because probing every VARCHAR column of a
+        # wide file to see whether it is secretly a number costs a scan per
+        # column and usually finds names.
+        coercion: list[dict[str, Any]] = []
+        exprs: dict[str, str] = {}
         if columns is not None:
             resolved = []
             for c in columns:
@@ -1292,26 +1428,38 @@ async def quantiles_resource(
                 if hit is None:
                     return {"error": f"Column '{c}' not found in resource"}
                 resolved.append(hit)
-            selected = [(n, t) for n, t in all_numeric if n in set(resolved)]
+            selected = []
+            for n in resolved:
+                if _is_numeric_type(types.get(n, "")):
+                    selected.append((n, types.get(n, "")))
+                    continue
+                expr, report = _numeric_ref(con, n, types, where)
+                if report and report.get("coerced"):
+                    selected.append((n, types.get(n, "")))
+                    exprs[n] = expr
+                    coercion.append(report)
+                elif report:
+                    coercion.append(report)
         else:
             selected = all_numeric
 
         if not selected:
-            return {
-                "error": "No numeric columns found (or none of the requested columns are numeric)"
+            out: dict[str, Any] = {
+                "error": (
+                    "No numeric columns found (or none of the requested columns hold "
+                    "numbers, even read as text)"
+                )
             }
-
-        try:
-            where = _build_where(filters, available)
-        except AnalyticsError as e:
-            return {"error": str(e)}
+            if coercion:
+                out["numeric_coercion"] = coercion
+            return out
 
         pctile_arr = "[" + ", ".join(repr(float(p)) for p in percentiles) + "]"
         pctile_keys = [f"p{int(round(p * 100))}" for p in percentiles]
 
         col_results = []
         for col_name, col_type in selected:
-            quoted = _raw_quote(col_name)
+            quoted = exprs.get(col_name) or _raw_quote(col_name)
             try:
                 row = con.execute(
                     f"SELECT quantile_cont({quoted}, {pctile_arr}), "
@@ -1340,7 +1488,7 @@ async def quantiles_resource(
     finally:
         con.close()
 
-    return {
+    quantile_result: dict[str, Any] = {
         "source_url": url,
         "format": kind,
         "cache": meta,
@@ -1348,6 +1496,9 @@ async def quantiles_resource(
         "percentiles": percentiles,
         "columns": col_results,
     }
+    if coercion:
+        quantile_result["numeric_coercion"] = coercion
+    return quantile_result
 
 
 @_tool_envelope
@@ -1462,6 +1613,21 @@ async def detect_outliers_resource(
             return {"error": str(e)}
 
         quoted = _quote_ident(column, available)
+        types = {r[0]: r[1] for r in con.execute("DESCRIBE data").fetchall()}
+        resolved = _match_column(column, available) or column
+        coercion_report = None
+        if not _is_numeric_type(types.get(resolved, "")):
+            expr, coercion_report = _numeric_ref(con, resolved, types, where)
+            if coercion_report and coercion_report.get("coerced"):
+                quoted = expr
+            else:
+                return {
+                    "error": (
+                        f"Column '{column}' is stored as text and does not hold numbers, "
+                        "so it has no quartiles."
+                    ),
+                    "numeric_coercion": [coercion_report] if coercion_report else [],
+                }
 
         try:
             stats_row = con.execute(
@@ -1538,6 +1704,7 @@ async def detect_outliers_resource(
         "rows_returned": len(rows),
         "columns": col_names,
         "rows": [list(r) for r in rows],
+        **({"numeric_coercion": [coercion_report]} if coercion_report else {}),
     }
 
 
@@ -1750,8 +1917,22 @@ async def aggregate_resource(
     con = _new_con()
     try:
         available = _open_view(con, parquet)
+        types = {r[0]: r[1] for r in con.execute("DESCRIBE data").fetchall()}
+        # Resolve each measure once, so a column aggregated three ways is
+        # inspected once and reported once.
+        coercion: dict[str, dict[str, Any]] = {}
+
+        def measure(name: str) -> str:
+            resolved = _match_column(name, available)
+            if resolved is None:
+                return _quote_ident(name, available)  # raises, naming the real columns
+            if resolved not in coercion:
+                expr, report = _numeric_ref(con, resolved, types, "")
+                coercion[resolved] = {"expr": expr, "report": report}
+            return coercion[resolved]["expr"]
+
         try:
-            agg_parts = [_build_agg_expr(a, available) for a in aggregations]
+            agg_parts = [_build_agg_expr(a, available, measure) for a in aggregations]
         except AnalyticsError as e:
             return {"error": str(e)}
 
@@ -1798,10 +1979,11 @@ async def aggregate_resource(
             return _duckdb_error(e, sql)
         col_names = [d[0] for d in rs.description]
         rows = rs.fetchall()
+        reports = [v["report"] for v in coercion.values() if v["report"]]
     finally:
         con.close()
 
-    return {
+    result: dict[str, Any] = {
         "source_url": url,
         "format": kind,
         "cache": meta,
@@ -1810,6 +1992,9 @@ async def aggregate_resource(
         "limit": limit,
         "rows": [list(r) for r in rows],
     }
+    if reports:
+        result["numeric_coercion"] = reports
+    return result
 
 
 # ─── Raw SQL escape hatch ─────────────────────────────────────────────────────
