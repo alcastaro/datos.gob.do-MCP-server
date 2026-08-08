@@ -4,6 +4,37 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] — 2026-08-08
+
+### Added
+
+- **An archived copy can answer when the portal will not.** Point
+  `DATOSGOBDO_ARCHIVE_DIR` at a directory holding a `manifest.json` and its
+  Parquet files; the portal is still tried first, and only when it fails does
+  the server fall back.
+
+  Government links rot. The 2026-08-08 census of all 1,056 catalog resources
+  found 15 URLs already dead and 99 institutions whose sites had grown rules
+  refusing programmatic access — so a figure cited from a resource today may be
+  uncheckable next year. The archive also makes a number reproducible: the same
+  `sha256` recomputes the same answer years later.
+
+  **The reply always says so.** `cache.provenance` carries the capture date, the
+  digest, the licence and the reason the origin was not used. A tool that
+  quietly returned yesterday's copy as though it were today's would stop being
+  usable for an audit, so this is not a silent cache — it is off by default and
+  it is always declared.
+
+  What it does *not* do, since this is the natural assumption and it is wrong:
+  an archive only holds what could be downloaded, so it does not contain the
+  resources a portal refuses.
+
+- `sweep/mirror_sync.py` writes `manifest.json` — `sha256`, capture date,
+  licence, row count and the parser build that produced each file. Without it a
+  folder of Parquet is a rumour: nothing downstream can say what a copy is,
+  whether it may be redistributed, or whether it still matches the source. The
+  licence gate already in place keeps unlicensed resources out of it.
+
 ## [0.9.1] — 2026-08-08
 
 ### Changed

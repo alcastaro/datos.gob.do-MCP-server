@@ -30,7 +30,7 @@ from typing import Any, Literal, TypeVar
 import duckdb
 import httpx
 
-from . import pagelink
+from . import archive, pagelink
 from .cache import LocalDiskCache, build_cache_key, get_cache
 from .download import (
     ANALYTICS_MAX_BYTES,
@@ -670,7 +670,7 @@ def warm_parquet_for(url: str) -> Path | None:
     return hit[0] if hit else None
 
 
-async def ensure_cached(
+async def _ensure_cached_live(
     url: str,
     fmt: str,
     cache: LocalDiskCache | None = None,
@@ -857,6 +857,39 @@ async def ensure_cached(
         _safe_unlink(raw)
         if raw_ods is not None:
             _safe_unlink(raw_ods)
+
+
+async def ensure_cached(
+    url: str,
+    fmt: str,
+    cache: LocalDiskCache | None = None,
+    force_refresh: bool = False,
+) -> tuple[Path, dict[str, Any]]:
+    """Get the resource, falling back to an archived copy if one is configured.
+
+    The portal is always tried first. The archive exists because a resource that
+    reads today may not read tomorrow — this catalog has 15 links already dead
+    and 99 institutions whose sites grew rules that refuse programmatic access —
+    and because a figure cited in a report should still be recomputable years
+    later against the same digest.
+
+    It is off unless `DATOSGOBDO_ARCHIVE_DIR` is set, and it is never silent:
+    the reply says the answer came from an archive, when it was captured and why
+    the origin was not used. An audit tool that quietly serves yesterday's copy
+    as today's has stopped being one.
+    """
+    try:
+        return await _ensure_cached_live(url, fmt, cache=cache, force_refresh=force_refresh)
+    except (httpx.HTTPError, AnalyticsError, NetGuardError, duckdb.Error) as e:
+        hit = archive.lookup(url)
+        if hit is None:
+            raise
+        parquet, entry = hit
+        logger.info("origin failed (%s) — serving the archived copy of %s", err_text(e), url)
+        return parquet, {
+            "cache": "archive",
+            "provenance": archive.provenance(url, entry, err_text(e)),
+        }
 
 
 def _raw_quote(name: str) -> str:

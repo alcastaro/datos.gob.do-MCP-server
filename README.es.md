@@ -152,6 +152,27 @@ privados quedan bloqueados). Variables de entorno:
 | `DATOSGOBDO_NETGUARD` | `public-only` (default) / `strict` / `off` | `strict` restringe los hosts a `datos.gob.do`; `off` desactiva la guardia. |
 | `DATOSGOBDO_ALLOW_HOSTS` | separados por coma, comodines `*.` | Hosts de confianza del operador (p. ej. forks apuntando a otro portal CKAN). |
 
+### Copias archivadas (opcional)
+
+Los enlaces del Estado se pudren. Un censo del catálogo completo el 2026-08-08
+encontró 15 URLs de recursos ya muertas y 99 instituciones cuyos sitios habían
+adquirido reglas que rechazan el acceso programático: una cifra que cites hoy
+puede ser incomprobable el año que viene.
+
+Apunta `DATOSGOBDO_ARCHIVE_DIR` a un directorio con un `manifest.json` y sus
+Parquet, y cuando el portal no responda el servidor contestará desde la copia
+archivada. Viene apagado, el portal siempre se intenta primero, y **la respuesta
+siempre lo dice**: `cache.provenance` lleva la fecha de captura, el `sha256`, la
+licencia y por qué no se usó el origen. Una herramienta que devolviera la copia
+de ayer como si fuera la de hoy dejaría de servir para una auditoría.
+
+Un archivo sólo contiene lo que se pudo descargar, así que **no** contiene los
+recursos que un portal rechaza. Es la suposición natural y es falsa.
+
+| Variable | Por omisión | Significado |
+|---|---|---|
+| `DATOSGOBDO_ARCHIVE_DIR` | sin definir (apagado) | Directorio con `manifest.json` + copias Parquet a las que replegarse. |
+
 ### Modo hosted (experimental)
 
 `DATOSGOBDO_TRANSPORT=streamable-http` sirve MCP por HTTP (stateless, para

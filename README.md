@@ -151,6 +151,28 @@ blocked). Environment knobs:
 | `DATOSGOBDO_NETGUARD` | `public-only` (default) / `strict` / `off` | `strict` restricts hosts to `datos.gob.do`; `off` disables the guard. |
 | `DATOSGOBDO_ALLOW_HOSTS` | comma-separated, `*.` wildcards | Operator-trusted hosts (e.g. forks pointing at another CKAN portal). |
 
+### Archived copies (optional)
+
+Government links rot. A census of the whole catalog on 2026-08-08 found 15
+resource URLs already dead and 99 institutions whose sites had grown rules that
+refuse programmatic access, so a figure you cite today may be uncheckable next
+year.
+
+Point `DATOSGOBDO_ARCHIVE_DIR` at a directory holding a `manifest.json` and its
+Parquet files, and when a portal cannot be reached the server answers from the
+archived copy instead. It is off by default, the portal is always tried first,
+and **the reply always says so** — `cache.provenance` carries the capture date,
+the `sha256`, the licence and why the origin was not used. A tool that quietly
+returned yesterday's copy as though it were today's would stop being useful for
+an audit.
+
+An archive only holds what could be downloaded, so it does not contain the
+resources a portal refuses. That is the natural assumption and it is wrong.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DATOSGOBDO_ARCHIVE_DIR` | unset (off) | Directory with `manifest.json` + Parquet copies to fall back on. |
+
 ### Hosted mode (experimental)
 
 `DATOSGOBDO_TRANSPORT=streamable-http` serves MCP over HTTP (stateless, for
