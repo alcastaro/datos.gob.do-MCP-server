@@ -1152,8 +1152,7 @@ def _duckdb_error(
         if missing:
             shown = ", ".join(repr(c) for c in available[:20])
             out["error"] = (
-                f"Column {missing.group(1)!r} does not exist in this resource. "
-                f"Columns are: {shown}"
+                f"Column {missing.group(1)!r} does not exist in this resource. Columns are: {shown}"
             )
             return out
     m = _NUMERIC_FN_ON_TEXT.search(str(e))

@@ -1225,11 +1225,13 @@ async def test_sum_over_a_text_column_explains_itself(httpx_mock, tmp_cache_dir)
     url = "https://example.test/mixto.csv"
     httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "m1"})
     httpx_mock.add_response(
-        url=url, method="GET",
+        url=url,
+        method="GET",
         content=b"Departamento;Monto\nSalud;1000\nEducacion;N/D\n",
     )
     out = await analytics.aggregate_resource(
-        url, "csv",
+        url,
+        "csv",
         aggregations=[{"col": "Monto", "fn": "sum", "alias": "total"}],
         group_by=["Departamento"],
     )
@@ -1259,8 +1261,6 @@ async def test_failed_cast_names_the_value_and_offers_try_cast(mock_csv_endpoint
 
 
 async def test_unknown_column_in_sql_lists_the_real_ones(mock_csv_endpoint, tmp_cache_dir):
-    out = await analytics.query_resource(
-        mock_csv_endpoint, "csv", sql='SELECT "Sueldos" FROM data'
-    )
+    out = await analytics.query_resource(mock_csv_endpoint, "csv", sql='SELECT "Sueldos" FROM data')
     assert "error" in out, out
     assert "Sueldo" in out["error"]
