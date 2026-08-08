@@ -133,7 +133,7 @@ async def search_datasets(
     ] = None,
     limit: Annotated[int, Field(description="Resultados (1-50)", ge=1, le=50)] = 10,
     offset: Annotated[int, Field(description="Offset para paginación", ge=0)] = 0,
-) -> dict:
+) -> dict[str, Any]:
     """Busca datasets en datos.gob.do (datos abiertos de República Dominicana).
 
     Filtra por palabra clave, organización, tag o grupo temático. Devuelve
@@ -160,7 +160,7 @@ async def get_dataset(
             )
         ),
     ],
-) -> dict:
+) -> dict[str, Any]:
     """Obtiene metadatos completos de un dataset, incluyendo todos sus recursos descargables.
 
     Devuelve: título, descripción, organización, licencia, lista completa de recursos
@@ -172,7 +172,7 @@ async def get_dataset(
 @mcp.tool(annotations=_ro("List recent datasets"))
 async def list_recent_datasets(
     limit: Annotated[int, Field(description="Cantidad (1-30)", ge=1, le=30)] = 10,
-) -> dict:
+) -> dict[str, Any]:
     """Datasets modificados más recientemente en datos.gob.do.
 
     Útil para monitorear actualizaciones del portal gubernamental.
@@ -187,7 +187,7 @@ async def list_recent_datasets(
 @mcp.tool(annotations=_ro("Get resource metadata"))
 async def get_resource(
     id: Annotated[str, Field(description="UUID del recurso.")],
-) -> dict:
+) -> dict[str, Any]:
     """Metadatos de un recurso (archivo) específico: URL de descarga, formato, tamaño."""
     return await ckan.get_resource(id)
 
@@ -196,7 +196,7 @@ async def get_resource(
 async def search_resources(
     query: Annotated[str, Field(description="Nombre o parte del nombre del recurso.")],
     limit: Annotated[int, Field(description="Resultados (1-50)", ge=1, le=50)] = 10,
-) -> dict:
+) -> dict[str, Any]:
     """Busca recursos (archivos individuales) por nombre. Devuelve URLs de descarga."""
     return await ckan.search_resources(query=query, limit=limit)
 
@@ -705,7 +705,7 @@ def clear_cache() -> ClearCacheResult:
 @mcp.tool(annotations=_ro("List organizations"))
 async def list_organizations(
     limit: Annotated[int, Field(description="Máximo (1-200)", ge=1, le=200)] = 50,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Lista instituciones gubernamentales que publican en datos.gob.do.
 
     Devuelve ministerios, organismos autónomos, municipios, etc.,
@@ -724,7 +724,7 @@ async def get_organization(
             )
         ),
     ],
-) -> dict:
+) -> dict[str, Any]:
     """Información detallada de una institución: descripción, número de datasets, URL."""
     return await ckan.get_organization(id)
 
@@ -733,7 +733,7 @@ async def get_organization(
 
 
 @mcp.tool(annotations=_ro("List groups"))
-async def list_groups() -> list[dict]:
+async def list_groups() -> list[dict[str, Any]]:
     """Categorías temáticas en datos.gob.do (economía, salud, gestión pública, etc.)."""
     return await ckan.list_groups()
 
@@ -758,7 +758,7 @@ async def autocomplete(
     ],
     query: Annotated[str, Field(description="Texto parcial a completar.")],
     limit: Annotated[int, Field(description="Sugerencias (1-30)", ge=1, le=30)] = 10,
-) -> list:
+) -> list[dict[str, Any]]:
     """Autocompleta nombres de datasets / organizaciones / grupos / tags.
 
     Útil para resolver slugs cuando el usuario sólo da nombre parcial.
@@ -771,7 +771,7 @@ async def autocomplete(
 
 
 @mcp.tool(annotations=_ro("Get site stats"))
-async def get_site_stats() -> dict:
+async def get_site_stats() -> dict[str, Any]:
     """Estadísticas generales del portal datos.gob.do.
 
     Devuelve: total de datasets, organizaciones, grupos, tags.

@@ -568,3 +568,16 @@ async def test_autocomplete_passes_args(monkeypatch):
 
     assert result is payload
     assert calls["kwargs"] == {"kind": "organization", "query": "hacienda", "limit": 5}
+
+
+async def test_every_tool_declares_an_output_schema():
+    """An unparameterised `-> dict` return annotation makes FastMCP skip the
+    outputSchema, and the tool then answers with text and `structuredContent`
+    null. Eleven tools — the whole discovery and catalog surface, which is the
+    entry point of every conversation — were in that state, so a client on the
+    structured path got nothing back from them."""
+    from datosgobdo_mcp.server import mcp
+
+    tools = await mcp.list_tools()
+    missing = [t.name for t in tools if not t.outputSchema]
+    assert not missing, f"tools without outputSchema: {missing}"

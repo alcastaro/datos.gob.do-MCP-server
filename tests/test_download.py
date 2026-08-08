@@ -145,3 +145,21 @@ def test_mojibake_score_flags_the_wrong_decoding():
 
 def test_detect_encoding_keeps_utf8_fast_path():
     assert download._detect_encoding("Año".encode()) == "utf-8"
+
+
+def test_mojibake_score_penalises_dos_misreadings():
+    """CP437 maps its high bytes to Greek letters and box drawing, so `Año`
+    misread that way becomes `A±o` and `investigación` becomes `investigaci≤n`.
+    Those characters cannot occur in this catalog and are the tell."""
+    data = "Año;investigación;Préstamos\n".encode("cp1252")
+    assert download._mojibake_score(data.decode("cp1252")) == 0
+    assert download._mojibake_score(data.decode("cp437")) > 0
+    assert download._detect_encoding(data) == "cp1252"
+
+
+def test_detect_encoding_ignores_implausible_low_confidence_guesses():
+    """Latin-1 bytes decode without error as macroman, cp874 or cp424, and
+    chardet volunteers those at single-digit confidence — so "it decoded" is no
+    evidence. Only the codepages this catalog actually contains compete."""
+    data = "Consulado;Cantidad;Mes;Año\n".encode("cp1252")
+    assert download._detect_encoding(data) in download._CODEPAGE_LADDER

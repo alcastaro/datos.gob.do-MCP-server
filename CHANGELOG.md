@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.5] — 2026-08-08
+
+### Fixed
+
+- **Eleven tools returned no `structuredContent` at all.** An unparameterised
+  `-> dict` return annotation makes FastMCP skip the `outputSchema`, and without
+  one the tool answers with text only. Every discovery and catalog tool was in
+  that state — `search_datasets`, `get_dataset`, `get_resource`,
+  `search_resources`, `list_recent_datasets`, `list_organizations`,
+  `get_organization`, `list_groups`, `list_tags`, `autocomplete`,
+  `get_site_stats` — which is the entire entry point of a conversation. The
+  analytics tools were unaffected because they return Pydantic models. Caught by
+  fetching catalog metadata through the protocol instead of through CKAN
+  directly; a test now asserts all 23 tools declare an output schema.
+- **Encoding detection regression from 0.7.4.** Letting chardet's
+  low-confidence guess win outright was worse than the problem it fixed:
+  Latin-1 bytes decode without error as macroman, cp1250, cp874 and even cp424,
+  and chardet volunteers those at ~5% confidence, so `Año` came back as `AÒo`,
+  `AŃO` or `A๑o`. The guess now only competes if it is a codepage this catalog
+  could plausibly contain, and the scorer penalises Greek, Cyrillic, CJK,
+  box-drawing and maths blocks — the characters a DOS-codepage misreading
+  produces (`A±o`, `investigaci≤n`). Across the 37 non-UTF-8 files in the
+  mirror, 37 now decode cleanly; before this pass, 8 did not.
+
 ## [0.7.4] — 2026-08-07
 
 The second pass of the same protocol audit, this time driving the tools with

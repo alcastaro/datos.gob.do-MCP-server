@@ -31,32 +31,62 @@ _MOJIBAKE_CHARS = "¤¥£¦§¨©ª«¬®¯°±²³´µ¶·¸¹º»¼½¾¿×÷�
 _MOJIBAKE_PAIRS = ("Ã", "Â", "â€", "Ã‚", "ï¿½", "�")
 
 # Ordered by how often each turns up in this catalog; ties broken by the first.
-_CODEPAGE_LADDER = ("cp1252", "cp850", "cp437", "iso-8859-1")
+_CODEPAGE_LADDER: tuple[str, ...] = ("cp1252", "cp850", "cp437", "iso-8859-1")
 
 
 def _mojibake_score(text: str) -> int:
     """How wrong a decoding looks. Lower is better; 0 means nothing suspicious.
 
-    Counts only characters that would be extraordinary in a Spanish column
-    header or value. Accented letters, ñ and the currency symbols a real file
-    does use are deliberately not penalised.
+    Counts characters that would be extraordinary in a Spanish column header or
+    value. Accented letters, ñ and the currency symbols a real file does use are
+    deliberately not penalised.
+
+    CJK and other far-from-Latin scripts weigh heaviest: Latin-1 byte sequences
+    decode "successfully" as GB18030 or Big5 all the time, and chardet will
+    volunteer one of those with single-digit confidence. A Dominican payroll
+    with Han characters in its headers is not a payroll we have decoded.
     """
     score = sum(text.count(c) for c in _MOJIBAKE_CHARS)
     score += sum(text.count(p) * 2 for p in _MOJIBAKE_PAIRS)
+    score += 3 * sum(1 for c in text if _is_alien(ord(c)))
     return score
 
 
-def _best_codepage(data: bytes) -> str:
-    """Pick the single-byte codepage that yields the least garbled text.
+# Scripts and symbol blocks that cannot occur in this catalog but appear the
+# moment a decoding goes wrong in a specific direction. The DOS codepages map
+# their high bytes to Greek letters, box-drawing pieces and maths operators, so
+# `Año` misread as CP437 becomes `A±o` and `investigación` becomes
+# `investigaci≤n` — those are the tell.
+_ALIEN_RANGES = (
+    (0x0370, 0x03FF),  # Greek
+    (0x0400, 0x052F),  # Cyrillic
+    (0x0590, 0x08FF),  # Hebrew, Arabic, Syriac
+    (0x2200, 0x22FF),  # mathematical operators
+    (0x2500, 0x259F),  # box drawing and block elements
+    (0x2E00, 0x9FFF),  # CJK and friends
+    (0xAC00, 0xD7AF),  # Hangul
+)
 
-    chardet gets these files right but reports ~5% confidence on them, so the
-    old threshold discarded a correct answer and fell back to CP1252 — which is
-    how `Año` reached users as `A¤o`. Scoring the candidate decodings settles it
-    from the bytes themselves rather than from a confidence number.
+
+def _is_alien(cp: int) -> bool:
+    return any(lo <= cp <= hi for lo, hi in _ALIEN_RANGES)
+
+
+def _best_codepage(data: bytes, extra: str | None = None) -> str:
+    """Pick the decoding that yields the least garbled text.
+
+    chardet gets the DOS-codepage files right but reports ~5% confidence on
+    them, so a plain threshold discarded a correct answer and fell back to
+    CP1252 — which is how `Año` reached users as `A¤o`. Rather than trust or
+    distrust the guess wholesale, it competes as one more candidate and the
+    bytes decide.
     """
     sample = data[: min(len(data), 100_000)]
+    candidates = list(_CODEPAGE_LADDER)
+    if extra and extra not in candidates:
+        candidates.insert(0, extra)
     best, best_score = _CODEPAGE_LADDER[0], None
-    for enc in _CODEPAGE_LADDER:
+    for enc in candidates:
         try:
             score = _mojibake_score(sample.decode(enc, errors="replace"))
         except LookupError:  # pragma: no cover - stdlib always has these
@@ -88,16 +118,14 @@ def _detect_encoding(data: bytes) -> str:
             enc = "cp1252"
         if enc and guess.get("confidence", 0) > 0.7:
             return enc
-        # A low-confidence *multi-byte* guess is still worth trying: the ladder
-        # below only knows single-byte codepages and would mangle UTF-16 or a
-        # CJK encoding outright. A low-confidence single-byte guess is exactly
-        # the case the ladder exists to settle, so it is ignored here.
-        if enc.startswith(("utf-16", "utf-32", "gb", "big5", "shift", "euc", "iso-2022")):
-            try:
-                data[:1000].decode(enc)
-                return enc
-            except (UnicodeDecodeError, LookupError):
-                pass
+        # Below the threshold the guess only competes if it is an encoding this
+        # catalog could plausibly contain. Left unrestricted, chardet answers
+        # Latin-1 bytes with macroman, cp874, cp1250 or even cp424 at ~5%
+        # confidence, and each of those decodes without error — so "it decoded"
+        # is no evidence at all. Every file measured here is CP1252 or a DOS
+        # codepage; the ladder covers both.
+        if enc in _CODEPAGE_LADDER:
+            return _best_codepage(data, enc)
     except ImportError:
         pass
     return _best_codepage(data)
