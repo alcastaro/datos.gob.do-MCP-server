@@ -58,5 +58,7 @@ mirror/
 .coverage
 htmlcov/
 REPORTE_MCP.md
+REPORTE_tools.md
+REPORTE_tools.es.md
 workplan.md
 plan_*.md
