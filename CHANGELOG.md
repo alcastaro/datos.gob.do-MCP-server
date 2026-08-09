@@ -232,7 +232,7 @@ whose whole purpose is to be trusted about what a file says.
 ## [0.7.9] — 2026-08-08
 
 Two more error messages turned into instructions, from the directed battery run
-over 450 files (1,679 calls written by analyst agents).
+over 450 files: 1,679 calls composed from each file's real schema.
 
 ### Changed
 
@@ -322,8 +322,8 @@ Found while scaling the protocol run from 129 to 500 datasets.
 ## [0.7.4] — 2026-08-07
 
 The second pass of the same protocol audit, this time driving the tools with
-calls written by analyst agents that had only seen each file's schema — the
-closest thing to how an assistant actually uses this server. 129 files, 487
+calls composed from each file's schema alone, with no knowledge of its
+contents — the closest thing to how an assistant actually uses this server. 129 files, 487
 calls. Two failure modes accounted for most of it, and neither was the data.
 
 ### Fixed
