@@ -215,3 +215,33 @@ async def test_the_second_call_still_says_where_the_data_came_from(httpx_mock, t
     second = await analytics.get_resource_schema(page_url, "csv")
     assert second["cache"]["cache"] == "hit", "expected the warm path"
     assert second["cache"]["resolved_from"] == {"page": page_url, "followed": file_url}
+
+
+def test_an_embedded_file_counts_as_a_link():
+    """A page that embeds the file instead of linking it still names it."""
+    html = (
+        '<html><iframe src="https://drive.google.com/uc?export=download&id=ABC123"></iframe></html>'
+    )
+    target, found = pagelink.resolve(html, "https://portal.test/datos/nomina-2026", "csv")
+    assert found, "the iframe src must be seen"
+    assert "ABC123" in found[0]["url"]
+
+
+def test_a_page_offering_only_other_formats_says_so():
+    """ "No data file" would be false, and the caller can judge a PDF better."""
+    html = '<html><a href="/informe-2026.pdf">Informe</a></html>'
+    target, found = pagelink.resolve(html, "https://portal.test/datos/informe-2026", "csv")
+    assert target is None
+    assert found and found[0]["url"].endswith(".pdf")
+    assert "not the declared format" in found[0]["note"]
+
+
+def test_a_section_page_is_told_apart_from_a_dead_link():
+    """Sixteen pages measured: hundreds of anchors, no file, list built by the browser."""
+    html = "<html>" + '<a href="/x">n</a>' * 150 + "<script>admin-ajax.php</script></html>"
+    assert "browser" in pagelink.describe(html)
+    assert "hops" in pagelink.describe(html)
+
+
+def test_a_plain_dead_link_keeps_its_own_wording():
+    assert "dead or moved" in pagelink.describe("<html><p>nada</p></html>")

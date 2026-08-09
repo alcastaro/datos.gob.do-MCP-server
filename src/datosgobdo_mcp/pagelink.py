@@ -48,7 +48,15 @@ DATA_EXTENSIONS = ("csv", "tsv", "xlsx", "xls", "xlsm", "ods", "json")
 # Handlers that serve a file without naming it in the path. These are the
 # generic shapes — a query parameter or a path segment that means "download" —
 # not a list of portals.
-_DOWNLOAD_HINTS = ("wpdmpro=", "phocadownload", "?download=", "/download/", "&download=")
+_DOWNLOAD_HINTS = (
+    "wpdmpro=",
+    "phocadownload",
+    "?download=",
+    "/download/",
+    "&download=",
+    "export=download",  # Drive's own direct-download form
+    "/file/d/",  # a Drive share link, which normalises to the one above
+)
 
 # A candidate must beat the runner-up by this much to be followed. Below it the
 # list goes back to the caller. Chosen so that the twelve measured cases split
@@ -81,6 +89,14 @@ class _LinkCollector(HTMLParser):
         self._text: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in ("iframe", "embed"):
+            # A page that embeds the file instead of linking it is still a page
+            # that names the file. One resource in this catalog is a Drive
+            # document in an iframe, and the src is a perfectly good address.
+            src = dict(attrs).get("src")
+            if src:
+                self.links.append((src, ""))
+            return
         if tag != "a":
             return
         href = dict(attrs).get("href")
@@ -197,6 +213,42 @@ def candidates(html: str, base_url: str, fmt: str | None = None) -> list[dict[st
     return out
 
 
+# Formats that are not data but that a caller may still want to know about. A
+# page offering three PDFs when a CSV was asked for is a different situation
+# from a page offering nothing, and reporting both as "no data file" hides it.
+_OTHER_EXTENSIONS = ("pdf", "doc", "docx", "zip", "rar", "txt", "xml")
+
+
+def _other_format_candidates(html: str, base_url: str, fmt: str) -> list[dict[str, Any]]:
+    """Files this page links that are not of the requested format."""
+    parser = _LinkCollector()
+    try:
+        parser.feed(html)
+    except Exception:  # pragma: no cover — malformed markup
+        pass
+    hint = hint_from_url(base_url)
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for href, text in parser.links:
+        ext = _extension(href)
+        if ext not in _OTHER_EXTENSIONS and ext not in DATA_EXTENSIONS:
+            continue
+        absolute = urljoin(base_url, href)
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        out.append(
+            {
+                "url": absolute,
+                "name": unquote(identity(absolute)) or text[:80],
+                "score": round(score(absolute, text, hint, None), 3),
+                "note": f"not the declared format ({fmt}); this one is {ext or 'unknown'}",
+            }
+        )
+    out.sort(key=lambda c: c["score"], reverse=True)
+    return out
+
+
 def resolve(html: str, base_url: str, fmt: str | None = None) -> tuple[str | None, list[dict]]:
     """Pick the linked file, or return the candidates for the caller to pick.
 
@@ -204,6 +256,13 @@ def resolve(html: str, base_url: str, fmt: str | None = None) -> tuple[str | Non
     the top two are too close to separate — the caller gets the list either way.
     """
     found = candidates(html, base_url, fmt)
+    if not found and fmt:
+        # The page links files, just none of them data. Saying "no data file"
+        # would be false, and the caller is better placed than a scoring
+        # function to decide whether a PDF answers the question.
+        others = _other_format_candidates(html, base_url, fmt)
+        if others:
+            return None, others
     if not found:
         return None, []
     if len(found) == 1:
@@ -231,6 +290,17 @@ def describe(html: str) -> str:
         return (
             "The URL returned a page whose data is inside an HTML table rather than "
             "in a downloadable file. Reading tables out of pages is not supported."
+        )
+    if low.count("<a ") > 100 and ("admin-ajax.php" in low or "elementor" in low):
+        # Measured on sixteen of these: hundreds of anchors, not one to a data
+        # file, because the file list is fetched when a browser opens the page.
+        # "No data file linked" is true and useless; this is what to do next.
+        return (
+            "The URL returned a section page of the institution's site whose file "
+            "list is built when a browser opens it, so no file is linked in the "
+            "HTML itself. It cannot be reached by any number of link hops — open "
+            "it in a browser to get the file, or ask the publisher to register "
+            "the file's own address in the catalog."
         )
     return (
         "The URL returned a web page with no data file linked on it. The portal "
