@@ -41,10 +41,6 @@ Thumbs.db
 node_modules/
 package-lock.json
 
-# Claude Code local files (NEVER commit)
-CLAUDE.md
-.claude/
-
 # Everything about how we work stays out of the public repo.
 #
 # One directory, one rule. The previous version listed eight files by name
