@@ -836,6 +836,39 @@ async def _ensure_cached_live(
         # timer can only fire if something else is free to run.
         await asyncio.to_thread(_convert)
 
+        # A megabyte of data that parses into one column and a handful of rows
+        # did not parse. It happens with JSON arrays DuckDB folds into a single
+        # value, and with spreadsheets whose real table sits behind a cover
+        # sheet. The call *succeeds*, which is the dangerous part: the assistant
+        # reports one cell as though it were the dataset. Measured over 1,926
+        # readable resources it hits 12 — six of them JSON.
+        #
+        # It warns rather than refuses. A one-column file is legal, and blocking
+        # it would trade a rare wrong answer for a certain lost one; the caller
+        # gets the data and a reason to distrust it.
+        warning = None
+        if bytes_written > _SUSPICIOUS_SOURCE_BYTES:
+            shape_con = _new_con()
+            try:
+                cols = len(
+                    shape_con.execute(f"DESCRIBE SELECT * FROM read_parquet('{dst}')").fetchall()
+                )
+                fila = shape_con.execute(f"SELECT count(*) FROM read_parquet('{dst}')").fetchone()
+                n = fila[0] if fila else 0
+            except duckdb.Error:  # pragma: no cover - the file just converted
+                cols, n = 2, 2
+            finally:
+                shape_con.close()
+            if cols <= 1 and n <= _SUSPICIOUS_ROWS:
+                warning = (
+                    f"This file is {bytes_written:,} bytes but parsed into {n} row(s) "
+                    f"and {cols} column(s). That is almost certainly a parse failure, "
+                    "not the shape of the data — a JSON array read as one value, or a "
+                    "spreadsheet whose table sits behind a cover sheet. Treat the "
+                    "result as unreliable and inspect with download_resource_preview."
+                )
+                logger.warning("suspicious parse shape for %s: %d rows x %d cols", url, n, cols)
+
         cache.finalize(key, url=url)  # store URL for future warm-path lookups
         logger.info(
             "cache STORE key=%s parquet=%d source=%d",
@@ -849,6 +882,7 @@ async def _ensure_cached_live(
             # The caller asked for a URL and got data from another one. Saying
             # so is not optional in an audit tool.
             **({"resolved_from": resolved_from} if resolved_from else {}),
+            **({"parse_warning": warning} if warning else {}),
             "source_bytes": bytes_written,
             "source_truncated": truncated,
             "parquet_bytes": parquet_path.stat().st_size,
@@ -1383,6 +1417,10 @@ _COERCION_MIN_RATIO = 0.9
 # pattern (`N/A`, `-`, `#REF!`, `PROCESO CANCELADO`), not enough to flood the
 # assistant's context with one row per typo.
 _COERCION_EXAMPLES = 8
+
+# Umbrales del aviso de parseo sospechoso. Ver ensure_cached.
+_SUSPICIOUS_SOURCE_BYTES = 100_000
+_SUSPICIOUS_ROWS = 5
 
 
 def _as_number(quoted: str) -> str:

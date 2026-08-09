@@ -1382,3 +1382,30 @@ def test_the_cleanup_never_removes_a_value_separator():
     """
     assert " ', ''" not in analytics._NUMERIC_TEXT_CLEAN.replace("' '", "")
     assert "REPLACE({c}, ' ', '')" not in analytics._NUMERIC_TEXT_CLEAN
+
+
+async def test_a_megabyte_that_parses_into_one_cell_is_flagged(httpx_mock, tmp_cache_dir):
+    """The dangerous case is not the error, it is the success.
+
+    A 12 MB JSON array that DuckDB folds into a single value comes back as
+    "1 row, 1 column" with no error at all, and the assistant reports that one
+    cell as the dataset. Measured over 1,926 readable resources in the catalog:
+    12 do this, six of them JSON.
+    """
+    url = "https://example.test/grande.json"
+    payload = b"[" + b",".join(b'{"a":%d}' % i for i in range(12000)) + b"]"
+    assert len(payload) > 100_000
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "j1"})
+    httpx_mock.add_response(url=url, method="GET", content=b'"' + payload + b'"')
+    out = await analytics.get_resource_schema(url, "json")
+    if "error" in out:
+        return  # DuckDB refused it outright, which is also an acceptable answer
+    aviso = out["cache"].get("parse_warning")
+    assert aviso, "a file this size collapsing to one cell must not pass silently"
+    assert "parse failure" in aviso
+
+
+async def test_a_normal_file_carries_no_warning(mock_csv_endpoint, tmp_cache_dir):
+    """The warning must stay rare, or it becomes noise nobody reads."""
+    out = await analytics.get_resource_schema(mock_csv_endpoint, "csv")
+    assert "parse_warning" not in out["cache"]

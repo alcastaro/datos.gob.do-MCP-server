@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.10.1] — 2026-08-08
+
+### Fixed
+
+- **A file that parses into a single cell no longer passes as a success.** The
+  dangerous case was never the error, it was the success: a 12.8 MB JSON array
+  that DuckDB folds into one value came back as "1 row, 1 column" with no error
+  at all, and an assistant would report that cell as the dataset. Measured
+  across 1,926 readable resources of the catalog, 12 do this — six of them
+  JSON, the rest spreadsheets whose real table sits behind a cover sheet.
+
+  The response now carries `cache.parse_warning` naming the size, the shape and
+  what usually causes it. It warns rather than refuses: a one-column file is
+  legal, and blocking would trade a rare wrong answer for a certain lost one.
+
+  Found while checking a different hypothesis. A first pass compared row counts
+  across formats of the same dataset and reported that a third of them
+  disagreed; the comparison was invalid — a dataset holds many different tables,
+  not one table in three formats — and dropping it surfaced this instead.
+
 ## [0.10.0] — 2026-08-08
 
 ### Added
