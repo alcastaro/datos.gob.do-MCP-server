@@ -150,3 +150,61 @@ async def test_no_answer_at_all_is_reported_as_inconclusive(httpx_mock, tmp_cach
     out = await analytics.get_resource_schema(url, "csv")
     assert out["reachability"] == reachability.NETWORK
     assert "inconclusive" in out["next_step"]
+
+
+async def test_the_check_reports_a_class_not_a_yes_or_no(httpx_mock, tmp_cache_dir):
+    """Three URLs, three different reasons, one vocabulary."""
+    ok_url = "https://example.test/bueno.csv"
+    challenge_url = "https://example.test/reto.xlsx"
+    dead_url = "https://example.test/muerto.csv"
+    httpx_mock.add_response(
+        url=ok_url, method="HEAD", headers={"content-type": "text/csv", "content-length": "1234"}
+    )
+    httpx_mock.add_response(
+        url=challenge_url, method="HEAD", status_code=403, headers={"cf-mitigated": "challenge"}
+    )
+    httpx_mock.add_response(url=dead_url, method="HEAD", status_code=404)
+
+    got = await reachability.check([ok_url, challenge_url, dead_url])
+    by_url = {r["url"]: r for r in got}
+    assert by_url[ok_url]["reachability"] == reachability.OK
+    assert by_url[ok_url]["bytes"] == "1234"
+    assert by_url[challenge_url]["reachability"] == reachability.CHALLENGE
+    assert "browser" in by_url[challenge_url]["hint"]
+    assert by_url[dead_url]["reachability"] == reachability.NOT_FOUND
+
+
+async def test_a_host_that_refuses_head_is_not_called_unreachable(httpx_mock, tmp_cache_dir):
+    """405 to a HEAD says nothing about what a GET would do."""
+    url = "https://example.test/sin-head.csv"
+    httpx_mock.add_response(url=url, method="HEAD", status_code=405)
+    got = await reachability.check([url])
+    assert got[0]["reachability"] == "head_not_supported"
+    assert "either way" in got[0]["hint"]
+
+
+async def test_duplicates_are_dropped_and_the_burst_is_capped(httpx_mock, tmp_cache_dir):
+    """A question must not become traffic no ministry agreed to."""
+    url = "https://example.test/uno.csv"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"content-type": "text/csv"})
+    got = await reachability.check([url, url, url])
+    assert len(got) == 1
+
+    many = [f"https://example.test/f{i}.csv" for i in range(reachability.MAX_URLS + 10)]
+    for u in many[: reachability.MAX_URLS]:
+        httpx_mock.add_response(url=u, method="HEAD", headers={"content-type": "text/csv"})
+    got = await reachability.check(many)
+    assert len(got) == reachability.MAX_URLS
+
+
+async def test_a_catalog_reply_says_it_is_only_the_catalog(httpx_mock):
+    """The stamp that separates what was read from what was merely repeated."""
+    from datosgobdo_mcp import ckan
+
+    httpx_mock.add_response(
+        url="https://datos.gob.do/api/3/action/package_show?id=x",
+        json={"success": True, "result": {"id": "x", "title": "T", "resources": []}},
+    )
+    out = await ckan.get_dataset("x")
+    assert out["source"] == "catalog_metadata"
+    assert "not from reading the file" in out["source_note"]

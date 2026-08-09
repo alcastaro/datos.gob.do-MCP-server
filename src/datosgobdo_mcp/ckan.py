@@ -45,6 +45,28 @@ async def close_client() -> None:
     _client = None
 
 
+# What a catalog reply is, and is not. Every field here was typed by the
+# publishing institution into CKAN; none of it was read out of the file. An
+# assistant that described five datasets in confident detail — file counts,
+# what the columns measure — had taken all of it from `description`, and every
+# one of those files turned out to be unreachable. The answer read exactly the
+# same as one built from data.
+CATALOG_SOURCE = "catalog_metadata"
+CATALOG_SOURCE_NOTE = (
+    "These fields come from the catalog record the institution filled in, not "
+    "from reading the file. Nothing here says the file is reachable or that its "
+    "contents match its description; use get_resource_schema or "
+    "check_resources before relying on either."
+)
+
+
+def with_provenance(payload: dict[str, Any]) -> dict[str, Any]:
+    """Stamp a catalog reply with where its facts came from."""
+    if "error" in payload:
+        return payload
+    return {**payload, "source": CATALOG_SOURCE, "source_note": CATALOG_SOURCE_NOTE}
+
+
 def _clean(params: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in params.items() if v is not None}
 
@@ -193,12 +215,14 @@ async def search_datasets(
             params["fq"] = " AND ".join(fq_parts)
 
         result = await ckan_request("package_search", params)
-        return {
-            "total": result.get("count", 0),
-            "returned": len(result.get("results", [])),
-            "offset": params["start"],
-            "datasets": [format_dataset(d) for d in result.get("results", [])],
-        }
+        return with_provenance(
+            {
+                "total": result.get("count", 0),
+                "returned": len(result.get("results", [])),
+                "offset": params["start"],
+                "datasets": [format_dataset(d) for d in result.get("results", [])],
+            }
+        )
     except RuntimeError as e:
         return {
             "error": str(e),
@@ -209,7 +233,7 @@ async def search_datasets(
 async def get_dataset(id: str) -> dict:
     try:
         result = await ckan_request("package_show", {"id": id})
-        return format_dataset_full(result)
+        return with_provenance(format_dataset_full(result))
     except RuntimeError as e:
         return {
             "error": str(e),
@@ -226,11 +250,13 @@ async def list_recent_datasets(limit: int = 10) -> dict:
             "sort": "metadata_modified desc",
         }
         result = await ckan_request("package_search", params)
-        return {
-            "total": result.get("count", 0),
-            "returned": len(result.get("results", [])),
-            "datasets": [format_dataset(d) for d in result.get("results", [])],
-        }
+        return with_provenance(
+            {
+                "total": result.get("count", 0),
+                "returned": len(result.get("results", [])),
+                "datasets": [format_dataset(d) for d in result.get("results", [])],
+            }
+        )
     except RuntimeError as e:
         return {"error": str(e), "hint": "The datos.gob.do portal may be temporarily unavailable."}
 
@@ -238,7 +264,7 @@ async def list_recent_datasets(limit: int = 10) -> dict:
 async def get_resource(id: str) -> dict:
     try:
         result = await ckan_request("resource_show", {"id": id})
-        return format_resource(result)
+        return with_provenance(format_resource(result))
     except RuntimeError as e:
         return {"error": str(e), "hint": "Get resource IDs from get_dataset(dataset_id)."}
 
@@ -256,10 +282,12 @@ async def search_resources(query: str, limit: int = 10) -> dict:
                 "limit": min(max(int(limit), 1), MAX_ROWS),
             },
         )
-        return {
-            "total": result.get("count", 0),
-            "resources": [format_resource(r) for r in (result.get("results") or [])],
-        }
+        return with_provenance(
+            {
+                "total": result.get("count", 0),
+                "resources": [format_resource(r) for r in (result.get("results") or [])],
+            }
+        )
     except RuntimeError as e:
         return {"error": str(e), "hint": "Try a broader search term."}
 

@@ -14,7 +14,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from . import __version__, ckan
+from . import __version__, ckan, reachability
 from .analytics import (
     SCHEMA_SAMPLE_DEFAULT,
 )
@@ -61,6 +61,7 @@ from .models import (
     PreviewResult,
     QuantilesResult,
     QueryResult,
+    ReachabilityResult,
     SaveCsvResult,
     SchemaResult,
     SummaryResult,
@@ -244,6 +245,30 @@ async def download_resource_preview(
     """
     return PreviewResult(
         **await preview_resource_data(url=url, fmt=format, rows=rows, sample=sample)
+    )
+
+
+@mcp.tool(annotations=_ro("Check whether resources can be downloaded"))
+async def check_resources(
+    urls: Annotated[
+        list[str],
+        Field(description=(f"Direct file URLs (a resource's 'url'). Max {reachability.MAX_URLS}.")),
+    ],
+) -> ReachabilityResult:
+    """Ask whether each file can actually be downloaded, without downloading it.
+
+    The catalog says a resource exists; it does not say the file is still
+    there. Call this before recommending a source — recommending a dataset
+    whose files all refuse sends the user to a dead end, and nothing else here
+    tells you in advance. Returns a class, not a yes/no: ok, challenge (a
+    browser passes, no client can), waf_rule, not_found, server_error,
+    html_page, head_not_supported, network.
+    """
+    results = await reachability.check(urls)
+    return ReachabilityResult(
+        checked=len(results),
+        reachable=sum(1 for r in results if r.get("reachability") == reachability.OK),
+        resources=results,  # type: ignore[arg-type]
     )
 
 

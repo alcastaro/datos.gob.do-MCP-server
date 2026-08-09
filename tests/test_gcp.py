@@ -93,11 +93,11 @@ async def test_register_adds_three_tools_with_fake_libs(fake_google):
     assert by_name["list_bigquery_exports_tool"].annotations.readOnlyHint is True
 
 
-async def test_server_tool_count_stays_23_without_gcp():
+async def test_server_tool_count_stays_24_without_gcp():
     from datosgobdo_mcp import server
 
     tools = await server.mcp.list_tools()
-    assert len(tools) == 23
+    assert len(tools) == 24
 
 
 # ─── load_resource_to_bigquery ────────────────────────────────────────────────

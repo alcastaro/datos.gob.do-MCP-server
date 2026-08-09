@@ -73,8 +73,15 @@ class _Result(_Lean):
 
 
 class _AnalyticsResult(_Result):
-    """Base for DuckDB-backed tools: common provenance + cache metadata."""
+    """Base for DuckDB-backed tools: common provenance + cache metadata.
 
+    `source` is the counterpart of the catalog tools' stamp. Everything in one
+    of these replies was computed by reading the bytes of the file; everything
+    in a catalog reply was typed into CKAN by the publisher. Saying which is
+    which lets a caller state what it verified and what it merely repeated.
+    """
+
+    source: str = "file_contents"
     source_url: str | None = None
     format: str | None = None
     cache: dict[str, Any] | None = None
@@ -185,6 +192,24 @@ class OutliersResult(_AnalyticsResult):
 
 
 # ─── Cache management ──────────────────────────────────────────────────────────
+
+
+class ResourceReachability(_Lean):
+    # status, bytes, last_modified, hint and next_step ride on extra="allow":
+    # declaring them would pay schema bytes in every conversation to describe
+    # fields the caller reads by name anyway. See the tool-list budget test.
+    model_config = ConfigDict(extra="allow")
+    url: str
+    reachability: str
+
+
+class ReachabilityResult(_Result):
+    """What the catalog cannot tell you: whether the file is actually there."""
+
+    source: str = "live_check"
+    checked: int | None = None
+    reachable: int | None = None
+    resources: list[ResourceReachability] = []
 
 
 class CacheStatsResult(_Result):

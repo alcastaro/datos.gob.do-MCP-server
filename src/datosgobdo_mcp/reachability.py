@@ -145,3 +145,73 @@ def explain(kind: str, archived: dict[str, Any] | None = None) -> dict[str, str]
         )
     out["next_step"] = step
     return out
+
+
+# One request per URL, and callers ask about a dataset's worth at a time. The
+# cap is not about our load: it is about not turning a question into a burst of
+# traffic against a ministry that never agreed to it.
+MAX_URLS = 25
+CHECK_TIMEOUT = 12.0
+
+
+async def check(urls: list[str]) -> list[dict[str, Any]]:
+    """Ask each URL whether it would hand over its file, without downloading it.
+
+    A HEAD, serialised per host so one institution never sees a burst, through
+    the same SSRF guard and headers as a real download — a probe that lies about
+    who is asking measures the wrong thing.
+
+    Some hosts answer HEAD with 405 while answering GET normally, and some
+    answer 200 with an HTML page for every path they do not recognise. Neither
+    is `ok` and neither is a refusal, so the reply is a classification rather
+    than a yes/no: `head_not_supported` and `html_page` are honest answers that
+    a boolean would have to round in one direction or the other.
+    """
+    import httpx
+
+    from .download import RESOURCE_HEADERS
+    from .netguard import guard_request_hook
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for u in urls:
+        if isinstance(u, str) and u and u not in seen:
+            seen.add(u)
+            ordered.append(u)
+    ordered = ordered[:MAX_URLS]
+
+    out: list[dict[str, Any]] = []
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=CHECK_TIMEOUT,
+        headers=RESOURCE_HEADERS,
+        event_hooks={"request": [guard_request_hook]},
+    ) as client:
+        for url in ordered:
+            entry: dict[str, Any] = {"url": url}
+            try:
+                r = await client.head(url)
+                if r.status_code in (405, 501):
+                    entry["reachability"] = "head_not_supported"
+                    entry["hint"] = (
+                        "This host refuses HEAD but may well serve the file. "
+                        "Nothing was proved either way."
+                    )
+                    out.append(entry)
+                    continue
+                kind = classify(r.status_code, dict(r.headers))
+                entry["reachability"] = kind
+                entry["status"] = r.status_code
+                if r.headers.get("content-length"):
+                    entry["bytes"] = r.headers["content-length"]
+                if r.headers.get("last-modified"):
+                    entry["last_modified"] = r.headers["last-modified"]
+                if kind != OK:
+                    entry.update({k: v for k, v in explain(kind).items() if k != "reachability"})
+                out.append(entry)
+            except Exception as e:  # network, TLS, guard refusal — all inconclusive
+                entry["reachability"] = NETWORK
+                entry["error"] = str(e)
+                entry.update({k: v for k, v in explain(NETWORK).items() if k != "reachability"})
+                out.append(entry)
+    return out

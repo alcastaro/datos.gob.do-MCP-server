@@ -70,7 +70,7 @@ This MCP is inspired by [`datagouv-mcp`](https://github.com/datagouv/datagouv-mc
 
 ## Tools exposed
 
-23 typed functions, grouped into five categories. The data-producing tools
+24 typed functions, grouped into five categories. The data-producing tools
 (analytics + preview + cache) return typed `outputSchema` / `structuredContent`,
 so MCP hosts can validate results; navigational metadata tools return JSON.
 
@@ -90,6 +90,7 @@ so MCP hosts can validate results; navigational metadata tools return JSON.
 | `get_resource` | Metadata for a single resource (URL, format, size, date). |
 | `search_resources` | Search resources by name. |
 | `download_resource_preview` | Download a file and return N rows. CSV, TSV, XLSX, XLS, JSON. 5 MB cap. Sample mode: head / tail / random. |
+| `check_resources` | Ask up to 25 URLs whether their files can actually be downloaded, without downloading them. Returns a class per URL — reachable, browser challenge, site rule, dead link, no answer — because a catalog entry is not evidence the file is still there. |
 
 ### Analytics (v0.2+)
 
