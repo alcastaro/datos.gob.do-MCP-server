@@ -4,6 +4,80 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.0] — 2026-08-09
+
+Everything here came from driving the server through a real MCP client instead
+of a test harness, and watching what an assistant did when the server was
+unclear. None of it was reachable from the automated batteries, for one reason:
+a battery calls tools, an assistant makes decisions, and the decisions are
+where the gaps show.
+
+### Added
+
+- **`check_resources`** — ask up to 25 URLs whether their files can actually be
+  downloaded, without downloading them. The catalog says a resource exists; it
+  does not say the file is still at that address, and in this catalog a large
+  share are not. Asked for the best payroll sources, an assistant recommended an
+  institution whose every resource returns 403. It could not have known: nothing
+  exposed reachability, so the only way to find out was to try, which happens
+  after the recommendation.
+
+  The reply is a class per URL, not a boolean. A host that refuses `HEAD` while
+  serving `GET`, and a host that answers 200 with a page for every unknown path,
+  are neither reachable nor refused; rounding either way would state something
+  that was not measured.
+
+- **Catalog replies say they are catalog replies.** Asked about water
+  utilities, an assistant described five datasets in confident detail — how many
+  files each held, what the columns measured — with every word taken from the
+  `description` field, and every one of those files unreachable. Nothing was
+  fabricated and nothing marked the difference. Catalog tools now carry
+  `source: catalog_metadata`; analytics tools carry `source: file_contents`.
+
+### Fixed
+
+- **A browser challenge is no longer reported as a refusal.** A 403 carries at
+  least two different decisions in this catalog. A site rule refuses every
+  client. An interactive challenge refuses only programs — it answers 403 with
+  `cf-mitigated: challenge`, and a person with a browser downloads the file
+  without noticing. Verified against a live host: every header combination a
+  client can send still failed while a browser succeeded.
+
+  Both used to surface as the raw text of the HTTP error plus a link to MDN,
+  with `hint` and `next_step` null. That is not merely unhelpful. Handed a
+  resource it could not fetch, an assistant found a similar file from a
+  different institution and answered with it — figures a million apart, the
+  substitution named once in passing. An error that offers no path invites the
+  caller to invent one, so every explanation now ends by saying that answering
+  from another source without declaring it is worse than not answering. Where an
+  archived copy of that exact URL exists it is offered with its capture date and
+  digest; where none exists, nothing is promised.
+
+- **Aggregation errors name the keys.** `column` and `function` are the obvious
+  names and they are wrong, which used to produce `Aggregation not allowed: `
+  with nothing after the colon, because `fn` was missing rather than invalid.
+  Both received and expected keys are now named, and an invalid function lists
+  the valid ones. Filters got the same treatment.
+
+- **A `limit` with no `order_by` says its result is arbitrary.** It returned an
+  arbitrary slice of groups shaped exactly like a top N, and nothing in the
+  reply said otherwise. The warning appears only when the cut actually happened;
+  warning on queries that fit under the limit is noise.
+
+- **Filters read a text-stored number as a number.** Aggregations already did,
+  so the same column that summed fine raised a binder error when compared
+  against an integer — and the obvious workaround, comparing against a string,
+  succeeded while comparing alphabetically, where `"00" > "0"` is true and the
+  number is not. Numeric operands are coerced and declared in
+  `numeric_coercion`; string operands keep their meaning, since `=` against a
+  text code is a legitimate question, and are flagged as alphabetical.
+
+- **Provenance survives the cache.** `resolved_from` and `parse_warning` were
+  reported by the download path only, so a caller told once that its data came
+  from a URL it had not asked for was never told again — and the warm path
+  serves every call but the first. Both are now stored with the entry and
+  returned on hits.
+
 ## [0.10.1] — 2026-08-08
 
 ### Fixed
