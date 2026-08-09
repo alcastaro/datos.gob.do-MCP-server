@@ -245,3 +245,17 @@ def test_a_section_page_is_told_apart_from_a_dead_link():
 
 def test_a_plain_dead_link_keeps_its_own_wording():
     assert "dead or moved" in pagelink.describe("<html><p>nada</p></html>")
+
+
+def test_an_embed_with_no_file_id_is_not_a_candidate():
+    """One page embeds drive.google.com/file/d//preview — the id is missing.
+
+    Accepting it turned "no candidate" into a confident answer pointing at
+    nothing, which is worse than no answer.
+    """
+    html = (
+        '<html><iframe src="https://drive.google.com/file/d//preview?rm=minimal"></iframe></html>'
+    )
+    target, found = pagelink.resolve(html, "https://portal.test/datos/actos-2024", "ods")
+    assert target is None
+    assert not [c for c in found if "/file/d//" in c["url"]]

@@ -55,8 +55,15 @@ _DOWNLOAD_HINTS = (
     "/download/",
     "&download=",
     "export=download",  # Drive's own direct-download form
-    "/file/d/",  # a Drive share link, which normalises to the one above
 )
+
+# A Drive share link normalises to the download form — but only if it names a
+# file. One page in this catalog embeds `drive.google.com/file/d//preview` with
+# the id left empty, the real one sitting base64-encoded in the page's own
+# query string. Accepting it turned "no candidate" into a confident answer
+# pointing at nothing, which is worse than no answer and is the exact failure
+# this server exists to avoid.
+_DRIVE_SHARE = re.compile(r"drive\.google\.com/file/d/[A-Za-z0-9_-]{10,}")
 
 # A candidate must beat the runner-up by this much to be followed. Below it the
 # list goes back to the caller. Chosen so that the twelve measured cases split
@@ -126,7 +133,9 @@ def _looks_like_data(href: str) -> bool:
     path = urlsplit(low).path
     if any(path.endswith("." + ext) for ext in DATA_EXTENSIONS):
         return True
-    return any(h in low for h in _DOWNLOAD_HINTS)
+    if any(h in low for h in _DOWNLOAD_HINTS):
+        return True
+    return bool(_DRIVE_SHARE.search(low))
 
 
 def hint_from_url(url: str) -> str:
