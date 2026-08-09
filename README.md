@@ -139,6 +139,45 @@ Google's official BigQuery MCP (cross-dataset JOINs local DuckDB cannot do).
 
 Set `DATOSGOBDO_GCS_BUCKET` to avoid passing the bucket on every call.
 
+### What the answers tell you about themselves
+
+Three fields appear in responses when the server had to do something the caller
+did not ask for. Each exists because a tool used for auditing must not quietly
+paper over a defect in the data.
+
+**`numeric_coercion`** — a column stored as text was read as numbers.
+
+This is the most common defect in the Dominican catalog: **93 of 540 readable
+resources** hold numeric columns as text, because a handful of cells say `N/A`
+or `#REF!` and that is enough to make a whole payroll column non-numeric.
+`aggregate_resource`, `quantiles_resource` and `detect_outliers_resource` read
+such a column as numbers where each value permits it, and report what that cost:
+
+```json
+"numeric_coercion": [{
+  "column": "SUELDO BRUTO (RD$)", "coerced": true,
+  "values_used": 21469, "values_excluded": 37,
+  "excluded_values": [{"value": "N/A", "count": 21}, {"value": "#REF!", "count": 16}]
+}]
+```
+
+**Read `values_excluded` before quoting the total.** A column under 90 %
+parseable is left as text and the reply says why, rather than answering a
+question about a measure from an arbitrary subset of rows.
+
+**`linked_files`** — the URL served a page, and the page linked data files.
+
+37 catalog resources answer with a web page instead of a file. When one linked
+file clearly matches what was requested, it is fetched and `cache.resolved_from`
+records `{page, followed}` — you asked for one URL and received data from
+another, which the reply says rather than hides. When several candidates are
+indistinguishable, they come back as `linked_files` with names and scores, for
+you to choose and call again. Real files named `clss.csv` and `xls.csv` exist in
+this catalog; guessing between them would be inventing.
+
+**`cache.provenance`** — the answer came from an archived copy, not the portal.
+See *Archived copies* below.
+
 ### Security: outbound download guard
 
 Every resource download is validated by an SSRF guard (initial URL **and**
@@ -343,12 +382,39 @@ src/datosgobdo_mcp/
 
 ## Known limitations
 
-- **Preview tool limited to 5 MB** (the portal's largest files have hundreds of MB). For larger files use the analytics tools (`get_resource_schema`, `summarize_resource`, `filter_resource`, `aggregate_resource`, `query_resource`) which raise the cap to 100 MB and parse via DuckDB.
-- **PDF not supported**: PDF files are exposed via their direct download URL only.
-- **Read-only**: the MCP does not write to the portal (no authentication, no `package_create`, `resource_create` endpoints, etc.). By design.
-- **XLSX with non-header preamble rows**: some published XLSX files have title rows above the actual header. DuckDB's `read_xlsx` 1.x has no skip-rows option, so the auto-detected schema is garbled for those files. Workaround: use `download_resource_preview` to inspect, then `query_resource` with explicit column projections.
-- **Exotic encodings**: chardet fallback handles UTF-8 / UTF-8-sig / Latin-1 / CP1252 transparently; files with truly unusual encoding may still show replacement characters.
+Measured against the whole catalog on 2026-08-08 — 1,056 resources, one per
+dataset — rather than estimated.
 
+**Not everything published is reachable.** 540 of 1,056 resources could be read.
+The largest cause is not this server: **360 resources across 99 institutions**
+sit behind a site configuration that refuses programmatic downloads of files
+those same institutions publish as open data. From one address, 21 other
+government hosts behind the same CDN serve us normally, so it is per-site
+configuration rather than our network. No version of this server can change
+that. A further 15 links are dead, 37 serve a web page, and 8 files are corrupt.
+
+**Formats.** CSV, XLSX and ODS all read at ~93 %. Two are weaker: legacy `.xls`,
+and JSON — DuckDB's `read_json_auto` rejects several catalog files as malformed,
+so JSON is the least reliable format here.
+
+**Size.** `download_resource_preview` caps at 5 MB; the analytics tools raise it
+to 100 MB. A single value larger than 16 MB exceeds DuckDB's limit and the file
+cannot be parsed.
+
+**Shape.** 41 resources put titles or logos above the real header row, which
+garbles the auto-detected schema; inspect with `download_resource_preview` and
+project columns explicitly with `query_resource`. 93 hold numbers as text —
+handled, see *What the answers tell you about themselves*.
+
+**Encoding** is effectively solved: one file in 540 still shows damaged accents,
+and that file is encoded in two codepages at once, so no single reading is
+correct for it.
+
+**Read-only by design.** No authentication, no `package_create` or
+`resource_create`. **PDF is not parsed**; only its download URL is exposed.
+
+**Untested, and therefore not claimed**: the hosted `streamable-http` transport,
+the three GCP tools against a live project, Windows, and concurrent use.
 ---
 
 ## Development

@@ -140,6 +140,45 @@ DuckDB local no puede hacer).
 
 Define `DATOSGOBDO_GCS_BUCKET` para no pasar el bucket en cada llamada.
 
+### Lo que las respuestas dicen sobre sí mismas
+
+Tres campos aparecen cuando el servidor tuvo que hacer algo que nadie le pidió.
+Cada uno existe porque una herramienta de auditoría no puede tapar en silencio
+un defecto del dato.
+
+**`numeric_coercion`** — una columna guardada como texto se leyó como números.
+
+Es el defecto más común del catálogo dominicano: **93 de 540 recursos legibles**
+guardan columnas numéricas como texto, porque unas pocas celdas dicen `N/A` o
+`#REF!` y eso basta para volver no numérica una columna de sueldos entera.
+`aggregate_resource`, `quantiles_resource` y `detect_outliers_resource` leen esa
+columna como números donde cada valor lo permite, y declaran qué costó:
+
+```json
+"numeric_coercion": [{
+  "column": "SUELDO BRUTO (RD$)", "coerced": true,
+  "values_used": 21469, "values_excluded": 37,
+  "excluded_values": [{"value": "N/A", "count": 21}, {"value": "#REF!", "count": 16}]
+}]
+```
+
+**Mira `values_excluded` antes de citar el total.** Una columna que convierte
+menos del 90 % se deja como texto y la respuesta explica por qué, en vez de
+responder sobre una medida usando un subconjunto arbitrario de filas.
+
+**`linked_files`** — la URL sirvió una página, y la página enlazaba archivos.
+
+37 recursos del catálogo responden con una página web en vez de un archivo.
+Cuando un enlace coincide claramente con lo pedido, se descarga y
+`cache.resolved_from` registra `{page, followed}` — pediste una URL y recibiste
+datos de otra, y la respuesta lo dice en vez de esconderlo. Cuando varios
+candidatos son indistinguibles, vuelven como `linked_files` con nombre y
+puntaje, para que elijas y llames de nuevo. En este catálogo existen archivos
+llamados `clss.csv` y `xls.csv`; adivinar entre ellos sería inventar.
+
+**`cache.provenance`** — la respuesta vino de una copia archivada, no del
+portal. Ver *Copias archivadas* más abajo.
+
 ### Seguridad: guardia de descargas salientes
 
 Cada descarga de recursos pasa por una guardia anti-SSRF (URL inicial **y**
@@ -296,6 +335,16 @@ Una vez configurado, podés pedirle al modelo:
 
 → `search_datasets(query="poder judicial")` → `get_dataset("presupuesto-poder-judicial")` → `download_resource_preview(url=..., format="csv", rows=20)` → el modelo identifica las partidas mayores.
 
+### Analítica sobre archivos grandes (v0.2+)
+
+> *¿Cuántos empleados activos tiene el Ministerio de Agricultura en abril de 2026, desglosados por estatus?*
+
+El CSV de nómina de Agricultura tiene 826,000 filas y 94 MB — demasiado para la tool de preview. El flujo de analítica:
+
+→ `search_datasets(query="nomina agricultura")` → `get_dataset(...)` → `get_resource_schema(url, "csv")` para ver las columnas (Nombre, Departamento, Función, Estatus, Sueldo Bruto, Mes, Año) → `aggregate_resource(...)` con `group_by=["Estatus"]`, filtros `Año=2026, Mes='Abril'`, y `count_distinct` sobre `Nombre`.
+
+Resultado: 6 tipos de estatus, ~8,915 empleados en total. Primera llamada en frío: ~14 s (descarga + conversión a Parquet). Llamadas siguientes sobre el mismo archivo: <0.5 s (acierto de caché).
+
 ### Monitoreo
 
 > *Listame los 10 datasets que se actualizaron más recientemente en el portal.*
@@ -335,12 +384,41 @@ src/datosgobdo_mcp/
 
 ## Limitaciones conocidas
 
-- **Sin queries SQL** sobre el contenido de recursos: el portal no tiene DataStore. Workaround: `download_resource_preview` + análisis hecho por el modelo.
-- **Preview limitado a 5 MB**: archivos más grandes se truncan. Suficiente para entender estructura, no para análisis estadístico completo.
-- **Sin soporte de ODS y PDF en preview**: solo CSV, TSV, XLSX, XLS y JSON. Archivos ODS y PDF se exponen con su URL de descarga directa.
-- **Solo lectura**: el MCP no escribe en el portal (no hay autenticación, no expone endpoints `package_create`, `resource_create`, etc.). Por diseño.
-- **Encodings raros**: ya hay fallback (UTF-8 → CP1252), pero archivos con encoding exótico pueden mostrar caracteres rotos.
+Medidas contra el catálogo completo el 2026-08-08 —1,056 recursos, uno por
+dataset— en vez de estimadas.
 
+**No todo lo publicado es alcanzable.** Se pudieron leer 540 de 1,056 recursos.
+La causa mayor no es este servidor: **360 recursos de 99 instituciones** están
+tras una configuración del sitio que rechaza la descarga programática de
+archivos que esas mismas instituciones publican como datos abiertos. Desde una
+misma dirección, otros 21 portales del Estado tras el mismo CDN sí nos sirven,
+así que es configuración de cada sitio y no nuestra red. Ninguna versión de este
+servidor lo puede cambiar. Además hay 15 enlaces muertos, 37 que sirven una
+página web y 8 archivos corruptos.
+
+**Formatos.** CSV, XLSX y ODS se leen al ~93 %. Dos son más débiles: el `.xls`
+antiguo, y JSON — el `read_json_auto` de DuckDB rechaza varios archivos del
+catálogo por malformados, así que JSON es el formato menos fiable aquí.
+
+**Tamaño.** `download_resource_preview` corta en 5 MB; las tools de analítica
+suben el tope a 100 MB. Un valor individual mayor de 16 MB excede el límite de
+DuckDB y el archivo no se puede parsear.
+
+**Forma.** 41 recursos ponen títulos o logos encima del encabezado real, lo que
+descuadra el esquema detectado; inspecciona con `download_resource_preview` y
+proyecta columnas explícitamente con `query_resource`. 93 guardan números como
+texto — resuelto, ver *Lo que las respuestas dicen sobre sí mismas*.
+
+**La codificación** está resuelta en la práctica: un archivo de 540 sigue
+mostrando acentos rotos, y ese archivo está codificado en dos codepages a la
+vez, así que ninguna lectura única es correcta para él.
+
+**Solo lectura, por diseño.** Sin autenticación, sin `package_create` ni
+`resource_create`. **El PDF no se parsea**; solo se expone su URL de descarga.
+
+**Sin probar, y por tanto sin prometer**: el transporte hosted
+`streamable-http`, las tres tools de GCP contra un proyecto real, Windows, y el
+uso concurrente.
 ---
 
 ## Desarrollo
