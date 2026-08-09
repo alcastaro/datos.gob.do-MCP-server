@@ -19,7 +19,7 @@ import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from . import __version__
 
@@ -165,8 +165,21 @@ class LocalDiskCache:
         }
         return p
 
-    def finalize(self, key: str, url: str | None = None) -> None:
-        """Mark a put as complete; refresh size metadata."""
+    def finalize(
+        self,
+        key: str,
+        url: str | None = None,
+        provenance: dict[str, Any] | None = None,
+    ) -> None:
+        """Mark a put as complete; refresh size metadata.
+
+        `provenance` is whatever the caller must keep saying about this entry
+        for as long as it is served — today, that the data came from a URL other
+        than the one asked for, and that a large file parsed into a suspiciously
+        small shape. It is stored because the first call is not the only call: a
+        fact that only the download path reports is a fact the caller stops
+        hearing the moment the cache warms up.
+        """
         p = self._entry_path(key)
         if p.exists():
             with self._lock():
@@ -175,8 +188,20 @@ class LocalDiskCache:
                 self._index[key]["build"] = _parser_build()
                 if url is not None:
                     self._index[key]["url"] = url
+                if provenance:
+                    self._index[key]["provenance"] = provenance
                 self._save_index()
                 self._evict_to_fit_locked(self.max_bytes)
+
+    def provenance(self, key: str) -> dict[str, Any]:
+        """What must travel with this entry on every hit, warm or cold.
+
+        Empty for entries written before this was tracked. Absence is reported
+        as absence, never invented: an old entry that followed a link has no
+        record of it, and guessing one would be worse than saying nothing.
+        """
+        stored = self._index.get(key, {}).get("provenance")
+        return dict(stored) if isinstance(stored, dict) else {}
 
     def get_by_url(self, url: str) -> tuple[Path, str] | None:
         """Return (path, key) for the most recently accessed entry matching url, or None.

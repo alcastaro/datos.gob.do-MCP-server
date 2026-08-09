@@ -690,7 +690,11 @@ async def _ensure_cached_live(
             cached_path, key = url_hit
             logger.info("cache URL-HIT key=%s size=%d", key, cached_path.stat().st_size)
             cache.touch(key)
-            return cached_path, {"cache": "hit", "key": key}
+            # Whatever had to be declared about this copy on the cold path has
+            # to be declared here too. The warm path serves every call but the
+            # first, so provenance that lives only in the download branch is
+            # provenance the caller hears once and never again.
+            return cached_path, {"cache": "hit", "key": key, **cache.provenance(key)}
 
     # Cold path (or forced refresh): HEAD to compute version key.
     etag, last_mod = await _head_metadata(url)
@@ -698,7 +702,7 @@ async def _ensure_cached_live(
     cached = cache.get(key)
     if cached is not None:
         logger.info("cache HIT key=%s size=%d", key, cached.stat().st_size)
-        return cached, {"cache": "hit", "key": key}
+        return cached, {"cache": "hit", "key": key, **cache.provenance(key)}
 
     logger.info("cache MISS key=%s — downloading %s", key, url)
     fd, tmp_path_str = tempfile.mkstemp(prefix="dgd-dl-", suffix="." + fmt)
@@ -869,7 +873,16 @@ async def _ensure_cached_live(
                 )
                 logger.warning("suspicious parse shape for %s: %d rows x %d cols", url, n, cols)
 
-        cache.finalize(key, url=url)  # store URL for future warm-path lookups
+        # The caller asked for a URL and got data from another one, or a large
+        # file parsed into a shape that cannot be right. Saying so is not
+        # optional in an audit tool — and it is stored, not just returned,
+        # because every later call reads this entry from the warm path.
+        provenance: dict[str, Any] = {}
+        if resolved_from:
+            provenance["resolved_from"] = resolved_from
+        if warning:
+            provenance["parse_warning"] = warning
+        cache.finalize(key, url=url, provenance=provenance)  # URL for warm-path lookups
         logger.info(
             "cache STORE key=%s parquet=%d source=%d",
             key,
@@ -879,10 +892,7 @@ async def _ensure_cached_live(
         return parquet_path, {
             "cache": "miss",
             "key": key,
-            # The caller asked for a URL and got data from another one. Saying
-            # so is not optional in an audit tool.
-            **({"resolved_from": resolved_from} if resolved_from else {}),
-            **({"parse_warning": warning} if warning else {}),
+            **provenance,
             "source_bytes": bytes_written,
             "source_truncated": truncated,
             "parquet_bytes": parquet_path.stat().st_size,
@@ -1173,14 +1183,98 @@ Op = Literal[
 ]
 
 
-def _build_filter_clause(f: dict[str, Any], available: list[str] | None = None) -> str:
+_COMPARISON_OPS = {"=", "!=", "<>", "<", "<=", ">", ">="}
+
+
+def _filter_measure(
+    col: str,
+    quoted: str,
+    op: str,
+    val: Any,
+    types: dict[str, str] | None,
+    notes: list[dict[str, Any]] | None,
+) -> str:
+    """Decide how a comparison should read a column, and say so.
+
+    Aggregations already read a text-stored number as a number. Filters did not,
+    which left two ways to be wrong on the same column. Comparing against an
+    integer raised a DuckDB binder error the caller could do nothing with; the
+    obvious workaround — comparing against `"0"` — succeeded and compared
+    *strings*, so `"00" > "0"` was true where the number is not. That one is
+    worse, because it looks like it worked.
+
+    A numeric operand on a text column is coerced. A string operand is left
+    alone: `=` and `in` against text codes is a legitimate question, and
+    quietly turning it into arithmetic would answer a different one. It is
+    flagged instead.
+    """
+    if types is None or op not in _COMPARISON_OPS:
+        return quoted
+    declared = types.get(col) or types.get(_match_column(col, list(types)) or "", "")
+    if _is_numeric_type(declared):
+        return quoted
+
+    if isinstance(val, bool):  # bool is an int in Python; not a measurement
+        return quoted
+    if isinstance(val, (int, float)):
+        if notes is not None:
+            notes.append(
+                {
+                    "column": col,
+                    "coerced": True,
+                    "where": "filter",
+                    "note": (
+                        f"'{col}' is stored as text in this file and was compared as a "
+                        "number. Values that do not read as numbers do not match."
+                    ),
+                }
+            )
+        return _as_number(quoted)
+
+    if isinstance(val, str) and notes is not None:
+        stripped = val.strip()
+        try:
+            float(stripped.replace(",", ""))
+        except ValueError:
+            return quoted
+        notes.append(
+            {
+                "column": col,
+                "coerced": False,
+                "where": "filter",
+                "comparison": "lexicographic",
+                "note": (
+                    f"'{col}' is stored as text and was compared against the string "
+                    f"'{val}', so the comparison was alphabetical, not numeric — "
+                    f"'00' sorts after '0'. Pass {stripped} as a number to compare "
+                    "numerically."
+                ),
+            }
+        )
+    return quoted
+
+
+def _build_filter_clause(
+    f: dict[str, Any],
+    available: list[str] | None = None,
+    types: dict[str, str] | None = None,
+    notes: list[dict[str, Any]] | None = None,
+) -> str:
     col = f.get("col")
     op = f.get("op", "=")
     val = f.get("val")
+    unknown = sorted(set(f) - {"col", "op", "val"})
+    if unknown:
+        raise AnalyticsError(
+            f"Unknown key(s) in filter: {', '.join(unknown)}. Expected col, op and val — "
+            'for example {"col": "Año", "op": "=", "val": 2026}.'
+        )
     if not isinstance(col, str):
         raise AnalyticsError("filter.col must be a string")
     if op not in ALLOWED_OPS:
-        raise AnalyticsError(f"Operator not allowed: {op}")
+        raise AnalyticsError(
+            f"Operator not allowed: {op}. Valid operators: {', '.join(sorted(ALLOWED_OPS))}."
+        )
     q = _quote_ident(col, available)
     if op in ("is_null",):
         return f"{q} IS NULL"
@@ -1213,14 +1307,39 @@ def _build_filter_clause(f: dict[str, Any], available: list[str] | None = None) 
         return f"{q} ILIKE '%{esc}' ESCAPE '\\'"
     # Comparison ops.
     cmp_op = "<>" if op == "!=" else op
-    return f"{q} {cmp_op} {_quote_literal(val)}"
+    measured = _filter_measure(col, q, op, val, types, notes)
+    return f"{measured} {cmp_op} {_quote_literal(val)}"
 
 
-def _build_where(filters: list[dict] | None, available: list[str] | None = None) -> str:
+def _build_where(
+    filters: list[dict] | None,
+    available: list[str] | None = None,
+    types: dict[str, str] | None = None,
+    notes: list[dict[str, Any]] | None = None,
+) -> str:
     if not filters:
         return ""
-    parts = [_build_filter_clause(f, available) for f in filters]
+    parts = [_build_filter_clause(f, available, types, notes) for f in filters]
     return "WHERE " + " AND ".join(parts)
+
+
+def _with_filter_notes(result: dict[str, Any], notes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Fold what the filters had to do to the data into the same field the
+    aggregations use.
+
+    One place to look. A caller that has learned to read `numeric_coercion`
+    should not have to learn a second field to find out that its WHERE clause
+    silently compared text alphabetically.
+    """
+    if notes:
+        existing = result.get("numeric_coercion") or []
+        result["numeric_coercion"] = [*existing, *notes]
+    return result
+
+
+def _column_types(con: duckdb.DuckDBPyConnection) -> dict[str, str]:
+    """Declared type per column of the open view."""
+    return {r[0]: r[1] for r in con.execute("DESCRIBE data").fetchall()}
 
 
 def _build_order_by(order_by: list[dict] | None, available: list[str] | None = None) -> str:
@@ -1327,11 +1446,25 @@ def _build_agg_expr(
     def measure(name: str) -> str:
         return numeric(name) if numeric else _quote_ident(name, available)
 
+    # The obvious names for these keys are `column` and `function`, and getting
+    # them wrong used to surface as "Aggregation not allowed: " with nothing
+    # after the colon — an error that names neither what arrived nor what was
+    # wanted. Say both before looking at the value.
+    unknown = sorted(set(agg) - {"col", "fn", "alias"})
+    if unknown:
+        raise AnalyticsError(
+            f"Unknown key(s) in aggregation: {', '.join(unknown)}. "
+            "Expected col, fn and alias — for example "
+            '{"col": "Sueldo Bruto", "fn": "sum", "alias": "total"}.'
+        )
     col = agg.get("col")
     fn = (agg.get("fn") or "").lower()
     alias = agg.get("alias") or f"{fn}_{col or 'all'}"
     if fn not in ALLOWED_AGG_FNS:
-        raise AnalyticsError(f"Aggregation not allowed: {fn}")
+        raise AnalyticsError(
+            f"Aggregation not allowed: {fn or '(missing fn)'}. "
+            f"Valid functions: {', '.join(sorted(ALLOWED_AGG_FNS))}."
+        )
     if fn == "count" and col in (None, "*"):
         expr = "COUNT(*)"
     elif fn == "count":
@@ -1539,8 +1672,9 @@ async def quantiles_resource(
         types = {row[0]: row[1] for row in described}
         all_numeric = [(n, t) for n, t in types.items() if _is_numeric_type(t)]
 
+        filter_notes: list[dict[str, Any]] = []
         try:
-            where = _build_where(filters, available)
+            where = _build_where(filters, available, _column_types(con), filter_notes)
         except AnalyticsError as e:
             return {"error": str(e)}
 
@@ -1581,7 +1715,7 @@ async def quantiles_resource(
             }
             if coercion:
                 out["numeric_coercion"] = coercion
-            return out
+            return _with_filter_notes(out, filter_notes)
 
         pctile_arr = "[" + ", ".join(repr(float(p)) for p in percentiles) + "]"
         pctile_keys = [f"p{int(round(p * 100))}" for p in percentiles]
@@ -1627,7 +1761,7 @@ async def quantiles_resource(
     }
     if coercion:
         quantile_result["numeric_coercion"] = coercion
-    return quantile_result
+    return _with_filter_notes(quantile_result, filter_notes)
 
 
 @_tool_envelope
@@ -1654,8 +1788,9 @@ async def find_duplicates_resource(
     con = _new_con()
     try:
         available = _open_view(con, parquet)
+        filter_notes: list[dict[str, Any]] = []
         try:
-            where = _build_where(filters, available)
+            where = _build_where(filters, available, _column_types(con), filter_notes)
         except AnalyticsError as e:
             return {"error": str(e)}
 
@@ -1697,17 +1832,20 @@ async def find_duplicates_resource(
     finally:
         con.close()
 
-    return {
-        "source_url": url,
-        "format": kind,
-        "cache": meta,
-        "columns_checked": columns,
-        "duplicate_groups_found": duplicate_groups,
-        "groups_returned": len(rows),
-        "total_duplicate_rows": total_dup_rows,
-        "columns": col_names,
-        "rows": [list(r) for r in rows],
-    }
+    return _with_filter_notes(
+        {
+            "source_url": url,
+            "format": kind,
+            "cache": meta,
+            "columns_checked": columns,
+            "duplicate_groups_found": duplicate_groups,
+            "groups_returned": len(rows),
+            "total_duplicate_rows": total_dup_rows,
+            "columns": col_names,
+            "rows": [list(r) for r in rows],
+        },
+        filter_notes,
+    )
 
 
 @_tool_envelope
@@ -1736,8 +1874,9 @@ async def detect_outliers_resource(
     con = _new_con()
     try:
         available = _open_view(con, parquet)
+        filter_notes: list[dict[str, Any]] = []
         try:
-            where = _build_where(filters, available)
+            where = _build_where(filters, available, _column_types(con), filter_notes)
         except AnalyticsError as e:
             return {"error": str(e)}
 
@@ -1818,7 +1957,7 @@ async def detect_outliers_resource(
     finally:
         con.close()
 
-    return {
+    outliers_result = {
         "source_url": url,
         "format": kind,
         "cache": meta,
@@ -1833,8 +1972,14 @@ async def detect_outliers_resource(
         "rows_returned": len(rows),
         "columns": col_names,
         "rows": [list(r) for r in rows],
-        **({"numeric_coercion": [coercion_report]} if coercion_report else {}),
     }
+    return _with_filter_notes(
+        {
+            **outliers_result,
+            **({"numeric_coercion": [coercion_report]} if coercion_report else {}),
+        },
+        filter_notes,
+    )
 
 
 @_tool_envelope
@@ -1854,6 +1999,7 @@ async def save_query_to_csv(
     import re
 
     columns = _column_names(columns)
+    filter_notes: list[dict[str, Any]] = []
     kind = classify_format(fmt)
     if kind is None:
         return {"error": f"Format '{fmt}' not supported"}
@@ -1915,7 +2061,7 @@ async def save_query_to_csv(
                 except AnalyticsError as e:
                     return {"error": str(e)}
             try:
-                where = _build_where(filters, available)
+                where = _build_where(filters, available, _column_types(con), filter_notes)
             except AnalyticsError as e:
                 return {"error": str(e)}
             try:
@@ -1943,13 +2089,16 @@ async def save_query_to_csv(
         writer.writerows(rows)
 
     bytes_written = dest_path.stat().st_size
-    return {
-        "path": str(dest_path),
-        "rows_written": len(rows),
-        "columns": col_names,
-        "bytes_written": bytes_written,
-        "cache": meta,
-    }
+    return _with_filter_notes(
+        {
+            "path": str(dest_path),
+            "rows_written": len(rows),
+            "columns": col_names,
+            "bytes_written": bytes_written,
+            "cache": meta,
+        },
+        filter_notes,
+    )
 
 
 @_tool_envelope
@@ -1981,8 +2130,9 @@ async def filter_resource(
         select_clause = "*"
         if columns:
             select_clause = ", ".join(_quote_ident(c, available) for c in columns)
+        filter_notes: list[dict[str, Any]] = []
         try:
-            where = _build_where(filters, available)
+            where = _build_where(filters, available, _column_types(con), filter_notes)
             order = _build_order_by(order_by, available)
         except AnalyticsError as e:
             return {"error": str(e)}
@@ -2005,17 +2155,20 @@ async def filter_resource(
     finally:
         con.close()
 
-    return {
-        "source_url": url,
-        "format": kind,
-        "cache": meta,
-        "matching_rows_total": total,
-        "rows_returned": len(rows),
-        "columns": col_names,
-        "limit": limit,
-        "offset": offset,
-        "rows": [list(r) for r in rows],
-    }
+    return _with_filter_notes(
+        {
+            "source_url": url,
+            "format": kind,
+            "cache": meta,
+            "matching_rows_total": total,
+            "rows_returned": len(rows),
+            "columns": col_names,
+            "limit": limit,
+            "offset": offset,
+            "rows": [list(r) for r in rows],
+        },
+        filter_notes,
+    )
 
 
 @_tool_envelope
@@ -2081,8 +2234,9 @@ async def aggregate_resource(
             for a in aggregations
         ]
         selectable = available + [a for a in aliases if isinstance(a, str)]
+        filter_notes: list[dict[str, Any]] = []
         try:
-            where = _build_where(filters, available)
+            where = _build_where(filters, available, _column_types(con), filter_notes)
             order = _build_order_by(order_by, selectable)
         except AnalyticsError as e:
             return {"error": str(e)}
@@ -2123,7 +2277,18 @@ async def aggregate_resource(
     }
     if reports:
         result["numeric_coercion"] = reports
-    return result
+    # Asking for ten groups without saying which ten returns ten arbitrary ones,
+    # and the reply is shaped exactly like a top ten. Warn only when the cut
+    # actually happened: an unordered query that fit under the limit lost
+    # nothing, and warning on every one of those is noise that trains the
+    # caller to ignore the field.
+    if not order_by and len(rows) == limit:
+        result["warning"] = (
+            f"Returned {limit} group(s) with no order_by, so these are an arbitrary "
+            "slice of the groups, not the largest ones. Add order_by, e.g. "
+            f'[{{"col": "{aliases[0] if aliases else "alias"}", "dir": "desc"}}].'
+        )
+    return _with_filter_notes(result, filter_notes)
 
 
 # ─── Raw SQL escape hatch ─────────────────────────────────────────────────────

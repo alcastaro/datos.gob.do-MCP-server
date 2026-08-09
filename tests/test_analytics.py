@@ -1409,3 +1409,141 @@ async def test_a_normal_file_carries_no_warning(mock_csv_endpoint, tmp_cache_dir
     """The warning must stay rare, or it becomes noise nobody reads."""
     out = await analytics.get_resource_schema(mock_csv_endpoint, "csv")
     assert "parse_warning" not in out["cache"]
+
+
+async def test_a_wrong_key_names_itself_and_the_right_ones(mock_csv_endpoint, tmp_cache_dir):
+    """`column` and `function` are the obvious names, and they are wrong.
+
+    The old reply to that mistake was "Aggregation not allowed: " with nothing
+    after the colon, because `fn` was missing rather than invalid. An error that
+    names neither what arrived nor what was expected leaves the caller nowhere.
+    """
+    out = await analytics.aggregate_resource(
+        mock_csv_endpoint, "csv", [{"column": "Sueldo Bruto", "function": "sum"}]
+    )
+    msg = out["error"]
+    assert "column" in msg and "function" in msg, msg
+    assert "col" in msg and "fn" in msg, msg
+
+
+async def test_an_invalid_function_lists_the_valid_ones(mock_csv_endpoint, tmp_cache_dir):
+    out = await analytics.aggregate_resource(
+        mock_csv_endpoint, "csv", [{"col": "Sueldo Bruto", "fn": "promedio"}]
+    )
+    assert "promedio" in out["error"]
+    assert "median" in out["error"] and "sum" in out["error"]
+
+
+async def test_a_missing_function_does_not_produce_an_empty_message(
+    mock_csv_endpoint, tmp_cache_dir
+):
+    out = await analytics.aggregate_resource(mock_csv_endpoint, "csv", [{"col": "Sueldo Bruto"}])
+    assert not out["error"].rstrip().endswith(":"), out["error"]
+
+
+async def test_a_cut_without_an_order_says_it_is_arbitrary(mock_csv_endpoint, tmp_cache_dir):
+    """Ten groups with no order_by are ten arbitrary groups.
+
+    The reply is shaped exactly like a top ten, and nothing in it says
+    otherwise, so the caller quotes an arbitrary slice as the largest.
+    """
+    out = await analytics.aggregate_resource(
+        mock_csv_endpoint,
+        "csv",
+        [{"col": None, "fn": "count", "alias": "n"}],
+        group_by=["Nombre"],
+        limit=2,
+    )
+    assert out["groups_returned"] == 2
+    assert "arbitrary" in out["warning"]
+    assert "order_by" in out["warning"]
+
+
+async def test_no_warning_when_nothing_was_cut(mock_csv_endpoint, tmp_cache_dir):
+    """A query that fit under the limit lost nothing.
+
+    Warning on every unordered call trains the caller to ignore the field.
+    """
+    out = await analytics.aggregate_resource(
+        mock_csv_endpoint,
+        "csv",
+        [{"col": None, "fn": "count", "alias": "n"}],
+        group_by=["Estatus"],
+        limit=500,
+    )
+    assert "warning" not in out
+
+
+async def test_no_warning_when_the_caller_said_which_ones(mock_csv_endpoint, tmp_cache_dir):
+    out = await analytics.aggregate_resource(
+        mock_csv_endpoint,
+        "csv",
+        [{"col": None, "fn": "count", "alias": "n"}],
+        group_by=["Nombre"],
+        order_by=[{"col": "n", "dir": "desc"}],
+        limit=2,
+    )
+    assert "warning" not in out
+
+
+async def test_a_numeric_filter_reaches_a_column_stored_as_text(
+    mock_dirty_numeric_endpoint, tmp_cache_dir
+):
+    """Aggregations already read text as numbers; filters did not.
+
+    Comparing that same column against an integer raised a DuckDB binder error
+    the caller could do nothing with, which is how an assistant ends up
+    inventing a workaround.
+    """
+    out = await analytics.filter_resource(
+        mock_dirty_numeric_endpoint,
+        "csv",
+        filters=[{"col": "Sueldo Bruto (RD$)", "op": ">", "val": 0}],
+    )
+    assert "error" not in out, out
+    assert out["rows_returned"] > 0
+    notes = [n for n in out.get("numeric_coercion", []) if n.get("where") == "filter"]
+    assert notes and notes[0]["coerced"] is True
+
+
+async def test_comparing_against_a_string_is_flagged_as_alphabetical(
+    mock_dirty_numeric_endpoint, tmp_cache_dir
+):
+    """The obvious workaround succeeds and answers a different question.
+
+    `"00" > "0"` is true as text and false as a number, so a comparison that
+    looks numeric can be quietly wrong. The semantics are left alone — `=`
+    against text codes is legitimate — and declared instead.
+    """
+    out = await analytics.filter_resource(
+        mock_dirty_numeric_endpoint,
+        "csv",
+        filters=[{"col": "Sueldo Bruto (RD$)", "op": ">", "val": "0"}],
+    )
+    assert "error" not in out, out
+    notes = [n for n in out.get("numeric_coercion", []) if n.get("where") == "filter"]
+    assert notes and notes[0]["comparison"] == "lexicographic"
+
+
+async def test_a_text_filter_on_a_text_column_is_left_alone(mock_csv_endpoint, tmp_cache_dir):
+    """Equality against a name is not a measurement and must not become one."""
+    out = await analytics.filter_resource(
+        mock_csv_endpoint, "csv", filters=[{"col": "Estatus", "op": "=", "val": "Activo"}]
+    )
+    assert "error" not in out, out
+    assert not [n for n in out.get("numeric_coercion", []) if n.get("where") == "filter"]
+
+
+async def test_an_unknown_filter_key_names_itself(mock_csv_endpoint, tmp_cache_dir):
+    out = await analytics.filter_resource(
+        mock_csv_endpoint, "csv", filters=[{"column": "Estatus", "op": "=", "val": "Activo"}]
+    )
+    assert "column" in out["error"] and "col" in out["error"]
+
+
+async def test_a_bad_operator_lists_the_good_ones(mock_csv_endpoint, tmp_cache_dir):
+    out = await analytics.filter_resource(
+        mock_csv_endpoint, "csv", filters=[{"col": "Estatus", "op": "like", "val": "A%"}]
+    )
+    assert "like" in out["error"]
+    assert "contains" in out["error"] and "starts_with" in out["error"]

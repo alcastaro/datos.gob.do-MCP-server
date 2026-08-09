@@ -192,3 +192,26 @@ async def test_a_page_linking_another_page_stops_after_one_hop(httpx_mock, tmp_c
     out = await analytics.get_resource_schema(page_url, "csv")
     assert "error" in out
     assert "one hop" in out["error"].lower()
+
+
+async def test_the_second_call_still_says_where_the_data_came_from(httpx_mock, tmp_cache_dir):
+    """Provenance that only the download path reports is provenance heard once.
+
+    The warm path serves every call but the first. A caller that asks twice and
+    is told about the substitution once has no way to know, on the reply it
+    actually quotes, that it is holding data from a different URL.
+    """
+    page_url = "https://example.test/descargas/padron-2026"
+    file_url = "https://example.test/files/padron-2026.csv"
+    page = f'<html><a href="{file_url}">Descargar</a><a href="/z.csv">z</a></html>'
+    httpx_mock.add_response(url=page_url, method="HEAD", headers={"etag": "p3"})
+    httpx_mock.add_response(url=page_url, method="GET", content=page.encode())
+    httpx_mock.add_response(url=file_url, method="GET", content=b"a;b\n1;2\n")
+
+    first = await analytics.get_resource_schema(page_url, "csv")
+    assert first["cache"]["cache"] == "miss"
+    assert first["cache"]["resolved_from"] == {"page": page_url, "followed": file_url}
+
+    second = await analytics.get_resource_schema(page_url, "csv")
+    assert second["cache"]["cache"] == "hit", "expected the warm path"
+    assert second["cache"]["resolved_from"] == {"page": page_url, "followed": file_url}
