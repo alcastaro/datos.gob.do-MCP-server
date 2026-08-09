@@ -1547,3 +1547,41 @@ async def test_a_bad_operator_lists_the_good_ones(mock_csv_endpoint, tmp_cache_d
     )
     assert "like" in out["error"]
     assert "contains" in out["error"] and "starts_with" in out["error"]
+
+
+async def test_a_spreadsheet_registered_as_csv_is_read_anyway(
+    httpx_mock, small_xlsx_bytes, tmp_cache_dir
+):
+    """The catalog says what someone typed; the bytes say what the file is.
+
+    DuckDB used to read the ZIP header as a column name and answer
+    `Parser Error: unterminated quoted identifier at or near ""PK`, which names
+    nothing the caller can act on. One resource of the catalog is exactly this,
+    and it holds 9,427 rows.
+    """
+    url = "https://example.test/mal-declarado.csv"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "z1"})
+    httpx_mock.add_response(url=url, method="GET", content=small_xlsx_bytes)
+    out = await analytics.get_resource_schema(url, "csv")
+    assert "error" not in out, out
+    assert out["row_count"] > 0
+    corrected = out["cache"]["format_corrected"]
+    assert corrected["declared"] == "csv"
+    assert corrected["actual"] == "xlsx"
+    assert "publisher" in corrected["note"]
+
+
+async def test_the_correction_survives_the_cache(httpx_mock, small_xlsx_bytes, tmp_cache_dir):
+    """Same rule as every other piece of provenance: the warm path must repeat it."""
+    url = "https://example.test/mal-declarado-2.csv"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "z2"})
+    httpx_mock.add_response(url=url, method="GET", content=small_xlsx_bytes)
+    await analytics.get_resource_schema(url, "csv")
+    second = await analytics.get_resource_schema(url, "csv")
+    assert second["cache"]["cache"] == "hit"
+    assert second["cache"]["format_corrected"]["actual"] == "xlsx"
+
+
+async def test_a_real_csv_is_not_second_guessed(mock_csv_endpoint, tmp_cache_dir):
+    out = await analytics.get_resource_schema(mock_csv_endpoint, "csv")
+    assert "format_corrected" not in out["cache"]

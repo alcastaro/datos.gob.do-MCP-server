@@ -729,6 +729,7 @@ async def _ensure_cached_live(
     raw = Path(tmp_path_str)
     raw_ods: Path | None = None  # declared here so finally block can always reference it
     resolved_from: dict[str, str] | None = None
+    format_corrected: dict[str, str] | None = None
     try:
         bytes_written, truncated = await download_to_file(url, raw, max_bytes=ANALYTICS_MAX_BYTES)
         if bytes_written == 0:
@@ -762,6 +763,31 @@ async def _ensure_cached_live(
                         found,
                     )
             resolved_from = {"page": url, "followed": target}
+
+        # The reverse mistake: a spreadsheet registered in the catalog as CSV.
+        # DuckDB then reads the ZIP header as a column name and answers with
+        # `Parser Error: unterminated quoted identifier at or near ""PK`, which
+        # names nothing the caller can act on and reads like a bug in this
+        # server. The bytes say what the file is; the catalog only says what
+        # someone typed. Trusting the bytes and declaring the correction is the
+        # same bargain as numeric coercion — do the useful thing, and say so.
+        if fmt in ("csv", "tsv", "json"):
+            with raw.open("rb") as fh:
+                magic = fh.read(4)
+            if magic.startswith(b"PK\x03\x04"):
+                logger.info("declared %s but the bytes are a zip container: %s", fmt, url)
+                format_corrected = {
+                    "declared": fmt,
+                    "actual": "xlsx",
+                    "detected_from": "magic bytes (PK zip signature)",
+                    "note": (
+                        f"The catalog declares this resource as {fmt.upper()}, but the file "
+                        "is a ZIP container — the signature every XLSX and ODS starts with. "
+                        "It was read as a spreadsheet. The wrong format in the catalog is a "
+                        "finding about the publisher, not about the data."
+                    ),
+                }
+                fmt = "xlsx"
 
         if fmt in ("xlsx", "xls", "xlsm", "ods"):
             # These are all zip containers. Portals answer a gated or moved
@@ -899,6 +925,8 @@ async def _ensure_cached_live(
             provenance["resolved_from"] = resolved_from
         if warning:
             provenance["parse_warning"] = warning
+        if format_corrected:
+            provenance["format_corrected"] = format_corrected
         cache.finalize(key, url=url, provenance=provenance)  # URL for warm-path lookups
         logger.info(
             "cache STORE key=%s parquet=%d source=%d",
