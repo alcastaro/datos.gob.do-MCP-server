@@ -45,23 +45,33 @@ package-lock.json
 CLAUDE.md
 .claude/
 
-# Internal planning docs and dev artifacts (NEVER commit)
-workplan.md
-Roadmap.md
-gcp-roadmap.md
-docs/
+# Everything about how we work stays out of the public repo.
+#
+# One directory, one rule. The previous version listed eight files by name
+# across two sections, which is a design that fails quietly: a new document
+# lands in the root, nobody remembers to add a line, and one `git add -A`
+# publishes the internal roadmap. A directory cannot be forgotten.
+#
+#   internal/reportes/   audit and performance write-ups
+#   internal/plan/       workplan, roadmaps, PM guide
+#   internal/pruebas/    test protocols
+#   internal/difusion/   webinar and OGTIC drafts
+#   internal/archivo/    superseded versions
+internal/
+
+# Dev harness and the data it produces. Not moved under internal/ only because
+# hundreds of relative paths inside the scripts point at these exact locations.
 sweep/
-testing_audit.md
 mirror/
 
 # Test artifacts
 .coverage
 htmlcov/
-REPORTE_MCP.md
-REPORTE_tools.md
-REPORTE_tools.es.md
-workplan.md
+
+# Belt and braces: if a stray internal document lands in the root anyway, these
+# name-based rules still catch the ones we have used. `internal/` remains the
+# rule that matters — these exist because moving files into it is a manual step
+# and manual steps get skipped.
+Roadmap.md
+testing_audit.md
 plan_*.md
-PRUEBAS_ANTIGRAVITY.md
-WEBINAR.md
-PROPUESTA_OGTIC.md
