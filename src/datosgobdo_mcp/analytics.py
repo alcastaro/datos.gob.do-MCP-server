@@ -30,7 +30,7 @@ from typing import Any, Literal, TypeVar
 import duckdb
 import httpx
 
-from . import archive, pagelink
+from . import archive, pagelink, reachability
 from .cache import LocalDiskCache, build_cache_key, get_cache
 from .download import (
     ANALYTICS_MAX_BYTES,
@@ -506,13 +506,20 @@ def _safe_unlink(path: Path) -> None:
 # ─── Cache layer ──────────────────────────────────────────────────────────────
 
 
-def _load_error(e: BaseException) -> dict[str, Any]:
+def _load_error(e: BaseException, url: str | None = None) -> dict[str, Any]:
     """Turn a failure to load a resource into a reply the caller can act on.
 
     When the URL served a page, whatever data files that page linked travel
     back with the error. A caller told only "the URL returned HTML" has nowhere
     to go; one handed three candidate files can pick the right one and ask
     again — and it holds the user's actual question, which this server does not.
+
+    For a network refusal the status code alone is not the story. A 403 with
+    ``cf-mitigated: challenge`` means a browser would succeed where no client
+    can, and a caller that is not told the difference has no way to choose
+    between reporting the resource as blocked and asking the user for the file.
+    Only the response headers are read: the body is streamed, so touching it
+    here would need an await this function does not have.
     """
     out: dict[str, Any] = {"error": f"Could not load resource: {err_text(e)}"}
     linked = getattr(e, "candidates", None)
@@ -522,6 +529,15 @@ def _load_error(e: BaseException) -> dict[str, Any]:
             "This URL is a page. Call the same tool again with the `url` of "
             "whichever linked file answers your question."
         )
+        return out
+
+    response = getattr(e, "response", None)
+    if response is not None or isinstance(e, httpx.HTTPError):
+        status = getattr(response, "status_code", None)
+        headers = dict(getattr(response, "headers", {}) or {})
+        kind = reachability.classify(status, headers)
+        found = archive.lookup(url) if url else None
+        out.update(reachability.explain(kind, found[1] if found else None))
     return out
 
 
@@ -1017,7 +1033,7 @@ async def get_resource_schema(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return _load_error(e)
+        return _load_error(e, url)
 
     con = _new_con()
     try:
@@ -1139,7 +1155,7 @@ async def summarize_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return _load_error(e)
+        return _load_error(e, url)
 
     top_n = min(max(int(max_categorical_top_n), 1), SUMMARIZE_MAX_TOP_N)
     con = _new_con()
@@ -1661,7 +1677,7 @@ async def quantiles_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return _load_error(e)
+        return _load_error(e, url)
 
     con = _new_con()
     try:
@@ -1783,7 +1799,7 @@ async def find_duplicates_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return _load_error(e)
+        return _load_error(e, url)
 
     con = _new_con()
     try:
@@ -1869,7 +1885,7 @@ async def detect_outliers_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return _load_error(e)
+        return _load_error(e, url)
 
     con = _new_con()
     try:
@@ -2035,7 +2051,7 @@ async def save_query_to_csv(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return _load_error(e)
+        return _load_error(e, url)
 
     con = _new_con()
     try:
@@ -2119,7 +2135,7 @@ async def filter_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return _load_error(e)
+        return _load_error(e, url)
 
     limit = min(max(int(limit), 1), FILTER_MAX_LIMIT)
     offset = max(int(offset), 0)
@@ -2192,7 +2208,7 @@ async def aggregate_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return _load_error(e)
+        return _load_error(e, url)
 
     limit = min(max(int(limit), 1), AGGREGATE_MAX_LIMIT)
 
@@ -2338,7 +2354,7 @@ async def query_resource(
     try:
         parquet, meta = await ensure_cached(url, kind)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
-        return _load_error(e)
+        return _load_error(e, url)
 
     limit = min(max(int(limit), 1), SQL_MAX_LIMIT)
     wrapped = f"SELECT * FROM ({cleaned}) AS _user_q LIMIT {limit}"
