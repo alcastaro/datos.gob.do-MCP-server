@@ -34,10 +34,11 @@ from . import archive, pagelink, reachability
 from .cache import LocalDiskCache, build_cache_key, get_cache
 from .download import (
     ANALYTICS_MAX_BYTES,
-    RESOURCE_HEADERS,
     classify_format,
+    direct_download_url,
     download_to_file,
     err_text,
+    headers_for,
     looks_like_html,
 )
 from .netguard import NetGuardError, guard_request_hook
@@ -558,10 +559,10 @@ async def _head_metadata(url: str) -> tuple[str | None, str | None]:
         async with httpx.AsyncClient(
             follow_redirects=True,
             timeout=15.0,
-            headers=RESOURCE_HEADERS,
+            headers=headers_for(direct_download_url(url)),
             event_hooks={"request": [guard_request_hook]},
         ) as client:
-            r = await client.head(url)
+            r = await client.head(direct_download_url(url))
             return r.headers.get("etag"), r.headers.get("last-modified")
     except httpx.HTTPError:
         return None, None

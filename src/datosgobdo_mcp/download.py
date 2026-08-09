@@ -6,8 +6,10 @@ reuse it with different caps.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -40,6 +42,62 @@ _FETCH_METADATA = {
 }
 
 RESOURCE_HEADERS = {"User-Agent": USER_AGENT, **_FETCH_METADATA}
+
+# Google Drive share links, rewritten to the address that serves the bytes.
+#
+# Five resources in this catalog are registered as `drive.google.com/file/d/<id>/view`,
+# which is the viewer page — HTML, no data, and the reason they were counted as
+# unreadable files. The catalog also holds four registered as
+# `drive.google.com/uc?export=download&id=<id>`, and those read fine.
+#
+# That is what makes this a normalisation rather than a workaround: the target
+# form is the one the publisher already uses when they get it right, and both
+# addresses are the same document with the same permissions. Nothing is
+# bypassed — a private file stays private, and the request still goes through
+# the SSRF guard like any other.
+_DRIVE_FILE_ID = re.compile(
+    r"^https?://(?:drive|docs)\.google\.com/(?:file/d/|open\?id=|uc\?[^#]*\bid=)([A-Za-z0-9_-]{10,})"
+)
+
+
+# Google's download endpoint refuses `Sec-Fetch-Site: cross-site` outright: the
+# same URL answers 303→200 without these three headers and 403 with them,
+# reproducibly. That is the endpoint defending itself against being embedded by
+# another site, which is a reasonable thing for it to do and not a thing we are
+# doing.
+#
+# The answer is to omit the headers there, not to send different values. The
+# true description of this request is a cross-site programmatic fetch, and
+# claiming `navigate`/`document` to get past a check would be a lie about it —
+# the one thing the header block above promises not to do. Saying nothing is
+# not a lie; it is what every HTTP client did before 2020.
+_NO_FETCH_METADATA_HOSTS = ("drive.google.com", "docs.google.com")
+
+
+def headers_for(url: str) -> dict[str, str]:
+    """The request headers for this URL."""
+    host = urlsplit(url or "").netloc.lower()
+    if any(host == h or host.endswith("." + h) for h in _NO_FETCH_METADATA_HOSTS):
+        return {"User-Agent": USER_AGENT}
+    return RESOURCE_HEADERS
+
+
+def direct_download_url(url: str) -> str:
+    """The address that serves the bytes, when the given one only shows them.
+
+    Returns the URL unchanged whenever nothing is recognised, which is the
+    common case. A rewrite that guessed would be worse than none: the caller
+    would be reading a different document from the one it asked for, which is
+    the failure this whole server is built to avoid.
+    """
+    m = _DRIVE_FILE_ID.match(url or "")
+    if not m:
+        return url
+    file_id = m.group(1)
+    if "uc?" in url and "export=download" in url:
+        return url  # already the download form
+    return f"https://drive.google.com/uc?export=download&id={file_id}"
+
 
 # Caps per call-site. Preview keeps the conservative 5 MB. Analytics tools
 # (get_resource_schema, summarize_resource, aggregate_resource, etc.) opt into
@@ -177,10 +235,11 @@ async def download_capped(
         (data, truncated) — data is at most max_bytes long; truncated is True
         if the remote resource exceeded the cap.
     """
+    url = direct_download_url(url)
     async with httpx.AsyncClient(
         follow_redirects=True,
         timeout=DEFAULT_TIMEOUT,
-        headers=RESOURCE_HEADERS,
+        headers=headers_for(url),
         # SSRF guard validates the initial URL and every redirect hop.
         event_hooks={"request": [guard_request_hook]},
     ) as client:
@@ -206,13 +265,14 @@ async def download_to_file(
     Returns:
         (bytes_written, truncated)
     """
+    url = direct_download_url(url)
     dest.parent.mkdir(parents=True, exist_ok=True)
     bytes_written = 0
     truncated = False
     async with httpx.AsyncClient(
         follow_redirects=True,
         timeout=DEFAULT_TIMEOUT,
-        headers=RESOURCE_HEADERS,
+        headers=headers_for(url),
         event_hooks={"request": [guard_request_hook]},
     ) as client:
         async with client.stream("GET", url) as r:

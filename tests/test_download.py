@@ -178,3 +178,57 @@ def test_a_repeated_body_character_cannot_outvote_the_header():
     text = "MES;AÑO\n" + "".join(f"Mitad;{i}\n" for i in range(140))
     data = text.encode("cp850")
     assert download._detect_encoding(data) == "cp850"
+
+
+def test_a_drive_share_link_becomes_the_download_address():
+    """Five resources in the catalog are registered as the viewer page.
+
+    That page is HTML, so they were counted as unreadable files. The catalog
+    also registers four the other way — `uc?export=download&id=` — and those
+    read fine, which is what makes this a normalisation and not a workaround:
+    the target is the form the publisher uses when they get it right.
+    """
+    got = download.direct_download_url(
+        "https://drive.google.com/file/d/1qVjNMHbgo8uABOhX_TZ8aKtHpUv6jAGT/view"
+    )
+    assert got == (
+        "https://drive.google.com/uc?export=download&id=1qVjNMHbgo8uABOhX_TZ8aKtHpUv6jAGT"
+    )
+
+
+def test_the_open_form_is_recognised_too():
+    got = download.direct_download_url("https://drive.google.com/open?id=ABC1234567890")
+    assert got.endswith("id=ABC1234567890")
+    assert "export=download" in got
+
+
+def test_an_address_already_serving_bytes_is_left_alone():
+    url = "https://drive.google.com/uc?export=download&id=ABC1234567890"
+    assert download.direct_download_url(url) == url
+
+
+def test_anything_unrecognised_is_returned_untouched():
+    """A rewrite that guessed would read a different document than was asked for."""
+    for url in (
+        "https://hacienda.gob.do/datos/nomina.csv",
+        "https://drive.google.com/drive/folders/ABC1234567890",
+        "",
+    ):
+        assert download.direct_download_url(url) == url
+
+
+def test_google_gets_no_fetch_metadata_headers():
+    """Its download endpoint answers 403 to Sec-Fetch-Site: cross-site.
+
+    Omitting the headers is not the same as sending false ones. The true
+    description of this request is a cross-site programmatic fetch; claiming
+    navigate/document to get past a check would be a lie about it.
+    """
+    sent = download.headers_for("https://drive.google.com/uc?export=download&id=ABC1234567890")
+    assert "Sec-Fetch-Site" not in sent
+    assert sent["User-Agent"] == download.RESOURCE_HEADERS["User-Agent"]
+
+
+def test_every_other_host_still_states_its_context():
+    sent = download.headers_for("https://migracion.gob.do/x.xlsx")
+    assert sent["Sec-Fetch-Site"] == "cross-site"
