@@ -204,7 +204,7 @@ async def get_bigquery_table_info(project: str, dataset: str, table: str) -> dic
 
 def register_gcp_tools(mcp_instance: Any) -> bool:
     """Register the GCP tools on a FastMCP instance — only when the SDKs are
-    installed, so the base install's tool surface stays at 23."""
+    installed, so the base install's tool surface is unchanged."""
     if not gcp_available():
         logger.info("GCP libraries not found — pipeline tools not registered")
         return False
