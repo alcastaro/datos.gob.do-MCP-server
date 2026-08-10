@@ -80,7 +80,10 @@ jobs:
       - name: Build distributable
         run: uv build
 
+      # The published binary is linux_amd64 and the file it checks is the same
+      # on every runner, so validating once on Linux is both correct and enough.
       - name: Validate server.json against MCP Registry
+        if: runner.os == 'Linux'
         run: |
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
             | tar xz mcp-publisher
