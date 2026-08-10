@@ -78,6 +78,51 @@ where the gaps show.
   serves every call but the first. Both are now stored with the entry and
   returned on hits.
 
+- **Google Drive links registered as viewer pages are read.** Five resources
+  are registered as `drive.google.com/file/d/<id>/view`, which is the viewer
+  page — HTML, no data — so they counted as unreadable files. The catalog also
+  registers others as `uc?export=download&id=<id>`, and those always read fine,
+  which is what makes this a normalisation rather than a workaround: the target
+  is the form the publisher already uses when they get it right. Both addresses
+  are the same document under the same permissions; a private file stays
+  private and the request still passes the SSRF guard.
+
+  Google's download endpoint refuses `Sec-Fetch-Site: cross-site` outright —
+  the same URL answers 303 then 200 without those headers and 403 with them,
+  reproducibly — so fetch-metadata headers are now chosen per host and omitted
+  there. Omitting is not the same as sending false values: this request really
+  is a cross-site programmatic fetch, and claiming `navigate`/`document` to get
+  past the check would be the exact lie the header block promises not to tell.
+
+- **A resource whose declared format contradicts its bytes is read as what it
+  is.** One resource is registered as CSV and is a spreadsheet; DuckDB read the
+  ZIP header as a column name and answered `Parser Error: unterminated quoted
+  identifier at or near ""PK`, which names nothing the caller can act on and
+  reads like a bug in this server. The file holds 9,427 rows. The catalog says
+  what someone typed into it; the bytes say what the file is. A resource
+  declared CSV, TSV or JSON that starts with the ZIP signature is now read as a
+  spreadsheet, and the reply carries `format_corrected` — declared, actual, how
+  it was detected, and that the wrong format is a finding about the publisher.
+  Like the rest of the provenance it is stored with the cache entry, so the
+  warm path repeats it.
+
+- **Three more ways a page can still name its file.** An embedded file is a
+  named file: `iframe` and `embed` sources now count as links, and Drive's own
+  share and download forms are recognised as download handlers. When nothing
+  matches the declared format, the other files on the page are returned as
+  candidates saying what they actually are — a page offering three PDFs when a
+  CSV was asked for is not the same situation as a page offering nothing. And
+  the largest group gets its own sentence: sixteen of these pages carry
+  hundreds of anchors and not one to a data file, because the list is fetched
+  when a browser opens the page, so no number of link hops reaches it.
+
+  A share link with an empty file id does not count. One page embeds
+  `drive.google.com/file/d//preview` with the id left out, the real one
+  base64-encoded in the page's own query string; accepting it turned "no
+  candidate" into a confident answer pointing at nothing. Measured over the 37
+  pages: six resolve as before, ten now hand back candidates where four did,
+  and the caller gets something to act on in sixteen instead of ten.
+
 ## [0.10.1] — 2026-08-08
 
 ### Fixed
