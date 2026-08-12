@@ -23,10 +23,15 @@ from typing import Any, Protocol
 
 from . import __version__
 
-try:  # POSIX cross-process lock; absent on Windows → per-process no-op
+try:  # POSIX cross-process lock
     import fcntl
-except ImportError:  # pragma: no cover — Windows
+except ImportError:
     fcntl = None  # type: ignore[assignment]
+
+try:  # Windows cross-process lock; absent everywhere else
+    import msvcrt
+except ImportError:
+    msvcrt = None  # type: ignore[assignment]
 
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "datosgobdo-mcp"
 DEFAULT_MAX_BYTES = 1 * 1024 * 1024 * 1024  # 1 GB
@@ -123,17 +128,33 @@ class LocalDiskCache:
     def _lock(self) -> Generator[None]:
         """Cross-process exclusive lock for index/eviction mutations. Two server
         instances (or concurrent HTTP requests in hosted mode) share the cache
-        dir; without this, eviction and finalize race. No-op on Windows."""
-        if fcntl is None:  # pragma: no cover — Windows
+        dir; without this, eviction and finalize race.
+
+        POSIX uses flock. Windows uses msvcrt.locking over one byte at offset
+        0 — its LK_LOCK mode retries for about ten seconds and then raises
+        rather than waiting forever, and a mutation under this lock is a JSON
+        write measured in milliseconds, so a ten-second contention window
+        failing loudly beats an indefinite silent wait. Only when neither
+        module exists does this degrade to a per-process no-op.
+        """
+        if fcntl is None and msvcrt is None:  # pragma: no cover — unknown platform
             yield
             return
         lock_file = self.cache_dir / ".lock"
         with open(lock_file, "w") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
+            if fcntl is not None:
+                fcntl.flock(f, fcntl.LOCK_EX)
+            else:  # Windows
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
             try:
                 yield
             finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+                if fcntl is not None:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+                else:  # Windows
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
 
     def _save_index(self) -> None:
         try:

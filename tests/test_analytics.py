@@ -684,6 +684,31 @@ async def test_save_query_to_csv_refuses_system_var_path(tmp_cache_dir):
     assert "system path" in out["error"].lower()
 
 
+async def test_save_query_to_csv_refuses_windows_system_paths(tmp_cache_dir):
+    """The denylist protected /etc and /usr while C:\\Windows passed every
+    check — the protection existed on the platforms the developers use and
+    not on the platform most of this server's audience uses. The raw-string
+    check runs before any filesystem call, so this is testable anywhere."""
+    for dest in (
+        "C:\\Windows\\Temp\\evil.csv",
+        "c:/windows/system32/evil.csv",
+        "C:/Program Files/evil.csv",
+        "c:\\programdata\\evil.csv",
+    ):
+        out = await analytics.save_query_to_csv("https://example.test/any.csv", "csv", dest=dest)
+        assert "error" in out, dest
+        assert "system path" in out["error"].lower(), dest
+
+
+def test_forbidden_dest_windows_folds_case_posix_does_not():
+    """Windows paths compare case-insensitively because the filesystem does;
+    POSIX prefixes stay exact — /Etc is legitimately a different directory."""
+    assert analytics._is_forbidden_dest("C:\\WINDOWS\\evil.csv")
+    assert analytics._is_forbidden_dest("/etc/evil.csv")
+    assert not analytics._is_forbidden_dest("/Etc/evil.csv")
+    assert not analytics._is_forbidden_dest("C:/Users/maria/Downloads/salida.csv")
+
+
 async def test_quantiles_resource_duplicate_percentile_error(sample_csv_url, tmp_cache_dir):
     out = await analytics.quantiles_resource(sample_csv_url, "csv", percentiles=[0.5, 0.5])
     assert "error" in out

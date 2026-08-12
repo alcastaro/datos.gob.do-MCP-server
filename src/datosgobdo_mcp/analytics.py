@@ -140,7 +140,31 @@ _FORBIDDEN_DEST_PREFIXES = (
     # macOS canonical paths (symlinks resolve to /private/*)
     "/private/etc",
     "/private/var",
+    # Windows system paths. The list above protected macOS and Linux while
+    # C:\Windows\Temp\x.csv passed every check — the protection existed on
+    # the platforms the developers use and not on the platform most of this
+    # server's audience uses. Compared case-folded with slashes normalised,
+    # because Windows paths are case-insensitive and arrive in both spellings.
+    "c:/windows",
+    "c:/program files",
+    "c:/program files (x86)",
+    "c:/programdata",
 )
+
+
+def _is_forbidden_dest(*candidates: str) -> bool:
+    """True if any spelling of the destination sits under a system path.
+
+    Windows comparisons fold case and slash direction; POSIX prefixes keep
+    exact case, since /Etc is a legitimately different directory from /etc.
+    """
+    for raw in candidates:
+        folded = raw.replace("\\", "/")
+        for prefix in _FORBIDDEN_DEST_PREFIXES:
+            probe = folded.lower() if prefix[0] == "c" else folded
+            if probe.startswith(prefix):
+                return True
+    return False
 
 
 class AnalyticsError(RuntimeError):
@@ -2069,10 +2093,8 @@ async def save_query_to_csv(
         tmp_root = Path(tempfile.gettempdir()).resolve()
         if tmp_root not in dest_path.parents:
             # Check both the raw path and the resolved path (macOS resolves /etc → /private/etc).
-            for check_str in (dest, str(dest_path)):
-                for prefix in _FORBIDDEN_DEST_PREFIXES:
-                    if check_str.startswith(prefix):
-                        return {"error": f"Cannot write to system path: {check_str}"}
+            if _is_forbidden_dest(dest, str(dest_path)):
+                return {"error": f"Cannot write to system path: {dest}"}
 
     if dest_path.exists() and not overwrite:
         return {"error": f"File already exists: {dest_path}. Pass overwrite=True to replace."}

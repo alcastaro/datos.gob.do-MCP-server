@@ -234,3 +234,67 @@ def test_get_by_url_returns_most_recently_accessed(tmp_path):
     assert result is not None
     _, returned_key = result
     assert returned_key == key_new  # newer entry wins
+
+
+# ─── Cross-process lock on Windows (msvcrt) ──────────────────────────────────
+# Real Windows never runs in this suite, so the lock is exercised through a
+# fake module — the same technique test_gcp.py uses for the google SDKs. What
+# this verifies is the contract: when fcntl is absent and msvcrt is present,
+# every index mutation locks byte 0 and unlocks it, even if the mutation
+# raises. The real msvcrt semantics stay a documented risk until the suite
+# runs on a Windows machine.
+
+
+class _FakeMsvcrt:
+    LK_LOCK = 0
+    LK_UNLCK = 1
+
+    def __init__(self):
+        self.calls = []
+
+    def locking(self, fd, mode, nbytes):
+        assert isinstance(fd, int)
+        assert nbytes == 1
+        self.calls.append("lock" if mode == self.LK_LOCK else "unlock")
+
+
+def test_windows_lock_wraps_mutations(tmp_path, monkeypatch):
+    fake = _FakeMsvcrt()
+    monkeypatch.setattr(cache_mod, "fcntl", None)
+    monkeypatch.setattr(cache_mod, "msvcrt", fake)
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path)
+    key = "winlock_key"
+    p = c.put_path(key)
+    p.write_bytes(b"parquet data")
+    c.finalize(key, url="https://example.test/win.csv")
+    assert fake.calls == ["lock", "unlock"]
+    c.evict_to_fit(0)
+    assert fake.calls == ["lock", "unlock", "lock", "unlock"]
+
+
+def test_windows_lock_releases_on_error(tmp_path, monkeypatch):
+    fake = _FakeMsvcrt()
+    monkeypatch.setattr(cache_mod, "fcntl", None)
+    monkeypatch.setattr(cache_mod, "msvcrt", fake)
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path)
+
+    def boom(_max):
+        raise RuntimeError("mutation failed")
+
+    monkeypatch.setattr(c, "_evict_to_fit_locked", boom)
+    try:
+        c.evict_to_fit(0)
+    except RuntimeError:
+        pass
+    assert fake.calls == ["lock", "unlock"]
+
+
+def test_no_lock_modules_degrades_to_noop(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache_mod, "fcntl", None)
+    monkeypatch.setattr(cache_mod, "msvcrt", None)
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path)
+    key = "nolock_key"
+    p = c.put_path(key)
+    p.write_bytes(b"parquet data")
+    c.finalize(key, url="https://example.test/nolock.csv")  # must not raise
+    assert c.get_by_url("https://example.test/nolock.csv") is not None

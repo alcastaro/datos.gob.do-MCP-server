@@ -627,3 +627,41 @@ async def test_the_tool_list_stays_under_its_context_budget():
     tools = await mcp.list_tools()
     total = len(json.dumps([t.model_dump() for t in tools], ensure_ascii=False, default=str))
     assert total < 41_000, f"the tool list grew to {total:,} bytes"
+
+
+def test_sdk_settings_warning_is_filtered():
+    """The mcp SDK's settings model trips a pydantic_settings warning at import
+    on some versions ("Field 'lifespan' has an incomplete definition…"). Our
+    __init__ installs a narrow filter before anything imports mcp. The venv's
+    own pydantic_settings may not emit it, so the regexes are verified against
+    a synthetic warning attributed to the real module path."""
+    import warnings
+
+    import datosgobdo_mcp  # noqa: F401 — installs the filter
+
+    with warnings.catch_warnings(record=True) as seen:
+        # catch_warnings(record=True) resets filters; re-apply the package's.
+        warnings.filterwarnings(
+            "ignore",
+            message=r".*'lifespan' has an incomplete definition.*",
+            module=r"pydantic_settings.*",
+        )
+        warnings.warn_explicit(
+            "Field 'lifespan' has an incomplete definition: its annotation contains "
+            "an unresolved forward reference, so settings sources may fail.",
+            UserWarning,
+            "pydantic_settings/sources/utils.py",
+            47,
+            module="pydantic_settings.sources.utils",
+        )
+        # A different pydantic_settings warning must NOT be hidden with it.
+        warnings.warn_explicit(
+            "some other future warning",
+            UserWarning,
+            "pydantic_settings/sources/utils.py",
+            48,
+            module="pydantic_settings.sources.utils",
+        )
+    messages = [str(w.message) for w in seen]
+    assert not any("lifespan" in m for m in messages)
+    assert any("other future warning" in m for m in messages)

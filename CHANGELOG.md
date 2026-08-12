@@ -4,6 +4,38 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.1] — 2026-08-12
+
+Hardening for the platform most of this server's audience uses. A code audit
+ahead of the first Windows test run found three gaps; none had ever produced a
+bug report, because the code had never run on Windows at all.
+
+### Fixed
+
+- **The system-path denylist now covers Windows.** `save_query_to_csv` refused
+  `/etc` and `/usr` while `C:\Windows\Temp\evil.csv` passed every check — the
+  protection existed on the platforms the developers use and not on the
+  platform most users do. Windows prefixes (`C:\Windows`, `C:\Program Files`,
+  `C:\ProgramData`) are compared case-folded with slashes normalised, because
+  that filesystem is case-insensitive and paths arrive in both spellings;
+  POSIX prefixes keep exact case, since `/Etc` is legitimately a different
+  directory from `/etc`.
+
+- **The cache lock is now a real lock on Windows.** Index and eviction
+  mutations were serialised with `fcntl.flock`, which does not exist there, so
+  two server instances sharing a cache directory raced unprotected. Windows
+  now locks through `msvcrt.locking` over one byte of the same lock file. Its
+  `LK_LOCK` mode retries for about ten seconds and then raises rather than
+  waiting forever — a mutation under this lock is a JSON write measured in
+  milliseconds, so a loud failure after ten seconds beats an indefinite
+  silent wait.
+
+- **Startup is quiet again.** Some versions of the mcp SDK's settings model
+  trip a `pydantic_settings` warning at import time, printing a wall of text
+  to stderr before the server says anything — every fresh install saw a
+  warning as its first impression. Filtered narrowly, by module and message,
+  so anything else `pydantic_settings` might warn about still comes through.
+
 ## [0.11.0] — 2026-08-09
 
 Everything here came from driving the server through a real MCP client instead
