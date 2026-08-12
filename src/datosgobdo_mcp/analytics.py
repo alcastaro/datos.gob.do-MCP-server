@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import functools
+import hashlib
 import logging
 import os
 import re
@@ -125,7 +126,9 @@ _SQL_FORBIDDEN = re.compile(
 _SQL_ALLOWED_START = re.compile(r"^\s*(with|select)\b", re.IGNORECASE)
 SQL_MAX_LIMIT = 1000
 
-_FORBIDDEN_DEST_PREFIXES = (
+# POSIX prefixes compare exact-case: /Etc is legitimately a different
+# directory from /etc on a case-sensitive filesystem.
+_FORBIDDEN_DEST_POSIX = (
     "/etc",
     "/usr",
     "/bin",
@@ -140,11 +143,14 @@ _FORBIDDEN_DEST_PREFIXES = (
     # macOS canonical paths (symlinks resolve to /private/*)
     "/private/etc",
     "/private/var",
-    # Windows system paths. The list above protected macOS and Linux while
-    # C:\Windows\Temp\x.csv passed every check — the protection existed on
-    # the platforms the developers use and not on the platform most of this
-    # server's audience uses. Compared case-folded with slashes normalised,
-    # because Windows paths are case-insensitive and arrive in both spellings.
+)
+
+# Windows system paths, compared case-folded with slashes normalised, because
+# that filesystem is case-insensitive and paths arrive in both spellings. The
+# POSIX list protected macOS and Linux while C:\Windows\Temp\x.csv passed
+# every check — the protection existed on the platforms the developers use
+# and not on the platform most of this server's audience uses.
+_FORBIDDEN_DEST_WINDOWS = (
     "c:/windows",
     "c:/program files",
     "c:/program files (x86)",
@@ -153,17 +159,13 @@ _FORBIDDEN_DEST_PREFIXES = (
 
 
 def _is_forbidden_dest(*candidates: str) -> bool:
-    """True if any spelling of the destination sits under a system path.
-
-    Windows comparisons fold case and slash direction; POSIX prefixes keep
-    exact case, since /Etc is a legitimately different directory from /etc.
-    """
+    """True if any spelling of the destination sits under a system path."""
     for raw in candidates:
         folded = raw.replace("\\", "/")
-        for prefix in _FORBIDDEN_DEST_PREFIXES:
-            probe = folded.lower() if prefix[0] == "c" else folded
-            if probe.startswith(prefix):
-                return True
+        if folded.startswith(_FORBIDDEN_DEST_POSIX):
+            return True
+        if folded.lower().startswith(_FORBIDDEN_DEST_WINDOWS):
+            return True
     return False
 
 
@@ -516,6 +518,28 @@ def _repair_csv_text(path: Path) -> Path:
     return out
 
 
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _computation(con: duckdb.DuckDBPyConnection, sql: str) -> dict[str, Any]:
+    """What ran, and over how many rows, so the figure can be re-derived.
+
+    A number that arrives in structuredContent was computed; a number the
+    model retypes into a table may not survive the trip — measured on a real
+    session, a top-10 entry came back 300 million above what the assistant's
+    own script had produced. Together with the source digest this makes every
+    reply checkable by a third party: same bytes, same SQL, same figure. The
+    SQL names only the `data` view, never a server path.
+    """
+    row = con.execute("SELECT count(*) FROM data").fetchone()
+    return {"sql": sql, "rows_scanned": int(row[0]) if row else 0}
+
+
 def _safe_unlink(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -829,6 +853,16 @@ async def _ensure_cached_live(
                     "page or an error document under a spreadsheet filename."
                 )
 
+        # The digest of the bytes exactly as they will be parsed — after
+        # following a page to its file, before any transcoding — so any figure
+        # computed from this entry can be re-checked against an independent
+        # capture. A truncated download carries no digest: hashing part of a
+        # file and presenting it as the file's digest would be precisely the
+        # false confidence this field exists to kill.
+        source_sha256: str | None = None
+        if not truncated:
+            source_sha256 = await asyncio.to_thread(_sha256_file, raw)
+
         effective_fmt = fmt
         if fmt == "ods":
             raw_ods = raw
@@ -951,6 +985,8 @@ async def _ensure_cached_live(
             provenance["parse_warning"] = warning
         if format_corrected:
             provenance["format_corrected"] = format_corrected
+        if source_sha256:
+            provenance["source_sha256"] = source_sha256
         cache.finalize(key, url=url, provenance=provenance)  # URL for warm-path lookups
         logger.info(
             "cache STORE key=%s parquet=%d source=%d",
@@ -2330,6 +2366,7 @@ async def aggregate_resource(
         col_names = [d[0] for d in rs.description]
         rows = rs.fetchall()
         reports = [v["report"] for v in coercion.values() if v["report"]]
+        computation = _computation(con, sql)
     finally:
         con.close()
 
@@ -2341,6 +2378,7 @@ async def aggregate_resource(
         "columns": col_names,
         "limit": limit,
         "rows": [list(r) for r in rows],
+        "computation": computation,
     }
     if reports:
         result["numeric_coercion"] = reports
@@ -2419,6 +2457,7 @@ async def query_resource(
             return _duckdb_error(e, wrapped, available)
         col_names = [d[0] for d in rs.description]
         rows = rs.fetchall()
+        computation = _computation(con, wrapped)
     finally:
         con.close()
 
@@ -2430,6 +2469,7 @@ async def query_resource(
         "rows_returned": len(rows),
         "columns": col_names,
         "rows": [list(r) for r in rows],
+        "computation": computation,
     }
 
 

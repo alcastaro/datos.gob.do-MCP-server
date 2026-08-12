@@ -7,6 +7,7 @@ Compatible con Claude Desktop, Claude Code y cualquier cliente MCP.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import Annotated, Any, Literal
 
@@ -700,11 +701,23 @@ _HOSTED_DISABLED: dict[str, Any] = {
 
 @mcp.tool(annotations=_ro_local("Get cache stats"))
 def get_cache_stats() -> CacheStatsResult:
-    """Return on-disk Parquet cache stats: entry count, total bytes, max bytes."""
+    """Return cache stats (entries, bytes) plus server identity: version, security mode."""
     stats = _get_cache_stats()
     if _hosted_mode():
         # Don't leak server-side paths to remote clients.
         stats.pop("cache_dir", None)
+    # The server's version travels in the initialize handshake, which clients
+    # read and never hand to the model — a tester asking "which version is
+    # running?" got the CKAN portal's version back, because that was the only
+    # version any tool exposed. This is the only tool that describes the
+    # server rather than the catalog, so identity rides here instead of
+    # costing the tool-list budget a 25th entry.
+    stats["server"] = {
+        "name": "datosgobdo-mcp",
+        "version": __version__,
+        "netguard_mode": os.environ.get("DATOSGOBDO_NETGUARD", "public-only"),
+        "transport": "streamable-http" if _hosted_mode() else "stdio",
+    }
     return CacheStatsResult(**stats)
 
 

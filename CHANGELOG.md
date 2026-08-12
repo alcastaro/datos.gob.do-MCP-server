@@ -4,6 +4,41 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] — 2026-08-12
+
+One feature with one purpose: make every figure this server produces
+**checkable by a third party**. The motivating measurement, from a live
+session: an assistant's prose figures were exact while its retyped table
+drifted 300 million from what its own script had computed. A number that
+arrives in `structuredContent` was computed; a number a model retypes may not
+survive the trip — and from the outside the two are indistinguishable.
+
+### Added
+
+- **`source_sha256` in every reply.** The digest of the source bytes exactly
+  as they were parsed — after following a page to its file, before any
+  transcoding — stored with the cache entry, so it travels on the first call
+  and every one after. Against an independent capture of the same file (the
+  8-August mirror keeps one per resource), a matching digest proves both reads
+  saw the same bytes. A **truncated download carries no digest**: hashing part
+  of a file and presenting it as the file's digest would be precisely the
+  false confidence the field exists to kill.
+
+- **`computation` on `aggregate_resource` and `query_resource`.** The SQL that
+  ran — naming only the `data` view, never a server path — and the number of
+  rows it scanned. Same digest + same SQL = same figure, reproducible by
+  anyone with the file. The verification protocol for a journalist becomes
+  three questions: does the reply say `source: file_contents`? does the digest
+  match an independent capture? does the computation reproduce the number?
+
+- **`get_cache_stats` now says who is answering**: server name, version,
+  netguard mode and transport. The version travels in the initialize
+  handshake, which clients read and never hand to the model — a live tester
+  asking "which version is running?" could only answer with the portal's CKAN
+  version. This is the one tool that describes the server rather than the
+  catalog, so identity rides here instead of costing the tool list a 25th
+  entry.
+
 ## [0.11.1] — 2026-08-12
 
 Hardening for the platform most of this server's audience uses. A code audit

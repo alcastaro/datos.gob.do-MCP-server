@@ -665,3 +665,29 @@ def test_sdk_settings_warning_is_filtered():
     messages = [str(w.message) for w in seen]
     assert not any("lifespan" in m for m in messages)
     assert any("other future warning" in m for m in messages)
+
+
+def test_cache_stats_carries_server_identity(monkeypatch, tmp_cache_dir):
+    """The version travels in the initialize handshake, which clients read and
+    never hand to the model — a live tester asking "which version is running?"
+    could only answer with the portal's CKAN version. get_cache_stats is the
+    one tool that describes the server, so identity rides there."""
+    from datosgobdo_mcp import __version__, server
+
+    result = server.get_cache_stats()
+    info = result.model_dump().get("server")
+    assert info["version"] == __version__
+    assert info["name"] == "datosgobdo-mcp"
+    assert info["transport"] == "stdio"
+    assert info["netguard_mode"] == "public-only"
+
+
+def test_cache_stats_server_identity_reflects_env(monkeypatch, tmp_cache_dir):
+    from datosgobdo_mcp import server
+
+    monkeypatch.setenv("DATOSGOBDO_NETGUARD", "strict")
+    monkeypatch.setenv("DATOSGOBDO_TRANSPORT", "streamable-http")
+    result = server.get_cache_stats()
+    info = result.model_dump().get("server")
+    assert info["netguard_mode"] == "strict"
+    assert info["transport"] == "streamable-http"

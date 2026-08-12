@@ -1610,3 +1610,65 @@ async def test_the_correction_survives_the_cache(httpx_mock, small_xlsx_bytes, t
 async def test_a_real_csv_is_not_second_guessed(mock_csv_endpoint, tmp_cache_dir):
     out = await analytics.get_resource_schema(mock_csv_endpoint, "csv")
     assert "format_corrected" not in out["cache"]
+
+
+# ─── Verification block (v0.12.0): source digest + computation ───────────────
+# The motivating measurement: an assistant's own prose figures were exact
+# while its retyped table drifted 300 million — a number that arrives in
+# structuredContent was computed, a number the model retypes may not survive
+# the trip. These fields make every reply checkable by a third party: same
+# source digest + same SQL = same figure.
+
+
+async def test_source_sha256_travels_cold_and_warm(
+    httpx_mock, sample_csv_url, sample_csv_bytes, tmp_cache_dir
+):
+    import hashlib as _hl
+
+    expected = _hl.sha256(sample_csv_bytes).hexdigest()
+    httpx_mock.add_response(url=sample_csv_url, method="HEAD", headers={"etag": "v1"})
+    httpx_mock.add_response(url=sample_csv_url, method="GET", content=sample_csv_bytes)
+
+    cold = await analytics.get_resource_schema(sample_csv_url, "csv")
+    assert cold["cache"]["source_sha256"] == expected
+
+    # Warm path serves every call but the first; the digest must not vanish
+    # with the download that produced it.
+    warm = await analytics.get_resource_schema(sample_csv_url, "csv")
+    assert warm["cache"]["cache"] == "hit"
+    assert warm["cache"]["source_sha256"] == expected
+
+
+async def test_truncated_download_carries_no_digest(
+    httpx_mock, sample_csv_url, tmp_cache_dir, monkeypatch
+):
+    """A digest of partial bytes presented as the file's digest would be the
+    exact false confidence the field exists to kill."""
+    big = b"a;b;c\n" + b"1;2;3\n" * 5000
+    httpx_mock.add_response(url=sample_csv_url, method="HEAD", headers={"etag": "t1"})
+    httpx_mock.add_response(url=sample_csv_url, method="GET", content=big)
+    monkeypatch.setattr(analytics, "ANALYTICS_MAX_BYTES", 100)
+    out = await analytics.get_resource_schema(sample_csv_url, "csv")
+    assert "source_sha256" not in out.get("cache", {})
+
+
+async def test_aggregate_reports_computation(mock_csv_endpoint, tmp_cache_dir):
+    out = await analytics.aggregate_resource(
+        mock_csv_endpoint,
+        "csv",
+        aggregations=[{"col": "Sueldo", "fn": "sum"}],
+    )
+    comp = out["computation"]
+    assert "FROM data" in comp["sql"]
+    assert comp["rows_scanned"] > 0
+    # The SQL must reference the data view, never a server-side path.
+    assert "/" not in comp["sql"]
+
+
+async def test_query_resource_reports_computation(mock_csv_endpoint, tmp_cache_dir):
+    out = await analytics.query_resource(
+        mock_csv_endpoint, "csv", sql="SELECT count(*) AS n FROM data"
+    )
+    comp = out["computation"]
+    assert comp["rows_scanned"] > 0
+    assert "FROM data" in comp["sql"]
