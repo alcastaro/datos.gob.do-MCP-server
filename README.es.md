@@ -433,13 +433,31 @@ uv sync
 
 ### Probar con el MCP Inspector
 
-[MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) es la herramienta oficial para testear servidores MCP de forma aislada:
+El [MCP Inspector](https://modelcontextprotocol.io/docs/2026-07-28/tools/inspector) es la herramienta de desarrollo del propio protocolo. Habla MCP directamente, así que muestra lo que el servidor expone de verdad, sin un modelo en medio. Necesita Node 22.19+ y no instala nada:
 
 ```bash
-npx @modelcontextprotocol/inspector uv run datosgobdo-mcp
+# El paquete publicado — sin clonar el repo
+npx -y @modelcontextprotocol/inspector uvx dominican-open-data-mcp
 ```
 
-Abre `http://localhost:6274` con form-builder para invocar tools manualmente y ver request/response JSON crudo.
+Imprime una URL con un token de un solo uso. Al abrirla hay cuatro paneles: **Tools** (las 24 con sus esquemas — llama una y lee el `structuredContent` crudo, con `numeric_coercion`, `source_sha256` y `computation`), **Resources**, **Prompts** y **Monitoring** con el tráfico JSON-RPC en vivo.
+
+Desde un clon, `scripts/inspector.sh` cubre los dos casos:
+
+```bash
+./scripts/inspector.sh                                        # paquete publicado
+./scripts/inspector.sh dist/dominican_open_data_mcp-*.whl     # compilación local
+./scripts/inspector.sh --cli --method tools/list --format json
+```
+
+La ruta local necesita ese envoltorio: el Inspector lee todo lo que va después del comando del servidor como flags suyos, así que `uvx --from ./dist/….whl …` falla con `Connection closed` porque el `--from` nunca llega a `uvx`.
+
+El modo CLI sale con códigos que significan algo — `0` éxito, `3` requiere autenticación, `4` inalcanzable, `5` la herramienta devolvió error — así que entra directo en CI:
+
+```bash
+npx -y @modelcontextprotocol/inspector --cli uvx dominican-open-data-mcp \
+  --method tools/list --format json | jq -r '.result.tools[].name'
+```
 
 ### Logs
 

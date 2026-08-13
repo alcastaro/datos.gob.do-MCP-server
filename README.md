@@ -430,13 +430,31 @@ uv sync
 
 ### Test with the MCP Inspector
 
-[MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) is the official tool for testing MCP servers in isolation:
+The [MCP Inspector](https://modelcontextprotocol.io/docs/2026-07-28/tools/inspector) is the protocol's own developer tool. It speaks MCP directly, so it shows what the server actually exposes with no model in between. Requires Node 22.19+ and installs nothing:
 
 ```bash
-npx @modelcontextprotocol/inspector uv run datosgobdo-mcp
+# The published package — no clone needed
+npx -y @modelcontextprotocol/inspector uvx dominican-open-data-mcp
 ```
 
-Opens `http://localhost:6274` with a form builder to invoke tools manually and see raw request/response JSON.
+It prints a URL carrying a one-time token. Open it for four panels: **Tools** (all 24 with their schemas — call one and read the raw `structuredContent`, including `numeric_coercion`, `source_sha256` and `computation`), **Resources**, **Prompts**, and **Monitoring** for live JSON-RPC traffic.
+
+From a clone, `scripts/inspector.sh` wraps both cases:
+
+```bash
+./scripts/inspector.sh                                        # published package
+./scripts/inspector.sh dist/dominican_open_data_mcp-*.whl     # a local build
+./scripts/inspector.sh --cli --method tools/list --format json
+```
+
+The local-build path needs that wrapper: the Inspector reads everything after the server command as its own flags, so `uvx --from ./dist/….whl …` fails with `Connection closed` because `--from` never reaches `uvx`.
+
+CLI mode exits with meaningful codes — `0` success, `3` needs auth, `4` unreachable, `5` the tool returned an error — so it drops straight into CI:
+
+```bash
+npx -y @modelcontextprotocol/inspector --cli uvx dominican-open-data-mcp \
+  --method tools/list --format json | jq -r '.result.tools[].name'
+```
 
 ### Logs
 

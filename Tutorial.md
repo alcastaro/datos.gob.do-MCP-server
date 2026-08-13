@@ -110,6 +110,60 @@ SELECT Estatus, COUNT(*) c FROM data WHERE Año=2026 GROUP BY Estatus ORDER BY c
 This is **sandboxed** (see §2.5) — it physically cannot read your local files or hit
 the network, even though it's free-form SQL.
 
+### 1.6 Seeing it without an assistant: the MCP Inspector
+
+The [MCP Inspector](https://modelcontextprotocol.io/docs/2026-07-28/tools/inspector) is
+the protocol's own developer tool. It speaks MCP directly, so it shows you what the
+server actually exposes — with no model in between deciding what to mention. Requires
+Node 22.19+; nothing to install.
+
+```bash
+npx -y @modelcontextprotocol/inspector uvx dominican-open-data-mcp
+```
+
+That prints a URL with a one-time token. Open it and you get four panels worth
+exploring, one per protocol primitive:
+
+- **Tools** — all 24, with their input and output schemas and their annotations.
+  Call `aggregate_resource` here and you see the raw `structuredContent`: the figure,
+  the `numeric_coercion` block naming what was excluded, `source_sha256`, and the SQL
+  in `computation`. This is the same payload a model receives, unedited.
+- **Resources** — the catalog as read-only context.
+- **Prompts** — the four templates, which double as a guide to what to ask.
+- **Monitoring** — the JSON-RPC traffic, live. Useful when something looks wrong and
+  you want to know whether the server or the client caused it.
+
+For scripting and CI there is a CLI mode that runs one request and exits:
+
+```bash
+npx -y @modelcontextprotocol/inspector --cli uvx dominican-open-data-mcp \
+  --method tools/list --format json | jq -r '.result.tools[].name'
+```
+
+Exit codes are meaningful: `0` success, `3` needs auth, `4` unreachable, `5` the tool
+returned an error. That last one works because this server flags failed calls with
+`isError` — see the 0.13.0 entry in the changelog for why that took a deliberate fix.
+
+**Testing a local build instead of the published package.** The Inspector parses
+everything after the server command as its own flags, so `uvx --from ./dist/….whl …`
+fails with `Connection closed` — it swallows `--from`. Wrap the launch in a script,
+which is also exactly what a real client config does:
+
+```bash
+mkdir -p ~/bin
+cat > ~/bin/datosgobdo-server.sh <<'EOF'
+#!/bin/sh
+exec uvx --from "$HOME/path/to/dominican_open_data_mcp-X.Y.Z-py3-none-any.whl" \
+  dominican-open-data-mcp
+EOF
+chmod +x ~/bin/datosgobdo-server.sh
+
+npx -y @modelcontextprotocol/inspector ~/bin/datosgobdo-server.sh
+```
+
+The repository ships `scripts/inspector.sh`, which does both: the published package by
+default, or a local wheel when you pass one.
+
 ---
 
 ## Part 2 — How it's built
