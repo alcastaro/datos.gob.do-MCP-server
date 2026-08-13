@@ -170,11 +170,11 @@ That last one is worth pausing on, because it is the kind of question the whole 
 
 This catalog has real defects, and they were measured — a census of the whole thing on **2026-08-08**, one resource per dataset, 1,056 resources over real MCP sessions. Four findings change how you should read any figure you get from here:
 
-**About half the catalog cannot be downloaded by a program.** 540 of 1,056 resources could be read. The largest single cause is not this server and no version of it can fix it: **360 resources across 98 institutions** sit behind a site configuration that refuses programmatic downloads of the files those same institutions publish as open data. From the same address, 21 other government hosts behind the same CDN answer normally — so it is per-site configuration, not our network. A further 15 links are dead, 37 return a web page instead of a file, and 8 files are unreadable.
+**About half the catalog cannot be downloaded by a program.** **572 of 1,056** resources can be read (54.2 %), up from 540 in the census: 0.14.0's format work recovered 32 that had been unreadable, re-measured against the live portal on 2026-08-13. The largest single cause of the rest is not this server and no version of it can fix it: **360 resources across 98 institutions** sit behind a site configuration that refuses programmatic downloads of the files those same institutions publish as open data. From the same address, 21 other government hosts behind the same CDN answer normally — so it is per-site configuration, not our network. A further 15 links are dead and 8 files are unreadable at any encoding.
 
 **One in three multi-format datasets contradicts itself.** Of 528 datasets whose formats could be compared, **176 disagree** on row count or column count. One example: the Treasury's `recaudaciones-sirite-2021-2025` has 971,818 rows as CSV and 197,338 as ODS. A citizen downloading the ODS and a journalist downloading the CSV would quote different numbers from the same official dataset. **Practical rule: check more than one format before you publish a total.**
 
-**Numbers are often stored as text.** 93 of the 540 readable resources hold numeric columns as text, usually because a handful of cells say `N/A` or `#REF!`. The tools read such a column as numbers where each value permits it and **report what that cost** — see [§14](#14-what-the-answers-tell-you-about-themselves). Read `values_excluded` before quoting the total.
+**Numbers are often stored as text.** 93 of the 540 resources readable in that census hold numeric columns as text, usually because a handful of cells say `N/A` or `#REF!`. The tools read such a column as numbers where each value permits it and **report what that cost** — see [§14](#14-what-the-answers-tell-you-about-themselves). Read `values_excluded` before quoting the total.
 
 **No dataset declares how often it is updated.** The `periodicidad` field is empty in all 1,056. A dataset labelled "2018-2026" may have been fed last month or frozen two years ago; you have to infer freshness from the last period that actually has data.
 
@@ -240,8 +240,8 @@ The Dominican government's official open-data portal, operated by OGTIC. It runs
 | Resources (files) in the catalog | **3,826** |
 | Organizations that actually own a dataset | **261** of the 266 registered |
 | Resources tested (one per dataset) | **1,056** |
-| Machine-readable | **540** (51.1 %) |
-| Rows downloaded and cached | **13,371,601** |
+| Machine-readable | **572** (54.2 %) — 540 in the 2026-08-08 census, plus 32 recovered by 0.14.0 |
+| Rows downloaded and cached | **13,371,601** in the census, plus **928,878** in the recovered resources |
 | Resources hosted on `datos.gob.do` itself | **66** — the rest live on **273 other domains** |
 
 That last row is the structural fact behind most of this project. **The portal is a catalogue of links, not a repository.** Each institution keeps its own files on its own web server, so availability, format hygiene and access rules are decided in 273 places the portal does not control.
@@ -499,7 +499,7 @@ Three fields appear in responses when the server had to do something the caller 
 
 **`numeric_coercion`** — a column stored as text was read as numbers.
 
-The most common defect in this catalog: **93 of 540 readable resources** hold numeric columns as text, because a handful of cells say `N/A` or `#REF!` and that is enough to make a whole payroll column non-numeric. `aggregate_resource`, `quantiles_resource` and `detect_outliers_resource` read such a column as numbers where each value permits it, and report what it cost:
+The most common defect in this catalog: **93 of the 540 resources readable in the 2026-08-08 census** hold numeric columns as text, because a handful of cells say `N/A` or `#REF!` and that is enough to make a whole payroll column non-numeric. `aggregate_resource`, `quantiles_resource` and `detect_outliers_resource` read such a column as numbers where each value permits it, and report what it cost:
 
 ```json
 "numeric_coercion": [{
@@ -596,13 +596,15 @@ src/datosgobdo_mcp/
 
 ## 17. Measured limitations
 
-Measured against the whole catalog on 2026-08-08 — 1,056 resources, one per dataset, over real MCP sessions — not estimated.
+Measured against the whole catalog on 2026-08-08 — 1,056 resources, one per dataset, over real MCP sessions — not estimated. The 129 that had failed for reasons inside this server's control were re-measured against the live portal on **2026-08-13**, after 0.14.0's format work.
 
-**Not everything published is reachable.** 540 of 1,056 resources could be read. The largest cause is not this server: **360 resources across 98 institutions** sit behind a site configuration that refuses programmatic downloads. From one address, 21 other government hosts behind the same CDN serve us normally, so it is per-site configuration rather than our network. No version of this server can change that. A further 85 failed at transport level (cause not attributable), 37 serve a web page, 15 links are dead, 8 files are unreadable, 6 have a CDN whose origin does not answer, and 5 hit portal errors.
+**Not everything published is reachable.** **572 of 1,056** resources can be read — 540 in the census, plus **32 recovered** by 0.14.0, worth 928,878 rows that no version before it could read. The largest of them: 11 SeNaSa resources in ODS (622,630 rows), payroll and housing files published as JSON by MAP, MIVHED and MESCyT (213,465 rows between them), and 7 Tribunal Constitucional resources that had been reported as "a page with no data file" because the link is opened by JavaScript rather than an `<a href>`.
+
+The breakdown below is the 2026-08-08 census and has not been re-swept as a whole, so read it as the state before that recovery: **360 resources across 98 institutions** sit behind a site configuration that refuses programmatic downloads — the largest cause, not this server's, and no version of it can change that. From one address, 21 other government hosts behind the same CDN serve us normally, so it is per-site configuration rather than our network. A further 85 failed at transport level (cause not attributable), 37 served a web page, 15 links are dead, 8 files are unreadable, 6 have a CDN whose origin does not answer, and 5 hit portal errors. The 32 recovered came out of the page and unreadable-format buckets; the 360 refusals are untouched by any of it.
 
 What is **established**: those sites refuse *programmatic* access to their own open data from the address measured. What is **not established**: that a person with a browser in Santo Domingo is refused. That test needs a Dominican residential vantage point and has not been run.
 
-**Formats.** CSV, XLSX and ODS all read at roughly 93 % of what downloads. Two are weaker: legacy `.xls`, and JSON — DuckDB's `read_json_auto` rejects several catalog files as malformed, making JSON the least reliable format here. **PDF is not parsed**; only its download URL is exposed.
+**Formats.** CSV, XLSX and ODS all read at roughly 93 % of what downloads. JSON was the weakest by a wide margin until 0.14.0 — `read_json_auto` rejected as malformed what these portals actually publish, which is often a record array wrapped in a metadata envelope, or one object per line — and the files recovered on 2026-08-13 are mostly of that kind. Legacy `.xls` (BIFF/OLE2) remains the worst served and cannot be read at all: 12 of 22. **PDF is not parsed**; only its download URL is exposed.
 
 **Size.** `download_resource_preview` caps at 5 MB; analytics tools at 100 MB. A single value larger than 16 MB exceeds DuckDB's limit and the file cannot be parsed.
 
@@ -610,7 +612,7 @@ What is **established**: those sites refuse *programmatic* access to their own o
 
 **Formats can disagree with each other.** 176 of 528 comparable multi-format datasets differ in row or column count, and in 11 cases one format is empty while another carries the full table. Reading a single format is not evidence of what the dataset contains.
 
-**Encoding** is effectively solved: one file in 540 still shows damaged accents, and that file is encoded in two codepages at once, so no single reading is correct for it.
+**Encoding** is effectively solved: one file in the census's 540 still shows damaged accents, and that file is encoded in two codepages at once, so no single reading is correct for it.
 
 **Freshness cannot be read from metadata.** `periodicidad` is empty for all 1,056 datasets.
 

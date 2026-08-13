@@ -180,11 +180,11 @@ Vale la pena detenerse en la última, porque es el tipo de pregunta para la que 
 
 Este catálogo tiene defectos reales, y se midieron — un censo del catálogo completo el **2026-08-08**, un recurso por dataset, 1.056 recursos sobre sesiones MCP reales. Cuatro hallazgos cambian cómo debes leer cualquier cifra que salga de aquí:
 
-**Cerca de la mitad del catálogo no se puede descargar por programa.** 540 de 1.056 recursos se pudieron leer. La causa individual mayor no es este servidor y ninguna versión suya puede arreglarla: **360 recursos de 98 instituciones** están detrás de una configuración de sitio que rechaza la descarga programática de los archivos que esas mismas instituciones publican como datos abiertos. Desde la misma dirección, 21 otros hosts gubernamentales detrás del mismo CDN responden con normalidad — así que es configuración por sitio, no nuestra red. Otros 15 enlaces están muertos, 37 devuelven una página web en vez de un archivo, y 8 archivos son ilegibles.
+**Cerca de la mitad del catálogo no se puede descargar por programa.** **572 de 1.056** recursos se pueden leer (54,2 %), frente a 540 en el censo: el trabajo de formatos de 0.14.0 recuperó 32 que eran ilegibles, remedidos contra el portal vivo el 2026-08-13. La causa individual mayor del resto no es este servidor y ninguna versión suya puede arreglarla: **360 recursos de 98 instituciones** están detrás de una configuración de sitio que rechaza la descarga programática de los archivos que esas mismas instituciones publican como datos abiertos. Desde la misma dirección, 21 otros hosts gubernamentales detrás del mismo CDN responden con normalidad — así que es configuración por sitio, no nuestra red. Otros 15 enlaces están muertos y 8 archivos son ilegibles en cualquier codificación.
 
 **Uno de cada tres datasets multiformato se contradice a sí mismo.** De 528 datasets cuyos formatos se pudieron comparar, **176 no coinciden** en número de filas o de columnas. Un ejemplo: `recaudaciones-sirite-2021-2025` de la Tesorería Nacional trae 971.818 filas como CSV y 197.338 como ODS. Un ciudadano que baja el ODS y un periodista que baja el CSV citarían cifras distintas del mismo dataset oficial. **Regla práctica: revisa más de un formato antes de publicar un total.**
 
-**Los números suelen estar guardados como texto.** 93 de los 540 recursos legibles tienen columnas numéricas como texto, normalmente porque un puñado de celdas dice `N/A` o `#REF!`. Las herramientas leen esa columna como números donde cada valor lo permite y **reportan lo que costó** — ver [§14](#s14). Lee `values_excluded` antes de citar el total.
+**Los números suelen estar guardados como texto.** 93 de los 540 recursos legibles de ese censo tienen columnas numéricas como texto, normalmente porque un puñado de celdas dice `N/A` o `#REF!`. Las herramientas leen esa columna como números donde cada valor lo permite y **reportan lo que costó** — ver [§14](#s14). Lee `values_excluded` antes de citar el total.
 
 **Ningún dataset declara cada cuánto se actualiza.** El campo `periodicidad` está vacío en los 1.056. Un dataset rotulado «2018-2026» puede haberse alimentado el mes pasado o haberse congelado hace dos años; la frescura hay que inferirla del último período con datos.
 
@@ -254,8 +254,8 @@ El portal oficial de datos abiertos del Estado dominicano, operado por OGTIC. Co
 | Recursos (archivos) en el catálogo | **3.826** |
 | Organizaciones que realmente tienen un dataset | **261** de las 266 registradas |
 | Recursos probados (uno por dataset) | **1.056** |
-| Legibles por máquina | **540** (51,1 %) |
-| Filas descargadas y cacheadas | **13.371.601** |
+| Legibles por máquina | **572** (54,2 %) — 540 en el censo del 2026-08-08, más 32 recuperados por 0.14.0 |
+| Filas descargadas y cacheadas | **13.371.601** en el censo, más **928.878** en los recursos recuperados |
 | Recursos alojados en `datos.gob.do` mismo | **66** — el resto vive en **273 dominios distintos** |
 
 Esa última fila es el hecho estructural detrás de casi todo este proyecto. **El portal es un catálogo de enlaces, no un repositorio.** Cada institución guarda sus archivos en su propio servidor web, así que la disponibilidad, la higiene de formato y las reglas de acceso se deciden en 273 lugares que el portal no controla.
@@ -527,7 +527,7 @@ Tres campos aparecen en las respuestas cuando el servidor tuvo que hacer algo qu
 
 **`numeric_coercion`** — una columna guardada como texto se leyó como números.
 
-El defecto más común de este catálogo: **93 de 540 recursos legibles** guardan columnas numéricas como texto, porque un puñado de celdas dice `N/A` o `#REF!` y eso basta para volver no numérica una columna entera de nómina. `aggregate_resource`, `quantiles_resource` y `detect_outliers_resource` leen esa columna como números donde cada valor lo permite, y reportan lo que costó:
+El defecto más común de este catálogo: **93 de los 540 recursos legibles del censo del 2026-08-08** guardan columnas numéricas como texto, porque un puñado de celdas dice `N/A` o `#REF!` y eso basta para volver no numérica una columna entera de nómina. `aggregate_resource`, `quantiles_resource` y `detect_outliers_resource` leen esa columna como números donde cada valor lo permite, y reportan lo que costó:
 
 ```json
 "numeric_coercion": [{
@@ -630,13 +630,15 @@ src/datosgobdo_mcp/
 
 ## 17. Limitaciones medidas
 
-Medidas contra el catálogo completo el 2026-08-08 — 1.056 recursos, uno por dataset, sobre sesiones MCP reales — no estimadas.
+Medidas contra el catálogo completo el 2026-08-08 — 1.056 recursos, uno por dataset, sobre sesiones MCP reales — no estimadas. Los 129 que habían fallado por causas dentro del control de este servidor se remidieron contra el portal vivo el **2026-08-13**, tras el trabajo de formatos de 0.14.0.
 
-**No todo lo publicado es alcanzable.** 540 de 1.056 recursos se pudieron leer. La causa mayor no es este servidor: **360 recursos de 98 instituciones** están detrás de una configuración de sitio que rechaza descargas programáticas. Desde una misma dirección, 21 otros hosts gubernamentales detrás del mismo CDN nos sirven con normalidad, así que es configuración por sitio y no nuestra red. Ninguna versión de este servidor puede cambiarlo. Otros 85 fallaron a nivel de transporte (causa no atribuible), 37 sirven una página web, 15 enlaces están muertos, 8 archivos son ilegibles, 6 tienen un CDN cuyo origen no responde y 5 dieron errores del portal.
+**No todo lo publicado es alcanzable.** **572 de 1.056** recursos se pueden leer — 540 en el censo, más **32 recuperados** por 0.14.0, que valen 928.878 filas que ninguna versión anterior podía leer. Los mayores: 11 recursos de SeNaSa en ODS (622.630 filas), archivos de nómina y vivienda publicados como JSON por MAP, MIVHED y MESCyT (213.465 filas entre los tres), y 7 recursos del Tribunal Constitucional que se reportaban como «una página sin archivo de datos» porque el enlace lo abre JavaScript y no un `<a href>`.
+
+El desglose que sigue es el del censo del 2026-08-08 y no se ha rebarrido completo, así que léelo como el estado anterior a esa recuperación: **360 recursos de 98 instituciones** están detrás de una configuración de sitio que rechaza descargas programáticas — la causa mayor, que no es de este servidor, y ninguna versión suya puede cambiarla. Desde una misma dirección, 21 otros hosts gubernamentales detrás del mismo CDN nos sirven con normalidad, así que es configuración por sitio y no nuestra red. Otros 85 fallaron a nivel de transporte (causa no atribuible), 37 servían una página web, 15 enlaces están muertos, 8 archivos son ilegibles, 6 tienen un CDN cuyo origen no responde y 5 dieron errores del portal. Los 32 recuperados salieron de los grupos de página y de formato ilegible; los 360 rechazos no los toca nada de esto.
 
 Lo que queda **establecido**: esos sitios rechazan el acceso *programático* a sus propios datos abiertos desde la dirección medida. Lo que **no** queda establecido: que una persona con navegador en Santo Domingo sea rechazada. Esa prueba necesita un punto de salida residencial dominicano y no se ha corrido.
 
-**Formatos.** CSV, XLSX y ODS leen alrededor del 93 % de lo que se descarga. Dos son más débiles: `.xls` heredado, y JSON — el `read_json_auto` de DuckDB rechaza varios archivos del catálogo como malformados, lo que hace de JSON el formato menos fiable aquí. **El PDF no se parsea**; solo se expone su URL de descarga.
+**Formatos.** CSV, XLSX y ODS leen alrededor del 93 % de lo que se descarga. JSON era el más débil con diferencia hasta 0.14.0 — `read_json_auto` rechazaba como malformado lo que estos portales publican de verdad, que suele ser un arreglo de registros envuelto en metadatos, o un objeto por línea — y los archivos recuperados el 2026-08-13 son en su mayoría de ese tipo. El `.xls` heredado (BIFF/OLE2) sigue siendo el peor servido y no se puede leer en absoluto: 12 de 22. **El PDF no se parsea**; solo se expone su URL de descarga.
 
 **Tamaño.** `download_resource_preview` tope 5 MB; las herramientas de analytics, 100 MB. Un solo valor mayor de 16 MB excede el límite de DuckDB y el archivo no se puede parsear.
 
@@ -644,7 +646,7 @@ Lo que queda **establecido**: esos sitios rechazan el acceso *programático* a s
 
 **Los formatos pueden contradecirse entre sí.** 176 de 528 datasets multiformato comparables difieren en número de filas o columnas, y en 11 casos un formato está vacío mientras otro trae la tabla completa. Leer un solo formato no es evidencia de lo que contiene el dataset.
 
-**La codificación está prácticamente resuelta:** un archivo de 540 aún muestra acentos dañados, y ese archivo está codificado en dos codepages a la vez, así que ninguna lectura única es correcta para él.
+**La codificación está prácticamente resuelta:** un archivo de los 540 del censo aún muestra acentos dañados, y ese archivo está codificado en dos codepages a la vez, así que ninguna lectura única es correcta para él.
 
 **La frescura no se puede leer de los metadatos.** `periodicidad` está vacío en los 1.056 datasets.
 
