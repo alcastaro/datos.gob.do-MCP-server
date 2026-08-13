@@ -1979,3 +1979,23 @@ async def test_one_ragged_line_does_not_collapse_a_csv_into_one_column(tmp_cache
     assert "error" not in out, out
     assert [c["name"] for c in out["columns"]] == ["Provincia", "Cantidad", "Mes", "Ano"]
     assert out["row_count"] == 81
+
+
+async def test_a_page_under_a_spreadsheet_name_is_refused_not_read_as_csv(
+    tmp_cache_dir, httpx_mock
+):
+    """End to end for the same hazard: markup that slips past `looks_like_html`
+    because it does not begin with a known marker must still be refused, not
+    corrected into a one-column CSV."""
+    url = "https://example.test/nomina.ods"
+    body = (
+        '<br /><b>Warning</b>: include failed<meta name="viewport" '
+        'content="width=device-width, initial-scale=1.0"><title>Sesión expirada</title>'
+    ).encode()
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "p1"})
+    httpx_mock.add_response(url=url, method="GET", content=body)
+
+    out = await analytics.get_resource_schema(url, "ods")
+
+    assert "error" in out
+    assert "not a valid ODS" in out["error"]

@@ -326,3 +326,17 @@ def test_plain_text_is_left_unidentified(tmp_path):
 )
 def test_looks_like_text_table(head, expected):
     assert download.looks_like_text_table(head) == expected
+
+
+def test_markup_is_never_taken_for_a_csv():
+    """The dangerous half of the text sniff. A page served under an `.ods` name
+    that does not start with one of the recognised HTML markers reaches this
+    function, and a minified head almost always carries a comma:
+    `content="width=device-width, initial-scale=1.0"`. Calling that CSV hands the
+    model markup as data, with a correction note asserting the bytes are CSV —
+    worse than the refusal it would replace."""
+    minified = (
+        b'<br /><b>Warning</b>: session_start() failed<meta name="viewport" '
+        b'content="width=device-width, initial-scale=1.0"><title>Acceso</title>'
+    )
+    assert download.looks_like_text_table(minified) is None

@@ -425,6 +425,16 @@ def looks_like_text_table(head: bytes) -> str | None:
         probe = probe[3:].lstrip()
     if not probe:
         return None
+    if probe[:1] == b"<":
+        # Markup, and the delimiter test below would have called it CSV: a
+        # minified page's first line almost always contains a comma
+        # (`content="width=device-width, initial-scale=1.0"`). A page reported as
+        # a one-column CSV, with a correction note asserting the bytes are CSV,
+        # is worse than the refusal this replaces — the model would receive markup
+        # as data. `looks_like_html` catches the pages that *start* with a known
+        # marker; this catches every other shape of markup by refusing to guess.
+        # No CSV header begins with `<`.
+        return None
     if probe[:1] in (b"{", b"["):
         return "json"
     try:
@@ -436,8 +446,11 @@ def looks_like_text_table(head: bytes) -> str | None:
             return None
     first = text.splitlines()[0] if text.splitlines() else ""
     # A delimiter in the first line is the whole test. Deliberately weak: this
-    # only ever runs on a file whose declared reader has already refused it, so
-    # the alternative to a guess is no data at all.
+    # runs only for a file the catalog declared as a spreadsheet and whose bytes
+    # are not a container, where the alternative to reading it is refusing a file
+    # that may be perfectly good data. Weak is acceptable *because* markup is
+    # excluded above; without that guard the weakness is a hazard rather than a
+    # trade.
     if any(d in first for d in (",", ";", "\t", "|")):
         return "csv"
     return None
