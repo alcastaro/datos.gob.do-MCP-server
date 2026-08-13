@@ -25,12 +25,19 @@ when the operator has asked for it.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 MANIFEST_NAME = "manifest.json"
 ENV_DIR = "DATOSGOBDO_ARCHIVE_DIR"
+
+# Values already reported as unusable. archive_dir() runs on every resource
+# fetch, and one warning per misconfiguration is the useful amount.
+_warned_dirs: set[str] = set()
 
 
 def archive_dir() -> Path | None:
@@ -39,7 +46,28 @@ def archive_dir() -> Path | None:
     if not raw:
         return None
     path = Path(raw).expanduser()
-    return path if path.is_dir() else None
+    if path.is_dir():
+        return path
+    # "Opt-in, never silent" has to hold for the misconfigured case too. A
+    # stdio server launched by a client has no meaningful working directory —
+    # it may be `/` (MCP debugging guidance) — so a relative value resolves
+    # nowhere and the fallback would stay off with the operator believing it
+    # was armed.
+    if raw not in _warned_dirs:
+        _warned_dirs.add(raw)
+        hint = (
+            ""
+            if path.is_absolute()
+            else " — a relative path does not resolve under a client-launched server; use an "
+            "absolute path"
+        )
+        logger.warning(
+            "%s=%r is not a directory%s. Archive fallback stays off.",
+            ENV_DIR,
+            raw,
+            hint,
+        )
+    return None
 
 
 def _load_manifest(root: Path) -> dict[str, dict[str, Any]]:

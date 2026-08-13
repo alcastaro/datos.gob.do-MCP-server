@@ -119,3 +119,31 @@ def test_a_manifest_promising_a_missing_file_is_ignored(tmp_path, monkeypatch):
     )
     monkeypatch.setenv(archive.ENV_DIR, str(root))
     assert archive.lookup("https://x.test/y.csv") is None
+
+
+def test_a_misconfigured_archive_dir_warns_instead_of_going_quiet(tmp_path, monkeypatch, caplog):
+    """The module promises "opt-in, never silent". That has to hold for the
+    misconfigured case, not only the working one: a relative value resolves
+    against a working directory the client never defined (`/` on macOS), so the
+    fallback silently stayed off while the operator believed it was armed.
+    """
+    archive._warned_dirs.clear()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(archive.ENV_DIR, "mi-archivo")
+    with caplog.at_level("WARNING", logger="datosgobdo_mcp.archive"):
+        assert archive.archive_dir() is None
+    assert "mi-archivo" in caplog.text
+    assert "relative path" in caplog.text
+    assert "stays off" in caplog.text
+
+
+def test_the_misconfiguration_warning_is_not_repeated(tmp_path, monkeypatch, caplog):
+    """archive_dir() runs on every resource fetch — one warning per bad value."""
+    archive._warned_dirs.clear()
+    monkeypatch.setenv(archive.ENV_DIR, str(tmp_path / "no-existe"))
+    with caplog.at_level("WARNING", logger="datosgobdo_mcp.archive"):
+        for _ in range(5):
+            assert archive.archive_dir() is None
+    assert caplog.text.count("Archive fallback stays off") == 1
+    # An absolute path is wrong for a different reason, so it gets no relative hint.
+    assert "relative path" not in caplog.text

@@ -621,6 +621,35 @@ async def test_save_query_to_csv_refuses_traversal(tmp_cache_dir):
     assert ".." in out["error"] or "path" in out["error"].lower()
 
 
+async def test_save_query_to_csv_refuses_a_relative_destination(tmp_cache_dir, monkeypatch):
+    """A client-launched MCP server inherits an undefined working directory —
+    `/` on macOS — so "export.csv" resolved to the filesystem root and the write
+    failed with `[Errno 30] Read-only file system: '/export.csv'`, an error the
+    caller cannot act on. On a writable root it would land where nobody looks.
+    """
+    monkeypatch.chdir("/")
+    out = await analytics.save_query_to_csv(
+        "https://example.test/any.csv", "csv", dest="export.csv"
+    )
+    assert "error" in out
+    assert "absolute path" in out["error"]
+    assert "~/Downloads/datosgobdo-exports/" in out["error"]
+
+
+async def test_save_query_to_csv_expands_a_tilde_destination(
+    mock_csv_endpoint, tmp_cache_dir, tmp_path, monkeypatch
+):
+    """`~/x.csv` is what a user types and is not absolute until expanded — it
+    used to resolve to a literal `~` directory under the working directory.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    out = await analytics.save_query_to_csv(mock_csv_endpoint, "csv", dest="~/tilde.csv")
+    assert "error" not in out, out
+    assert out["path"] == str(tmp_path / "tilde.csv")
+    assert (tmp_path / "tilde.csv").exists()
+
+
 async def test_save_query_to_csv_refuses_system_path(tmp_cache_dir):
     out = await analytics.save_query_to_csv(
         "https://example.test/any.csv", "csv", dest="/etc/evil.csv"

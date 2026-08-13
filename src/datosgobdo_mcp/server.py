@@ -1167,9 +1167,20 @@ def main() -> (
 ):  # pragma: no cover — blocking server loop, exercised by CI entry-point smoke test
     import os
 
+    from . import archive
+
     transport = os.environ.get("DATOSGOBDO_TRANSPORT", "stdio").strip().lower()
+    # The effective mode is logged, not just the requested one. A client passes
+    # only a limited subset of the environment to a stdio server, so an operator
+    # who set DATOSGOBDO_NETGUARD in a shell is running with the default and has
+    # no other way to notice. archive.archive_dir() also warns here if it was
+    # pointed at something that is not a directory.
     logger.info(
-        "datosgobdo-mcp starting (CKAN endpoint: %s, transport: %s)", ckan.BASE_URL, transport
+        "datosgobdo-mcp starting (CKAN endpoint: %s, transport: %s, netguard: %s, archive: %s)",
+        ckan.BASE_URL,
+        transport,
+        os.environ.get("DATOSGOBDO_NETGUARD", "public-only"),
+        archive.archive_dir() or "off",
     )
     try:
         if transport == "streamable-http":

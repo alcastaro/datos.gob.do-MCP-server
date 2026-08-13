@@ -2120,7 +2120,8 @@ async def save_query_to_csv(
     else:
         if ".." in Path(dest).parts:
             return {"error": "Destination path must not contain '..' components"}
-        dest_path = Path(dest).resolve()
+        expanded = Path(dest).expanduser()
+        dest_path = expanded.resolve()
         if dest_path.suffix not in (".csv", ".tsv"):
             return {"error": "Destination must end in .csv or .tsv"}
         # The OS per-user temp dir is writable scratch space. On macOS it lives under
@@ -2131,6 +2132,23 @@ async def save_query_to_csv(
             # Check both the raw path and the resolved path (macOS resolves /etc → /private/etc).
             if _is_forbidden_dest(dest, str(dest_path)):
                 return {"error": f"Cannot write to system path: {dest}"}
+        # A relative destination is not a destination here. An MCP server launched
+        # by a client inherits an undefined working directory — `/` on macOS — so
+        # `resolve()` above sends "export.csv" to the filesystem root, where the
+        # write fails with an OS error nobody can act on (macOS: read-only volume)
+        # or, worse, succeeds somewhere the user will never look. This check runs
+        # after the denylist so a Windows-style path stays reported as a system path
+        # on POSIX, where it is not absolute.
+        if not expanded.is_absolute():
+            example = Path.home() / "Downloads" / (dest_path.name or "export.csv")
+            return {
+                "error": (
+                    f"Destination must be an absolute path, got {dest!r}. This server runs "
+                    "with no meaningful working directory, so a relative path does not land "
+                    f"where you expect. Use e.g. {example}, or omit `dest` to write to "
+                    "~/Downloads/datosgobdo-exports/."
+                )
+            }
 
     if dest_path.exists() and not overwrite:
         return {"error": f"File already exists: {dest_path}. Pass overwrite=True to replace."}
