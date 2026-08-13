@@ -4,6 +4,56 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] — 2026-08-12
+
+Both entries below were found by running the reference
+[MCP Inspector](https://github.com/modelcontextprotocol/inspector) against the
+server. Neither was reachable from this project's own test suite, because both
+are about how the server looks from outside a language model.
+
+### Added
+
+- **Resources and prompts, which the handshake had been promising.** The
+  protocol has three primitives, distinguished by who decides when to use
+  them: the model calls tools, the application attaches resources, the user
+  picks prompts. This server advertised all three capabilities at
+  `initialize` and served only tools — `resources/list`,
+  `resources/templates/list` and `prompts/list` each returned zero, so a
+  client opening those panels found the empty sections the handshake had
+  announced.
+
+  Three resources now carry the catalog as read-only context:
+  `datosgobdo://catalog/overview`, `datosgobdo://catalog/institutions`, and
+  the template `datosgobdo://dataset/{dataset_id}`. All three are stamped
+  `source: catalog_metadata`, like every catalog reply — what the catalog says
+  about a file is not what the file contains, and a resource attached silently
+  into a prompt is exactly where that distinction gets lost.
+
+  Four prompts encode the habits the live sessions had to learn the hard way:
+  `auditar_nomina` (report what the coercion excluded, the digest and the
+  SQL), `verificar_fuente` (check reachability first, and never answer with a
+  different file), `explorar_institucion` (separate what the catalog claims
+  from what was read), and `cruzar_fuentes` (declare units and periods before
+  concluding anything). The specification describes prompts as a way to
+  "showcase how to best use the MCP server", and 24 tools is a lot of surface
+  for someone who has never seen this catalog.
+
+### Fixed
+
+- **A failed call now says it failed.** This server answers a handled failure
+  with a normal result whose body is `{"error": ..., "hint": ...}`, which
+  serves an assistant well — a structured hint is something it can act on. It
+  told nothing *other* than a model that anything had gone wrong: measured
+  with the Inspector, an unknown tool exited 5 while this server's own
+  "Column not found" exited 0, so a CI pipeline chaining on `&&` walked
+  straight past the failure.
+
+  `isError` is now set on those replies while their structured payload is
+  kept. The SDK offers no way to have both — its success path hardcodes
+  `isError=False` and its error path discards `structuredContent` — so the
+  reply is amended after the fact. A test pins the assumption, so an SDK whose
+  shape changes fails loudly instead of silently reverting the behaviour.
+
 ## [0.12.0] — 2026-08-12
 
 One feature with one purpose: make every figure this server produces
