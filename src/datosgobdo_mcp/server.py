@@ -777,16 +777,38 @@ def clear_cache() -> ClearCacheResult:
 # ─── Organizaciones ───────────────────────────────────────────────────────────
 
 
+def _listing(items: list[Any], name: str, **extra: Any) -> dict[str, Any]:
+    """Wrap a catalog listing so it answers in one piece.
+
+    Returning a bare list makes FastMCP emit one content block per element —
+    two hundred blocks for two hundred tags — and name the payload `result` in
+    the output schema, which tells a model nothing about what it is holding. A
+    client that reasonably assumed the shape of `search_datasets`, a single
+    object, read `content[0]` and saw exactly one institution.
+
+    So each listing is one object, with the payload under a name from the
+    domain, the count beside it, and `limit_reached` where a cap exists — the
+    caller should not have to compare lengths against a limit they passed to
+    learn there is more. The error shape from `ckan` (a one-element list holding
+    an error dict) is lifted to the top level rather than buried in the payload.
+    """
+    if len(items) == 1 and isinstance(items[0], dict) and "error" in items[0]:
+        return dict(items[0])
+    return {name: items, "count": len(items), "source": ckan.CATALOG_SOURCE, **extra}
+
+
 @mcp.tool(annotations=_ro("List organizations"))
 async def list_organizations(
     limit: Annotated[int, Field(description="Maximum (1-200)", ge=1, le=200)] = 50,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     """List the government institutions publishing on datos.gob.do.
 
     Ministries, autonomous agencies, municipalities and so on, with a dataset
-    count each. No long descriptions.
+    count each. Returns `{organizations, count, limit_reached}`: 266 exist and
+    `limit` caps at 200, so a full page is a page, not the set.
     """
-    return await ckan.list_organizations(limit=limit)
+    orgs = await ckan.list_organizations(limit=limit)
+    return _listing(orgs, "organizations", limit_reached=len(orgs) >= limit)
 
 
 @mcp.tool(annotations=_ro("Get organization"))
@@ -810,18 +832,22 @@ async def get_organization(
 
 
 @mcp.tool(annotations=_ro("List groups"))
-async def list_groups() -> list[dict[str, Any]]:
-    """Thematic categories on datos.gob.do (economy, health, public administration, …)."""
-    return await ckan.list_groups()
+async def list_groups() -> dict[str, Any]:
+    """Thematic categories (economy, health, public administration, …) → `{groups, count}`."""
+    return _listing(await ckan.list_groups(), "groups")
 
 
 @mcp.tool(annotations=_ro("List tags"))
 async def list_tags(
     query: Annotated[str | None, Field(description="Prefix to filter tags by.")] = None,
     limit: Annotated[int, Field(description="Maximum (1-100)", ge=1, le=100)] = 20,
-) -> list[str]:
-    """List available tags, optionally filtered by prefix."""
-    return await ckan.list_tags(query=query, limit=limit)
+) -> dict[str, Any]:
+    """Tags, optionally filtered by prefix → `{tags, count, limit_reached}`.
+
+    874 exist, so a listing without `query` is a sample.
+    """
+    tags = await ckan.list_tags(query=query, limit=limit)
+    return _listing(tags, "tags", limit_reached=len(tags) >= limit)
 
 
 # ─── Autocomplete ─────────────────────────────────────────────────────────────
@@ -835,15 +861,19 @@ async def autocomplete(
     ],
     query: Annotated[str, Field(description="Partial text to complete.")],
     limit: Annotated[int, Field(description="Suggestions (1-30)", ge=1, le=30)] = 10,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     """Autocomplete dataset / organization / group / tag names.
 
     Resolves a slug when the user gives only part of a name. Slugs here are the
     full registered name, so acronyms rarely match on their own:
     kind='organization', query='indotel' →
     'instituto-dominicano-de-las-telecomunicaciones-indotel'.
+
+    Returns `{suggestions, count, kind, query}`; the echo keeps a zero-result
+    reply interpretable.
     """
-    return await ckan.autocomplete(kind=kind, query=query, limit=limit)
+    hits = await ckan.autocomplete(kind=kind, query=query, limit=limit)
+    return _listing(hits, "suggestions", kind=kind, query=query)
 
 
 # ─── Stats ────────────────────────────────────────────────────────────────────

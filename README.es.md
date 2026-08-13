@@ -275,6 +275,8 @@ Este proyecto se inspiró en [`datagouv-mcp`](https://github.com/datagouv/datago
 
 Funciones tipadas, agrupadas en cinco familias. Las que producen datos (analytics, preview, caché) devuelven `outputSchema` / `structuredContent` tipados para que los hosts validen resultados; las de metadatos navegacionales devuelven JSON. Toda herramienta que toca el portal está anotada `readOnlyHint: true`; las que salen a la red, `openWorldHint: true`.
 
+**Toda herramienta responde con un solo objeto.** Los listados nombran lo que traen y lo cuentan — `{organizations, count, limit_reached}`, `{tags, count, limit_reached}`, `{groups, count}`, `{suggestions, count, kind, query}`. `limit_reached` importa porque los topes son menores que el catálogo: 200 instituciones contra 266, y cualquier listado de etiquetas sin `query` es una muestra de 874.
+
 ### Descubrimiento
 
 | Tool | Qué hace |

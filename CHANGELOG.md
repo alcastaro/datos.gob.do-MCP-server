@@ -82,6 +82,34 @@ Defender active and a non-administrator account.
   "opt-in, never silent"; that now holds for the misconfigured case too. One
   warning per bad value, not one per fetch.
 
+### Changed
+
+- **The four listing tools answer with one named object instead of a bare list.**
+  `list_organizations`, `list_groups`, `list_tags` and `autocomplete` returned
+  lists, which FastMCP serialises as one content block per element — two hundred
+  blocks for two hundred tags — under a schema that calls the payload `result`. A
+  client that assumed the shape of `search_datasets`, a single object, read
+  `content[0]` and saw one institution. They now return
+  `{organizations, count, limit_reached}`, `{groups, count}`,
+  `{tags, count, limit_reached}` and `{suggestions, count, kind, query}`.
+
+  This is a **breaking change**, taken deliberately before the API freezes: a
+  caller reading `structuredContent.result` must read the named field instead.
+  `limit_reached` is new information rather than decoration — `limit` caps at 200
+  against 266 institutions, and a tag listing without a `query` is a sample of
+  874, so a full page used to be indistinguishable from a complete answer. The
+  error shape from the CKAN layer is lifted to the top level rather than becoming
+  the first element of the payload.
+
+  One thing got worse and is worth saying: the generated `outputSchema` is now a
+  generic object, the same as `search_datasets` and `get_dataset`, where before it
+  described an array. Typed models for the catalog family would fix that for all
+  of them and are not in this change.
+- **The tool-list context ceiling moved from 41,000 to 42,000 bytes.** The
+  measured figure was 40,990 — ten bytes of headroom, which is a trap for the next
+  docstring rather than a tripwire for a verbose new tool. The current figure is
+  40,869.
+
 ### Added
 
 - **`--version` and `--help`.** Windows testing reached for

@@ -514,18 +514,50 @@ def test_clear_cache_wraps_model(monkeypatch):
     assert calls["kwargs"] == {}
 
 
-# ─── Organizations / groups / tags / autocomplete (list pass-through) ─────────
+# ─── Organizations / groups / tags / autocomplete (named listings) ────────────
+#
+# These four used to return bare lists, which FastMCP serialises as one content
+# block per element: two hundred blocks for two hundred tags, and a payload the
+# schema calls `result`. A client that assumed the shape of search_datasets — one
+# object — read content[0] and saw a single institution. Each now answers as one
+# object naming what it holds.
 
 
-async def test_list_organizations_passes_limit(monkeypatch):
+async def test_list_organizations_names_its_payload_and_counts_it(monkeypatch):
     payload = [{"name": "bcrd", "package_count": 12}]
     stub, calls = _async_stub(payload)
     monkeypatch.setattr(server.ckan, "list_organizations", stub)
 
     result = await server.list_organizations(limit=100)
 
-    assert result is payload
+    assert result["organizations"] is payload
+    assert result["count"] == 1
+    assert result["source"] == server.ckan.CATALOG_SOURCE
+    assert result["limit_reached"] is False
     assert calls["kwargs"] == {"limit": 100}
+
+
+async def test_a_full_page_says_so_instead_of_looking_complete(monkeypatch):
+    """266 institutions, and `limit` caps at 200. A caller should not have to
+    compare lengths against the limit it passed to find out there is more."""
+    stub, _ = _async_stub([{"name": f"org-{i}"} for i in range(5)])
+    monkeypatch.setattr(server.ckan, "list_organizations", stub)
+
+    result = await server.list_organizations(limit=5)
+
+    assert result["limit_reached"] is True
+
+
+async def test_a_listing_failure_stays_at_the_top_level(monkeypatch):
+    """ckan reports failure as a one-element list holding an error dict. Wrapped
+    naively that error becomes the first organization."""
+    stub, _ = _async_stub([{"error": "portal down", "hint": "try later"}])
+    monkeypatch.setattr(server.ckan, "list_organizations", stub)
+
+    result = await server.list_organizations()
+
+    assert result["error"] == "portal down"
+    assert "organizations" not in result
 
 
 async def test_get_organization_passes_id(monkeypatch):
@@ -546,7 +578,8 @@ async def test_list_groups_passes_through(monkeypatch):
 
     result = await server.list_groups()
 
-    assert result is payload
+    assert result["groups"] is payload
+    assert result["count"] == 2
     assert calls["args"] == ()
     assert calls["kwargs"] == {}
 
@@ -558,18 +591,24 @@ async def test_list_tags_passes_args(monkeypatch):
 
     result = await server.list_tags(query="finan", limit=50)
 
-    assert result is payload
+    assert result["tags"] is payload
+    assert result["count"] == 2
+    assert result["limit_reached"] is False
     assert calls["kwargs"] == {"query": "finan", "limit": 50}
 
 
-async def test_autocomplete_passes_args(monkeypatch):
+async def test_autocomplete_echoes_what_was_asked_for(monkeypatch):
+    """A zero-result autocomplete that does not repeat the query is a reply the
+    caller cannot interpret without remembering its own request."""
     payload = [{"name": "ministerio-de-hacienda"}]
     stub, calls = _async_stub(payload)
     monkeypatch.setattr(server.ckan, "autocomplete", stub)
 
     result = await server.autocomplete(kind="organization", query="hacienda", limit=5)
 
-    assert result is payload
+    assert result["suggestions"] is payload
+    assert result["kind"] == "organization"
+    assert result["query"] == "hacienda"
     assert calls["kwargs"] == {"kind": "organization", "query": "hacienda", "limit": 5}
 
 
@@ -618,10 +657,17 @@ async def test_the_schemas_carry_no_generated_boilerplate():
 async def test_the_tool_list_stays_under_its_context_budget():
     """A ceiling, not a target.
 
-    Measured 43,582 bytes before the schema cleanup and 38,719 after. The number
-    only matters as a tripwire: a tool added with a verbose result model can put
-    several KB into every conversation in this project, and nothing else would
-    notice.
+    Measured 43,582 bytes before the schema cleanup, 38,719 after, and 40,869 at
+    24 tools with `check_resources` and its reachability schema included. The
+    number only matters as a tripwire: a tool added with a verbose result model
+    can put several KB into every conversation in this project, and nothing else
+    would notice.
+
+    The ceiling moved from 41,000 to 42,000 when it turned out to be sitting ten
+    bytes above the real figure — at that distance it is not a tripwire, it is a
+    trap for whoever next improves a docstring, and the failure says nothing about
+    the multi-KB regression it exists to catch. A kilobyte of headroom keeps it
+    honest while still failing on a genuinely verbose addition.
     """
     import json
 
@@ -629,7 +675,7 @@ async def test_the_tool_list_stays_under_its_context_budget():
 
     tools = await mcp.list_tools()
     total = len(json.dumps([t.model_dump() for t in tools], ensure_ascii=False, default=str))
-    assert total < 41_000, f"the tool list grew to {total:,} bytes"
+    assert total < 42_000, f"the tool list grew to {total:,} bytes"
 
 
 def test_sdk_settings_warning_is_filtered():

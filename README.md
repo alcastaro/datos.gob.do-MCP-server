@@ -259,6 +259,8 @@ This project was inspired by [`datagouv-mcp`](https://github.com/datagouv/datago
 
 Typed functions, grouped in five families. The data-producing tools (analytics, preview, cache) return typed `outputSchema` / `structuredContent` so hosts can validate results; navigational metadata tools return JSON. Every portal-facing tool is annotated `readOnlyHint: true`; network-facing ones `openWorldHint: true`.
 
+**Every tool answers with one object.** Listings name what they carry and count it — `{organizations, count, limit_reached}`, `{tags, count, limit_reached}`, `{groups, count}`, `{suggestions, count, kind, query}`. `limit_reached` matters because the caps are lower than the catalog: 200 institutions against 266, and any tag listing without a `query` is a sample of 874.
+
 ### Discovery
 
 | Tool | What it does |
