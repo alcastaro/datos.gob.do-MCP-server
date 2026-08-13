@@ -651,3 +651,59 @@ async def test_get_site_stats_resilient_to_partial_failures(httpx_mock):
     assert result["total_organizations"] == 1
     assert result["total_groups"] is None  # neither dict nor list → None
     assert result["total_tags"] == 1
+
+
+@pytest.mark.asyncio
+async def test_search_resources_names_the_publishing_institution(httpx_mock):
+    """resource_search answers with the file and nothing around it — no dataset,
+    no institution. For government files that is close to useless: files here
+    are named things like `clss.csv`, and "who published this?" is the first
+    question anyone asks. Resolved with one extra request, not one per row."""
+    httpx_mock.add_response(
+        json={
+            "success": True,
+            "result": {
+                "count": 1,
+                "results": [{"id": "r1", "name": "clss.csv", "format": "CSV", "package_id": "p1"}],
+            },
+        }
+    )
+    httpx_mock.add_response(
+        json={
+            "success": True,
+            "result": {
+                "count": 1,
+                "results": [
+                    {
+                        "id": "p1",
+                        "title": "Nómina 2026",
+                        "name": "nomina-2026",
+                        "organization": {"title": "Ministerio de Trabajo", "name": "mt"},
+                    }
+                ],
+            },
+        }
+    )
+    out = await ckan.search_resources(query="nomina", limit=5)
+    row = out["resources"][0]
+    assert row["organization"] == "Ministerio de Trabajo"
+    assert row["organization_slug"] == "mt"
+    assert row["dataset_slug"] == "nomina-2026"
+
+
+@pytest.mark.asyncio
+async def test_search_resources_survives_a_failed_parent_lookup(httpx_mock):
+    """A resource list without institutions still beats an error."""
+    httpx_mock.add_response(
+        json={
+            "success": True,
+            "result": {
+                "count": 1,
+                "results": [{"id": "r1", "name": "clss.csv", "format": "CSV", "package_id": "p1"}],
+            },
+        }
+    )
+    httpx_mock.add_response(status_code=500)
+    out = await ckan.search_resources(query="nomina", limit=5)
+    assert out["resources"][0]["name"] == "clss.csv"
+    assert "organization" not in out["resources"][0]

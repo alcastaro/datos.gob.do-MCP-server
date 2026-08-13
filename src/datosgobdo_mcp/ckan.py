@@ -282,14 +282,55 @@ async def search_resources(query: str, limit: int = 10) -> dict:
                 "limit": min(max(int(limit), 1), MAX_ROWS),
             },
         )
-        return with_provenance(
-            {
-                "total": result.get("count", 0),
-                "resources": [format_resource(r) for r in (result.get("results") or [])],
-            }
-        )
+        raw = result.get("results") or []
+        parents = await _parent_datasets(raw)
+        resources = []
+        for r in raw:
+            formatted = format_resource(r)
+            parent = parents.get(r.get("package_id"))
+            if parent:
+                formatted.update(parent)
+            resources.append(formatted)
+        return with_provenance({"total": result.get("count", 0), "resources": resources})
     except RuntimeError as e:
         return {"error": str(e), "hint": "Try a broader search term."}
+
+
+async def _parent_datasets(resources: list[dict]) -> dict[str, dict]:
+    """Map each resource's package_id to its dataset and publishing institution.
+
+    CKAN's `resource_search` answers with the file and nothing around it: a
+    name, a format and a URL, with no dataset and no institution. For this
+    catalog that is close to useless — the answer to "who publishes this?" is
+    the first thing anyone asks of a government file, and files here are named
+    things like `clss.csv`. Worse, a caller with no institution has no way to
+    judge whether the file is the one they meant.
+
+    Resolved in a single extra request rather than one per resource: the
+    unique package ids go into one `package_search` filter query. A failure
+    here degrades to no parent information rather than failing the search,
+    since a resource list without institutions still beats an error.
+    """
+    ids = {str(r["package_id"]) for r in resources if r.get("package_id")}
+    if not ids:
+        return {}
+    try:
+        found = await ckan_request(
+            "package_search",
+            {"fq": "id:(" + " OR ".join(sorted(ids)) + ")", "rows": len(ids)},
+        )
+    except RuntimeError:
+        return {}
+    out: dict[str, dict] = {}
+    for pkg in found.get("results") or []:
+        org = pkg.get("organization") or {}
+        out[pkg.get("id")] = {
+            "dataset_title": pkg.get("title"),
+            "dataset_slug": pkg.get("name"),
+            "organization": org.get("title"),
+            "organization_slug": org.get("name"),
+        }
+    return out
 
 
 async def list_organizations(limit: int = 50) -> list[dict]:
