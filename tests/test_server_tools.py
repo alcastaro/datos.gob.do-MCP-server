@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from mcp import types
+
 from datosgobdo_mcp import server
 from datosgobdo_mcp.models import (
     AggregateResult,
@@ -33,6 +35,7 @@ from datosgobdo_mcp.models import (
     SchemaResult,
     SummaryResult,
 )
+from datosgobdo_mcp.server import mcp
 
 URL = "https://example.test/data.csv"
 
@@ -691,3 +694,85 @@ def test_cache_stats_server_identity_reflects_env(monkeypatch, tmp_cache_dir):
     info = result.model_dump().get("server")
     assert info["netguard_mode"] == "strict"
     assert info["transport"] == "streamable-http"
+
+
+# ─── The other two primitives (v0.13.0) ──────────────────────────────────────
+# The handshake advertised tools, resources and prompts; only tools existed.
+# Found with the MCP Inspector: resources/list, resources/templates/list and
+# prompts/list all returned zero against a server that had promised them.
+
+
+async def test_resources_are_served_not_just_advertised():
+    resources = await mcp.list_resources()
+    uris = {str(r.uri) for r in resources}
+    assert "datosgobdo://catalog/overview" in uris
+    assert "datosgobdo://catalog/institutions" in uris
+    assert all(r.name and r.description for r in resources)
+
+
+async def test_dataset_resource_template_is_registered():
+    templates = await mcp.list_resource_templates()
+    assert any("datosgobdo://dataset/{dataset_id}" == t.uriTemplate for t in templates)
+
+
+async def test_prompts_are_served_not_just_advertised():
+    prompts = await mcp.list_prompts()
+    names = {p.name for p in prompts}
+    assert {
+        "auditar_nomina",
+        "verificar_fuente",
+        "explorar_institucion",
+        "cruzar_fuentes",
+    } <= names
+    assert all(p.description for p in prompts)
+
+
+async def test_prompts_carry_their_arguments():
+    prompts = {p.name: p for p in await mcp.list_prompts()}
+    args = {a.name for a in (prompts["auditar_nomina"].arguments or [])}
+    assert args == {"institucion"}
+
+
+async def test_verificar_fuente_prompt_forbids_source_substitution():
+    """The prompt exists because an assistant, handed a resource it could not
+    fetch, answered with a different institution's file. The instruction not
+    to substitute is the whole point of the template."""
+    rendered = await mcp.get_prompt("verificar_fuente", {"url": "https://example.test/x.csv"})
+    text = " ".join(
+        m.content.text for m in rendered.messages if isinstance(m.content, types.TextContent)
+    )
+    assert "no respondas con otro archivo" in text
+    assert "https://example.test/x.csv" in text
+
+
+# ─── Failed calls are marked as failed ───────────────────────────────────────
+
+
+async def test_domain_error_sets_is_error_and_keeps_payload():
+    """A reply carrying {"error": ...} must arrive flagged, so anything that is
+    not a language model can tell a failure from a success — while keeping the
+    structured hint the SDK's own error path would have thrown away."""
+    result = await mcp._mcp_server.request_handlers[types.CallToolRequest](
+        types.CallToolRequest(
+            method="tools/call",
+            params=types.CallToolRequestParams(
+                name="get_resource_schema",
+                arguments={"url": "https://example.test/x.csv", "format": "parquet"},
+            ),
+        )
+    )
+    call = result.root
+    assert call.isError is True
+    assert call.structuredContent["error"]
+
+
+async def test_successful_call_is_not_flagged(tmp_cache_dir):
+    result = await mcp._mcp_server.request_handlers[types.CallToolRequest](
+        types.CallToolRequest(
+            method="tools/call",
+            params=types.CallToolRequestParams(name="get_cache_stats", arguments={}),
+        )
+    )
+    call = result.root
+    assert call.isError is False
+    assert call.structuredContent["server"]["name"] == "datosgobdo-mcp"
