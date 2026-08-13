@@ -84,7 +84,17 @@ Defender active and a non-administrator account.
 
 ### Added
 
-- **The startup line records the effective configuration**, not the requested
+- **`--version` and `--help`.** Windows testing reached for
+  `uvx dominican-open-data-mcp --help` to find out which version was installed —
+  the obvious move — and got a server that started, received EOF on stdin and shut
+  down, printing nothing that answered the question. Both flags now answer and
+  exit before any session begins, so stdout stays the protocol channel while
+  serving and behaves like a command line when nobody is serving.
+- **A Windows-specific hint when a destination path is too long.** With long paths
+  disabled, which is the Windows default, a 288-character destination returned
+  `[WinError 206] The filename or extension is too long` and `hint: null`. The
+  reply now says how long the path actually is and names both ways out.
+, not the requested
   one: network-guard mode and whether the archive is on. A client passes only a
   limited subset of the environment to a stdio server, so an operator who set
   `DATOSGOBDO_NETGUARD` in a shell is running with the default and has no other

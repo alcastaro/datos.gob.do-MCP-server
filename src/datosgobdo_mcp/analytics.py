@@ -206,6 +206,26 @@ def _is_forbidden_dest(*candidates: str) -> bool:
     return any(_forbidden_posix(raw) or _forbidden_windows(raw) for raw in candidates)
 
 
+# Windows refuses paths over 260 characters unless the machine has long paths
+# enabled, which is off by default. The OS message says the name is too long and
+# stops there; a person who has just been handed a generated filename needs to be
+# told which half of the problem is theirs.
+_WINDOWS_LONG_PATH = 206  # ERROR_FILENAME_EXCED_RANGE
+
+
+def _dest_open_error(e: OSError, dest_path: Path) -> dict[str, Any]:
+    """Turn a failed open() into something the caller can act on."""
+    result: dict[str, Any] = {"error": f"Cannot open destination for writing: {e}"}
+    if getattr(e, "winerror", None) == _WINDOWS_LONG_PATH or "too long" in str(e).lower():
+        result["hint"] = (
+            f"The destination is {len(str(dest_path))} characters. Windows caps paths at 260 "
+            "unless long paths are enabled: shorten the folder or file name, or set "
+            "LongPathsEnabled=1 under "
+            "HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem and restart."
+        )
+    return result
+
+
 class AnalyticsError(RuntimeError):
     pass
 
@@ -2236,15 +2256,15 @@ async def save_query_to_csv(
     finally:
         con.close()
 
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    # O_NOFOLLOW closes the TOCTOU window: a symlink swapped in between the
-    # earlier path checks and this write would otherwise be followed when
-    # overwrite=True. Raises ELOOP instead of writing through the link.
-    open_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
     try:
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        # O_NOFOLLOW closes the TOCTOU window: a symlink swapped in between the
+        # earlier path checks and this write would otherwise be followed when
+        # overwrite=True. Raises ELOOP instead of writing through the link.
+        open_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(str(dest_path), open_flags, 0o644)
     except OSError as e:
-        return {"error": f"Cannot open destination for writing: {e}"}
+        return _dest_open_error(e, dest_path)
     with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
         writer = _csv.writer(f)
         writer.writerow(col_names)

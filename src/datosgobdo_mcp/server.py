@@ -1162,12 +1162,55 @@ if _GCP_TOOLS_REGISTERED:
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 
+_USAGE = f"""datosgobdo-mcp {__version__} — MCP server for datos.gob.do,
+the Dominican Republic's open data portal.
+
+This is an MCP server, not a command-line tool: run with no arguments and it
+speaks JSON-RPC over stdin/stdout, which is what an MCP client wants. To look at
+what it exposes by hand, use the MCP Inspector:
+
+  npx -y @modelcontextprotocol/inspector uvx dominican-open-data-mcp
+
+  --version   print the version and exit
+  --help      print this and exit
+
+Configuration goes in your MCP client's `env` block, not your shell — a stdio
+server inherits only a limited subset of the environment. See the README.
+Docs: https://github.com/alcastaro/datos.gob.do-MCP-server
+"""
+
+
+def _handle_cli_flags(argv: list[str]) -> bool:
+    """Answer --version/--help and report whether to exit instead of serving.
+
+    Windows testing reached for `--help` to find out which version was installed,
+    which is the obvious thing to try; it started the server, got EOF on stdin
+    and shut down, printing nothing that answered the question. A server whose
+    version cannot be read without speaking the protocol is a server nobody can
+    file a useful bug against.
+    """
+    # stdout is the protocol channel *while serving*. These two answers exit
+    # before any session starts, so printing there is right: it is what a person
+    # running the command in a terminal expects, and it corrupts nothing.
+    flags = {a for a in argv if a.startswith("-")}
+    if flags & {"-V", "--version"}:
+        print(f"datosgobdo-mcp {__version__}")
+        return True
+    if flags & {"-h", "--help"}:
+        print(_USAGE, end="")
+        return True
+    return False
+
+
 def main() -> (
     None
 ):  # pragma: no cover — blocking server loop, exercised by CI entry-point smoke test
     import os
 
     from . import archive
+
+    if _handle_cli_flags(sys.argv[1:]):
+        return
 
     transport = os.environ.get("DATOSGOBDO_TRANSPORT", "stdio").strip().lower()
     # The effective mode is logged, not just the requested one. A client passes

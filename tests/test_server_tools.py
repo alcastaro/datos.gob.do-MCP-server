@@ -831,3 +831,31 @@ async def test_verification_guide_is_readable_and_names_the_four_fields():
     for field in ("source", "source_sha256", "computation", "numeric_coercion"):
         assert field in text
     assert "sustitución de fuente" in text
+
+
+def test_version_flag_answers_without_starting_a_session(capsys):
+    """Windows testing reached for --help to find out which version was
+    installed — the obvious move — and got a server that started, received EOF
+    and shut down, printing nothing that answered the question."""
+    from datosgobdo_mcp import __version__
+    from datosgobdo_mcp import server as server_mod
+
+    assert server_mod._handle_cli_flags(["--version"]) is True
+    assert __version__ in capsys.readouterr().out
+
+
+def test_help_flag_says_this_is_a_server_not_a_cli(capsys):
+    from datosgobdo_mcp import server as server_mod
+
+    assert server_mod._handle_cli_flags(["-h"]) is True
+    out = capsys.readouterr().out
+    assert "MCP server, not a command-line tool" in out
+    assert "inspector" in out.lower()
+    assert "env" in out
+
+
+def test_no_flags_means_serve(capsys):
+    from datosgobdo_mcp import server as server_mod
+
+    assert server_mod._handle_cli_flags([]) is False
+    assert capsys.readouterr().out == ""

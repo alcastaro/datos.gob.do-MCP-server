@@ -1773,3 +1773,27 @@ async def test_query_resource_reports_computation(mock_csv_endpoint, tmp_cache_d
     comp = out["computation"]
     assert comp["rows_scanned"] > 0
     assert "FROM data" in comp["sql"]
+
+
+# ─── CLI flags and the long-path hint ─────────────────────────────────────────
+
+
+def test_a_long_path_failure_says_which_half_is_fixable(tmp_path):
+    """Windows caps paths at 260 characters with long paths disabled, which is
+    the default. `[WinError 206] The filename or extension is too long` is the
+    whole message the OS gives, and the reply used to pass it through with
+    `hint: null` — true, and useless to whoever picked the destination."""
+    dest = tmp_path / ("x" * 200 + ".csv")
+    err = OSError(36, "The filename or extension is too long")
+    err.winerror = 206  # type: ignore[attr-defined]
+    out = analytics._dest_open_error(err, dest)
+    assert "too long" in out["error"]
+    assert out["hint"] is not None
+    assert str(len(str(dest))) in out["hint"]
+    assert "LongPathsEnabled" in out["hint"]
+
+
+def test_other_write_failures_do_not_get_a_windows_hint(tmp_path):
+    out = analytics._dest_open_error(OSError(13, "Permission denied"), tmp_path / "x.csv")
+    assert "Permission denied" in out["error"]
+    assert "hint" not in out
