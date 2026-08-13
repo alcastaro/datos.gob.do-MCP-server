@@ -6,13 +6,32 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ## [Unreleased]
 
-Three defects with one cause, found by re-reading the
+Two rounds of findings with one thing in common: the platform most of this
+server's audience uses had never run it. The first came from re-reading the
 [MCP debugging guidance](https://modelcontextprotocol.io/docs/tools/debugging)
-against this server: a client-launched stdio server inherits neither a
-meaningful working directory nor the operator's shell environment.
+against this server — a client-launched stdio server inherits neither a
+meaningful working directory nor the operator's shell environment. The second
+came from the first real Windows session, on Windows 11 build 26200 with
+Defender active and a non-administrator account.
 
 ### Fixed
 
+- **A clean clone could not run the suite.** `pytest`, `pytest-asyncio` and
+  `pytest-httpx` were declared only in the `dev` *extra*, while `uv sync`
+  installs *groups* by default — so `uv sync && uv run pytest` produced dozens of
+  `fixture 'httpx_mock' not found`, and a tester following the README had every
+  reason to conclude the server was broken on Windows. The three now sit in
+  `[dependency-groups].dev` as well, so the documented commands work with no
+  flags to remember. The extra stays for `pip install .[dev]`.
+- **A legitimate skip on Windows counted as an error.** The `O_NOFOLLOW` test
+  called `pytest.skip()` from inside its body, after the `mock_csv_endpoint`
+  fixture had already registered two mocked responses; unrequested mocks fail
+  `pytest-httpx` at teardown. The skip is now a decorator, so Windows reports
+  `518 passed, 5 skipped` with no error — the same 519 outcomes as macOS, one
+  moved from passed to skipped because the platform has no `O_NOFOLLOW`.
+- **A test would have expanded `~` to the real profile on Windows.** It patched
+  `HOME`, which `ntpath.expanduser` never reads — it reads `USERPROFILE`. Found
+  before it shipped, by that Windows report arriving the same night.
 - **A relative `dest` in `save_query_to_csv` is now refused with an explanation.**
   It used to be resolved against a working directory nobody chose — `/` under a
   client on macOS — so `dest="export.csv"` became `/export.csv` and the write

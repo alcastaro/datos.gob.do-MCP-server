@@ -40,6 +40,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Kept for `pip install .[dev]`. The same three are repeated in
+# [dependency-groups].dev below so that a plain `uv sync` installs them: uv
+# syncs groups by default and extras only when asked, and a Windows tester
+# following the README got dozens of "fixture 'httpx_mock' not found" and a
+# reasonable belief that the server was broken on their platform. Two lists
+# named `dev` is the cost of both installers working; keep them in sync.
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -97,7 +103,13 @@ Portal = "https://datos.gob.do"
 packages = ["src/datosgobdo_mcp"]
 
 [dependency-groups]
+# Everything needed to run the suite, so `uv sync && uv run pytest` works from a
+# clean clone with no flags to remember. The first three mirror the `dev` extra
+# above (see the note there).
 dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-httpx>=0.30",
     "mypy>=2.1.0",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.15",

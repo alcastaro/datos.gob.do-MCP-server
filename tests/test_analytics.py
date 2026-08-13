@@ -641,8 +641,13 @@ async def test_save_query_to_csv_expands_a_tilde_destination(
 ):
     """`~/x.csv` is what a user types and is not absolute until expanded — it
     used to resolve to a literal `~` directory under the working directory.
+
+    Both variables are set because `ntpath.expanduser` reads `USERPROFILE` and
+    never consults `HOME`: patching only the POSIX one would expand to the real
+    profile directory on Windows and write outside `tmp_path`.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     out = await analytics.save_query_to_csv(mock_csv_endpoint, "csv", dest="~/tilde.csv")
     assert "error" not in out, out
@@ -682,13 +687,18 @@ async def test_save_query_to_csv_refuses_private_etc_on_macos(tmp_cache_dir):
     assert "error" in out
 
 
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="platform without O_NOFOLLOW")
 async def test_save_query_to_csv_opens_with_nofollow(
     mock_csv_endpoint, tmp_cache_dir, tmp_path, monkeypatch
 ):
     """The final write must use O_NOFOLLOW so a symlink swapped in after path
-    validation (TOCTOU) raises instead of writing through the link."""
-    if not hasattr(os, "O_NOFOLLOW"):
-        pytest.skip("platform without O_NOFOLLOW")
+    validation (TOCTOU) raises instead of writing through the link.
+
+    The skip is a decorator, not a call in the body: `mock_csv_endpoint` registers
+    two mocked responses before the body runs, and skipping from inside left them
+    unrequested, which pytest-httpx fails at teardown. That turned a legitimate
+    skip on Windows into `1 error` and cost the platform a green suite.
+    """
     seen = {}
     real_open = os.open
 

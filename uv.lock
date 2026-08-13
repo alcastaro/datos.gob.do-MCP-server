@@ -539,7 +539,7 @@ wheels = [
 
 [[package]]
 name = "dominican-open-data-mcp"
-version = "0.7.10"
+version = "0.13.0"
 source = { editable = "." }
 dependencies = [
     { name = "chardet" },
@@ -564,7 +564,10 @@ gcp = [
 [package.dev-dependencies]
 dev = [
     { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
     { name = "pytest-cov" },
+    { name = "pytest-httpx" },
     { name = "ruff" },
 ]
 
@@ -587,7 +590,10 @@ provides-extras = ["dev", "gcp"]
 [package.metadata.requires-dev]
 dev = [
     { name = "mypy", specifier = ">=2.1.0" },
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
+    { name = "pytest-httpx", specifier = ">=0.30" },
     { name = "ruff", specifier = ">=0.15.15" },
 ]
 
