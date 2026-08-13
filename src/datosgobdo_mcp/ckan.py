@@ -333,16 +333,43 @@ async def _parent_datasets(resources: list[dict]) -> dict[str, dict]:
     return out
 
 
+ORGANIZATION_PAGE = 25  # CKAN's own ceiling for organization_list?all_fields=true
+
+
 async def list_organizations(limit: int = 50) -> list[dict]:
+    """List publishing institutions, honouring the limit that was asked for.
+
+    `organization_list?all_fields=true` caps every response at 25 no matter
+    what `limit` says, and the cap is silent: asking for 500 of this portal's
+    266 institutions returned 25 and looked complete. That is worse than an
+    error, and it had a second victim — the hint on a failed
+    `get_organization` says "use list_organizations", which for any
+    institution outside the first 25 alphabetically was advice that could not
+    work. Pages are fetched until the requested number is reached or the
+    portal runs out.
+    """
+    limit = max(int(limit), 1)
     try:
-        result = await ckan_request(
-            "organization_list",
-            {"all_fields": True, "include_dataset_count": True, "include_extras": False},
-        )
-        if not isinstance(result, list):
-            return []
-        orgs = [format_organization(o, short=True) for o in result]
-        return orgs[: max(int(limit), 1)]
+        collected: list[dict] = []
+        offset = 0
+        while len(collected) < limit:
+            page = await ckan_request(
+                "organization_list",
+                {
+                    "all_fields": True,
+                    "include_dataset_count": True,
+                    "include_extras": False,
+                    "offset": offset,
+                    "limit": ORGANIZATION_PAGE,
+                },
+            )
+            if not isinstance(page, list) or not page:
+                break
+            collected.extend(page)
+            if len(page) < ORGANIZATION_PAGE:
+                break
+            offset += ORGANIZATION_PAGE
+        return [format_organization(o, short=True) for o in collected[:limit]]
     except RuntimeError as e:
         return [
             {"error": str(e), "hint": "The datos.gob.do portal may be temporarily unavailable."}
@@ -366,10 +393,36 @@ async def get_organization(id: str) -> dict:
             out["extras"] = [{"key": e.get("key"), "value": e.get("value")} for e in extras]
         return out
     except RuntimeError as e:
-        return {
-            "error": str(e),
-            "hint": f"Organization '{id}' not found. Use list_organizations or autocomplete(kind='organization').",
-        }
+        # Telling the caller to go looking is a worse answer than looking. The
+        # slugs here are the full legal name — INDOTEL is registered as
+        # `instituto-dominicano-de-las-telecomunicaciones-indotel` — so the
+        # acronym everyone actually types never resolves, and the old hint
+        # sent them to a listing that silently showed only the first 25 of
+        # 266. The lookup that would have worked is one request, so it is made
+        # here instead of being suggested.
+        return {"error": str(e), "hint": await _slug_suggestion("organization", id)}
+
+
+async def _slug_suggestion(kind: str, wanted: str) -> str:
+    """A hint that names the match, or explains how to find it when there is none."""
+    try:
+        matches = await autocomplete(kind=kind, query=wanted, limit=3)
+    except RuntimeError:
+        matches = []
+    named = [m for m in matches if isinstance(m, dict) and m.get("name")]
+    if named:
+        best = named[0]
+        hint = (
+            f"'{wanted}' is not a valid slug. Did you mean '{best['name']}' ({best.get('title')})?"
+        )
+        if len(named) > 1:
+            others = ", ".join(f"'{m['name']}'" for m in named[1:])
+            hint += f" Other matches: {others}."
+        return hint
+    return (
+        f"No {kind} matches '{wanted}'. Slugs here are the full registered name, not the "
+        f"acronym. Try autocomplete(kind='{kind}', query='...') with part of the name."
+    )
 
 
 async def list_groups() -> list[dict]:

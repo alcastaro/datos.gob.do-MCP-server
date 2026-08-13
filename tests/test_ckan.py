@@ -163,10 +163,60 @@ async def test_get_dataset_returns_error_dict_on_network_failure(httpx_mock):
 
 @pytest.mark.asyncio
 async def test_get_organization_returns_error_dict_on_network_failure(httpx_mock):
+    """Both the lookup and the suggestion that follows it fail: the reply still
+    carries an error and a hint, and the hint never invents a slug."""
+    httpx_mock.add_exception(httpx.ConnectError("portal down"))
     httpx_mock.add_exception(httpx.ConnectError("portal down"))
     result = await ckan.get_organization("nonexistent-org")
     assert "error" in result
-    assert "hint" in result
+    assert "autocomplete" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_get_organization_hint_names_the_slug_it_found(httpx_mock):
+    """Telling the caller to go looking is a worse answer than looking. Slugs
+    here are the full registered name, so the acronym everyone types — INDOTEL
+    — never resolves on its own."""
+    httpx_mock.add_response(status_code=404)
+    httpx_mock.add_response(
+        json={
+            "success": True,
+            "result": [
+                {
+                    "id": "x",
+                    "name": "instituto-dominicano-de-las-telecomunicaciones-indotel",
+                    "title": "Instituto Dominicano de las Telecomunicaciones (INDOTEL)",
+                }
+            ],
+        }
+    )
+    result = await ckan.get_organization("indotel")
+    assert "error" in result
+    assert "instituto-dominicano-de-las-telecomunicaciones-indotel" in result["hint"]
+    assert "Did you mean" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_list_organizations_pages_past_ckans_silent_cap(httpx_mock):
+    """organization_list?all_fields=true caps every response at 25 no matter
+    what limit says, and the cap is silent: asking for 500 of this portal's 266
+    institutions returned 25 and looked complete."""
+    page1 = [{"id": str(i), "name": f"org-{i}", "title": f"Org {i}"} for i in range(25)]
+    page2 = [{"id": "25", "name": "org-25", "title": "Org 25"}]
+    httpx_mock.add_response(json={"success": True, "result": page1})
+    httpx_mock.add_response(json={"success": True, "result": page2})
+    orgs = await ckan.list_organizations(limit=100)
+    assert len(orgs) == 26
+    assert orgs[-1]["name"] == "org-25"
+
+
+@pytest.mark.asyncio
+async def test_list_organizations_stops_at_the_requested_limit(httpx_mock):
+    """A caller asking for 10 must not pay for a second page."""
+    page1 = [{"id": str(i), "name": f"org-{i}", "title": f"Org {i}"} for i in range(25)]
+    httpx_mock.add_response(json={"success": True, "result": page1})
+    orgs = await ckan.list_organizations(limit=10)
+    assert len(orgs) == 10
 
 
 @pytest.mark.asyncio

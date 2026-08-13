@@ -63,6 +63,24 @@ are about how the server looks from outside a language model.
 
 ### Fixed
 
+- **`list_organizations` returns the number of institutions asked for.** CKAN
+  caps `organization_list?all_fields=true` at 25 per response no matter what
+  `limit` says, and the cap is silent: asking for 500 of this portal's 266
+  institutions returned 25 and looked complete. Pages are now fetched until
+  the requested count is reached. This had a second victim — the hint on a
+  failed `get_organization` said "use `list_organizations`", which for any
+  institution outside the first 25 alphabetically was advice that could not
+  work.
+
+- **A wrong slug is answered with the right one.** Institution slugs here are
+  the full registered name, so the acronym anyone would type never resolves:
+  `get_organization("indotel")` returned 404 and a hint suggesting two other
+  tools. The suggestion is now made instead of recommended — one autocomplete
+  lookup, and the reply names the match: *Did you mean
+  'instituto-dominicano-de-las-telecomunicaciones-indotel' (Instituto
+  Dominicano de las Telecomunicaciones (INDOTEL))?* When nothing matches, the
+  reply says so and explains that slugs are full names rather than acronyms.
+
 - **A resource search now names who published the file.** CKAN's
   `resource_search` answers with the file and nothing around it: a name, a
   format and a URL, with no dataset and no institution. In this catalog that
