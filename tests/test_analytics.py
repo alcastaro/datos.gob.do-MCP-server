@@ -1797,3 +1797,86 @@ def test_other_write_failures_do_not_get_a_windows_hint(tmp_path):
     out = analytics._dest_open_error(OSError(13, "Permission denied"), tmp_path / "x.csv")
     assert "Permission denied" in out["error"]
     assert "hint" not in out
+
+
+# ─── JSON: the envelope, the object-size ceiling, and an honest truncation ─────
+
+
+async def test_a_json_envelope_is_unnested_into_its_records(tmp_cache_dir, httpx_mock):
+    """`{"data": [ … ]}` is one JSON value, so DuckDB reads one row with one LIST
+    column and the call *succeeds* — a payroll reported as a single cell. Measured
+    on MAP's national payroll: 1 row and a column called `data` becomes 69,097
+    rows once unnested."""
+    url = "https://example.test/envelope.json"
+    payload = (
+        b'{"data": ['
+        b'{"Nombre": "AARON", "Sueldo_Bruto": 45000},'
+        b'{"Nombre": "BENITA", "Sueldo_Bruto": 52000},'
+        b'{"Nombre": "CARLOS", "Sueldo_Bruto": 38000}'
+        b"]}"
+    )
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "e1"})
+    httpx_mock.add_response(url=url, method="GET", content=payload)
+
+    out = await analytics.get_resource_schema(url, "json")
+
+    assert "error" not in out, out
+    assert out["row_count"] == 3, "the records, not the wrapper"
+    assert {c["name"] for c in out["columns"]} == {"Nombre", "Sueldo_Bruto"}
+
+
+async def test_two_top_level_keys_are_left_alone(tmp_cache_dir, httpx_mock):
+    """Narrow on purpose. With more than one top-level key, deciding which one is
+    "the data" is how a reader starts inventing datasets — so it does not."""
+    url = "https://example.test/two-keys.json"
+    payload = b'{"meta": {"version": 1}, "data": [{"a": 1}, {"a": 2}]}'
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "t1"})
+    httpx_mock.add_response(url=url, method="GET", content=payload)
+
+    out = await analytics.get_resource_schema(url, "json")
+
+    assert "error" not in out, out
+    assert {c["name"] for c in out["columns"]} == {"meta", "data"}
+
+
+async def test_json_lines_under_a_json_name_still_reads(tmp_cache_dir, httpx_mock):
+    url = "https://example.test/lines.json"
+    payload = b'{"a": 1, "b": "x"}\n{"a": 2, "b": "y"}\n{"a": 3, "b": "z"}\n'
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "l1"})
+    httpx_mock.add_response(url=url, method="GET", content=payload)
+
+    out = await analytics.get_resource_schema(url, "json")
+
+    assert "error" not in out, out
+    assert out["row_count"] == 3
+
+
+async def test_the_object_size_ceiling_is_the_download_cap(tmp_cache_dir, httpx_mock):
+    """DuckDB's default refuses a single JSON value over 16 MB, which rejected
+    seven catalog resources for a reason unrelated to the file. An object cannot
+    be bigger than the download that carried it, so the download cap is the only
+    ceiling worth having."""
+    from datosgobdo_mcp.download import ANALYTICS_MAX_BYTES
+
+    assert analytics.JSON_MAX_OBJECT_BYTES > ANALYTICS_MAX_BYTES
+    assert analytics.JSON_MAX_OBJECT_BYTES > 16 * 1024 * 1024
+
+
+async def test_a_file_we_cut_short_is_not_reported_as_malformed(
+    tmp_cache_dir, httpx_mock, monkeypatch
+):
+    """ "Malformed JSON … unexpected end of data" is true and blames the wrong
+    party. Five resources in this catalog are single JSON objects of ~115 MB
+    against a 100 MB cap; a publisher told their file is malformed goes looking
+    for a defect that is not there."""
+    monkeypatch.setattr(analytics, "ANALYTICS_MAX_BYTES", 64)
+    url = "https://example.test/huge.json"
+    payload = b'{"data": [' + b'{"a": 1},' * 50 + b'{"a": 1}]}'
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "h1"})
+    httpx_mock.add_response(url=url, method="GET", content=payload)
+
+    out = await analytics.get_resource_schema(url, "json")
+
+    assert "error" in out
+    assert "cut short" in out["error"]
+    assert "not malformed" in out["error"]

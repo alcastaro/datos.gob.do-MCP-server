@@ -412,6 +412,51 @@ def _quote_literal(value: Any) -> str:
 # Operator-set resource limits (env). Values are validated before reaching SQL.
 _MEM_LIMIT_RE = re.compile(r"\A\d+(\.\d+)?\s*(KB|MB|GB|TB|KiB|MiB|GiB|TiB)?\Z", re.IGNORECASE)
 
+# DuckDB refuses a single JSON value over 16 MB by default, and these portals
+# serve the whole table as one object — `{"data": [ … 69,097 records … ]}`. That
+# default was rejecting seven resources for a reason that has nothing to do with
+# the file: a JSON object cannot be larger than the download that carried it, so
+# the only ceiling worth having is the download cap. Set just above it so this
+# limit never fires before the one the operator can see.
+JSON_MAX_OBJECT_BYTES = ANALYTICS_MAX_BYTES + 8 * 1024 * 1024
+
+
+def _json_unwrap_sql(con: duckdb.DuckDBPyConnection, src: str, dst: str) -> str | None:
+    """SQL that reads the records inside a single-key JSON envelope, or None.
+
+    `{"data": [ {...}, {...} ]}` is one JSON value, so DuckDB reads it as one row
+    with one LIST column. The call *succeeds* — which is the dangerous part, and
+    why `ensure_cached` already warns about a large file that parses into one
+    column. Measured on the national payroll (MAP, 21 MB): one row and one column
+    named `data` becomes **69,097 rows** with `Nombre`, `Departamento`, `Función`,
+    `Sueldo_Bruto` once unnested.
+
+    Deliberately narrow. It fires only on exactly one top-level column whose type
+    is a list of structs — the shape that cannot be anything but an envelope. A
+    JSON file that is genuinely one record, or one that has several top-level
+    keys, is left alone: guessing which key holds "the data" is how a reader
+    starts inventing datasets.
+    """
+    try:
+        described = con.execute(
+            f"DESCRIBE SELECT * FROM read_json_auto('{src}', "
+            f"maximum_object_size={JSON_MAX_OBJECT_BYTES})"
+        ).fetchall()
+    except duckdb.Error:
+        return None
+    if len(described) != 1:
+        return None
+    name, col_type = str(described[0][0]), str(described[0][1]).upper()
+    if not (col_type.startswith("STRUCT(") and col_type.endswith(")[]")):
+        return None
+    logger.info("JSON envelope: unnesting the single list column %r", name)
+    quoted = name.replace('"', '""')
+    return (
+        f'COPY (SELECT unnest("{quoted}", recursive := true) '
+        f"FROM read_json_auto('{src}', maximum_object_size={JSON_MAX_OBJECT_BYTES})) "
+        f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+    )
+
 
 def _new_con() -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(":memory:")
@@ -989,7 +1034,16 @@ async def _ensure_cached_live(
             )
         elif effective_fmt == "json":
             copy_sql = (
-                f"COPY (SELECT * FROM read_json_auto('{src}')) "
+                f"COPY (SELECT * FROM read_json_auto('{src}', "
+                f"maximum_object_size={JSON_MAX_OBJECT_BYTES})) "
+                f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+            )
+            # JSON Lines served under a `.json` name. One file per format is the
+            # rule in this catalog, so the cheap second attempt is worth more than
+            # a sniffer.
+            fallback_sql = (
+                f"COPY (SELECT * FROM read_json_auto('{src}', format='newline_delimited', "
+                f"maximum_object_size={JSON_MAX_OBJECT_BYTES})) "
                 f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
             )
         else:
@@ -998,8 +1052,11 @@ async def _ensure_cached_live(
         def _convert() -> None:
             con = _new_con()
             try:
+                first = copy_sql
+                if effective_fmt == "json":
+                    first = _json_unwrap_sql(con, src, dst) or copy_sql
                 try:
-                    _execute_guarded(con, copy_sql)
+                    _execute_guarded(con, first)
                 except duckdb.Error:
                     if fallback_sql is None:
                         raise
@@ -1011,7 +1068,25 @@ async def _ensure_cached_live(
         # Same reasoning as the transcode above: parsing a 100 MB spreadsheet is
         # seconds to minutes of blocking work, and _execute_guarded's interrupt
         # timer can only fire if something else is free to run.
-        await asyncio.to_thread(_convert)
+        try:
+            await asyncio.to_thread(_convert)
+        except duckdb.Error as e:
+            if not truncated:
+                raise
+            # "Malformed JSON … unexpected end of data" is true and blames the
+            # wrong party: we are the ones who stopped reading. Five resources in
+            # this catalog are single JSON objects of ~115 MB against a 100 MB
+            # cap, and a publisher told their file is malformed will go looking
+            # for a defect that is not there. A container format cannot be parsed
+            # from a prefix, so this is a limit to state, not a failure to fix.
+            cap_mb = ANALYTICS_MAX_BYTES // (1024 * 1024)
+            raise AnalyticsError(
+                f"The file is larger than the {cap_mb} MB this server downloads, so it was "
+                f"cut short — and {effective_fmt.upper()} cannot be read from a partial "
+                "file. The data is not malformed; this server declined to fetch all of it. "
+                "Ask the publisher for a split or paginated version, or fetch the file "
+                "directly outside this server."
+            ) from e
 
         # A megabyte of data that parses into one column and a handful of rows
         # did not parse. It happens with JSON arrays DuckDB folds into a single
