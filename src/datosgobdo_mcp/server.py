@@ -791,6 +791,15 @@ def _listing(items: list[Any], name: str, **extra: Any) -> dict[str, Any]:
     caller should not have to compare lengths against a limit they passed to
     learn there is more. The error shape from `ckan` (a one-element list holding
     an error dict) is lifted to the top level rather than buried in the payload.
+
+    These stay plain dicts, with a generated `outputSchema` that says only
+    "object", and that is a measured decision rather than an omission: four
+    Pydantic envelopes were written and cost **1,673 bytes** of the tool list —
+    42,542 against a 42,000 ceiling — for schema that mostly restates the field
+    names two lines above. The analytics tools are typed because their payload
+    *is* the answer and a host validates it; these four are navigational, and
+    every conversation in the project would pay the difference. Revisit if the
+    ceiling ever gains room, not by raising the ceiling to fit.
     """
     if len(items) == 1 and isinstance(items[0], dict) and "error" in items[0]:
         return dict(items[0])

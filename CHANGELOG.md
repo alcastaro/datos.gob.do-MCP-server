@@ -111,8 +111,13 @@ Defender active and a non-administrator account.
 
   One thing got worse and is worth saying: the generated `outputSchema` is now a
   generic object, the same as `search_datasets` and `get_dataset`, where before it
-  described an array. Typed models for the catalog family would fix that for all
-  of them and are not in this change.
+  described an array. Typed envelopes were then written and measured, and cost
+  **1,673 bytes** of the tool list — 42,542 against the 42,000 ceiling — for
+  schema that mostly restates the field names in the docstring. The analytics
+  tools are typed because their payload *is* the answer and a host validates it;
+  these four are navigational, and every conversation would pay the difference. So
+  they stay untyped by decision, with the number written down, rather than by
+  omission.
 - **The tool-list context ceiling moved from 41,000 to 42,000 bytes.** The
   measured figure was 40,990 — ten bytes of headroom, which is a trap for the next
   docstring rather than a tripwire for a verbose new tool. The current figure is
