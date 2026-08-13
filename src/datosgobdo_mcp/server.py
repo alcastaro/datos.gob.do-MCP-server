@@ -1,7 +1,8 @@
-"""Servidor MCP para datos.gob.do.
+"""MCP server for datos.gob.do.
 
-Expone los datos abiertos del gobierno dominicano como herramientas MCP.
-Compatible con Claude Desktop, Claude Code y cualquier cliente MCP.
+Exposes the Dominican Republic's open government data as MCP tools, resources
+and prompts. Works with Claude Desktop, Claude Code, Antigravity, Codex,
+OpenCode and any other MCP client.
 """
 
 from __future__ import annotations
@@ -137,7 +138,7 @@ def _ro_local(title: str) -> ToolAnnotations:
     return ToolAnnotations(title=title, readOnlyHint=True, openWorldHint=False)
 
 
-# ─── Búsqueda y descubrimiento ────────────────────────────────────────────────
+# ─── Search and discovery ────────────────────────────────────────────────
 
 
 @mcp.tool(annotations=_ro("Search datasets"))
@@ -146,9 +147,8 @@ async def search_datasets(
         str | None,
         Field(
             description=(
-                "Término de búsqueda en texto libre. "
-                "Ej: 'presupuesto', 'salud pública', 'educación'. "
-                "Omitir para listar todos."
+                "Free-text search term, e.g. 'presupuesto', 'salud publica', "
+                "'educacion'. Omit to list everything."
             )
         ),
     ] = None,
@@ -156,27 +156,27 @@ async def search_datasets(
         str | None,
         Field(
             description=(
-                "Slug de la institución gubernamental. "
-                "Ej: 'ministerio-de-salud-publica', 'bcrd', 'digepres'. "
-                "Usar 'autocomplete' con kind='organization' si no estás seguro del slug."
+                "Institution slug, e.g. 'ministerio-de-salud-publica'. Slugs are "
+                "the full registered name, so acronyms rarely work on their own — "
+                "use autocomplete(kind='organization') when unsure."
             )
         ),
     ] = None,
     tag: Annotated[
         str | None,
-        Field(description="Etiqueta temática. Ej: 'finanzas', 'poblacion'."),
+        Field(description="Topic tag, e.g. 'finanzas', 'poblacion'."),
     ] = None,
     group: Annotated[
         str | None,
-        Field(description="Grupo o categoría. Ej: 'economia', 'salud'."),
+        Field(description="Thematic group, e.g. 'economia', 'salud'."),
     ] = None,
-    limit: Annotated[int, Field(description="Resultados (1-50)", ge=1, le=50)] = 10,
-    offset: Annotated[int, Field(description="Offset para paginación", ge=0)] = 0,
+    limit: Annotated[int, Field(description="Results (1-50)", ge=1, le=50)] = 10,
+    offset: Annotated[int, Field(description="Offset for paging", ge=0)] = 0,
 ) -> dict[str, Any]:
-    """Busca datasets en datos.gob.do (datos abiertos de República Dominicana).
+    """Search datasets on datos.gob.do (Dominican Republic open data).
 
-    Filtra por palabra clave, organización, tag o grupo temático. Devuelve
-    metadatos resumidos: título, organización, formatos disponibles, URL.
+    Filter by keyword, institution, tag or thematic group. Returns summary
+    metadata: title, publishing institution, available formats, URL.
     """
     return await ckan.search_datasets(
         query=query,
@@ -194,49 +194,49 @@ async def get_dataset(
         str,
         Field(
             description=(
-                "ID UUID o slug del dataset. "
-                "Ej: 'nomina-general', '40bc3980-625b-4d7b-9ccc-304878126f8f'."
+                "Dataset UUID or slug, e.g. 'nomina-general' or "
+                "'40bc3980-625b-4d7b-9ccc-304878126f8f'."
             )
         ),
     ],
 ) -> dict[str, Any]:
-    """Obtiene metadatos completos de un dataset, incluyendo todos sus recursos descargables.
+    """Full metadata for one dataset, including every downloadable resource.
 
-    Devuelve: título, descripción, organización, licencia, lista completa de recursos
-    (archivos CSV/XLSX/PDF/etc) con URLs de descarga directa.
+    Returns title, description, institution, licence, and the complete resource
+    list (CSV/XLSX/PDF/… files) with direct download URLs.
     """
     return await ckan.get_dataset(id)
 
 
 @mcp.tool(annotations=_ro("List recent datasets"))
 async def list_recent_datasets(
-    limit: Annotated[int, Field(description="Cantidad (1-30)", ge=1, le=30)] = 10,
+    limit: Annotated[int, Field(description="How many (1-30)", ge=1, le=30)] = 10,
 ) -> dict[str, Any]:
-    """Datasets modificados más recientemente en datos.gob.do.
+    """Most recently modified datasets on datos.gob.do.
 
-    Útil para monitorear actualizaciones del portal gubernamental.
-    Devuelve metadatos hidratados, no actividades crudas.
+    For monitoring portal updates. Returns hydrated metadata, not raw
+    activity records.
     """
     return await ckan.list_recent_datasets(limit=limit)
 
 
-# ─── Recursos ─────────────────────────────────────────────────────────────────
+# ─── Resources ─────────────────────────────────────────────────────────────────
 
 
 @mcp.tool(annotations=_ro("Get resource metadata"))
 async def get_resource(
-    id: Annotated[str, Field(description="UUID del recurso.")],
+    id: Annotated[str, Field(description="Resource UUID.")],
 ) -> dict[str, Any]:
-    """Metadatos de un recurso (archivo) específico: URL de descarga, formato, tamaño."""
+    """Metadata for one resource (file): download URL, format, size."""
     return await ckan.get_resource(id)
 
 
 @mcp.tool(annotations=_ro("Search resources"))
 async def search_resources(
-    query: Annotated[str, Field(description="Nombre o parte del nombre del recurso.")],
-    limit: Annotated[int, Field(description="Resultados (1-50)", ge=1, le=50)] = 10,
+    query: Annotated[str, Field(description="Resource name, or part of it.")],
+    limit: Annotated[int, Field(description="Results (1-50)", ge=1, le=50)] = 10,
 ) -> dict[str, Any]:
-    """Busca recursos (archivos individuales) por nombre. Devuelve URLs de descarga."""
+    """Search individual files by name. Returns download URLs, with the dataset and institution behind each one."""
     return await ckan.search_resources(query=query, limit=limit)
 
 
@@ -779,12 +779,12 @@ def clear_cache() -> ClearCacheResult:
 
 @mcp.tool(annotations=_ro("List organizations"))
 async def list_organizations(
-    limit: Annotated[int, Field(description="Máximo (1-200)", ge=1, le=200)] = 50,
+    limit: Annotated[int, Field(description="Maximum (1-200)", ge=1, le=200)] = 50,
 ) -> list[dict[str, Any]]:
-    """Lista instituciones gubernamentales que publican en datos.gob.do.
+    """List the government institutions publishing on datos.gob.do.
 
-    Devuelve ministerios, organismos autónomos, municipios, etc.,
-    con conteo de datasets por institución. Sin descripciones largas.
+    Ministries, autonomous agencies, municipalities and so on, with a dataset
+    count each. No long descriptions.
     """
     return await ckan.list_organizations(limit=limit)
 
@@ -795,30 +795,32 @@ async def get_organization(
         str,
         Field(
             description=(
-                "ID o slug de la organización. Ej: 'ministerio-de-hacienda', 'bcrd', 'indotel'."
+                "Institution UUID or slug, e.g. 'ministerio-de-hacienda'. Slugs are the "
+                "full registered name, so an acronym alone usually fails: INDOTEL is "
+                "'instituto-dominicano-de-las-telecomunicaciones-indotel'."
             )
         ),
     ],
 ) -> dict[str, Any]:
-    """Información detallada de una institución: descripción, número de datasets, URL."""
+    """Details for one institution: description, dataset count, URL."""
     return await ckan.get_organization(id)
 
 
-# ─── Grupos y tags ────────────────────────────────────────────────────────────
+# ─── Groups and tags ────────────────────────────────────────────────────────────
 
 
 @mcp.tool(annotations=_ro("List groups"))
 async def list_groups() -> list[dict[str, Any]]:
-    """Categorías temáticas en datos.gob.do (economía, salud, gestión pública, etc.)."""
+    """Thematic categories on datos.gob.do (economy, health, public administration, …)."""
     return await ckan.list_groups()
 
 
 @mcp.tool(annotations=_ro("List tags"))
 async def list_tags(
-    query: Annotated[str | None, Field(description="Prefijo para filtrar tags.")] = None,
-    limit: Annotated[int, Field(description="Máximo (1-100)", ge=1, le=100)] = 20,
+    query: Annotated[str | None, Field(description="Prefix to filter tags by.")] = None,
+    limit: Annotated[int, Field(description="Maximum (1-100)", ge=1, le=100)] = 20,
 ) -> list[str]:
-    """Lista etiquetas disponibles, opcionalmente filtradas por prefijo."""
+    """List available tags, optionally filtered by prefix."""
     return await ckan.list_tags(query=query, limit=limit)
 
 
@@ -829,15 +831,17 @@ async def list_tags(
 async def autocomplete(
     kind: Annotated[
         Literal["dataset", "organization", "group", "tag"],
-        Field(description="Tipo de entidad a autocompletar."),
+        Field(description="Entity kind to autocomplete."),
     ],
-    query: Annotated[str, Field(description="Texto parcial a completar.")],
-    limit: Annotated[int, Field(description="Sugerencias (1-30)", ge=1, le=30)] = 10,
+    query: Annotated[str, Field(description="Partial text to complete.")],
+    limit: Annotated[int, Field(description="Suggestions (1-30)", ge=1, le=30)] = 10,
 ) -> list[dict[str, Any]]:
-    """Autocompleta nombres de datasets / organizaciones / grupos / tags.
+    """Autocomplete dataset / organization / group / tag names.
 
-    Útil para resolver slugs cuando el usuario sólo da nombre parcial.
-    Ej: kind='organization', query='hacienda' → sugiere 'ministerio-de-hacienda'.
+    Resolves a slug when the user gives only part of a name. Slugs here are the
+    full registered name, so acronyms rarely match on their own:
+    kind='organization', query='indotel' →
+    'instituto-dominicano-de-las-telecomunicaciones-indotel'.
     """
     return await ckan.autocomplete(kind=kind, query=query, limit=limit)
 
@@ -847,10 +851,7 @@ async def autocomplete(
 
 @mcp.tool(annotations=_ro("Get site stats"))
 async def get_site_stats() -> dict[str, Any]:
-    """Estadísticas generales del portal datos.gob.do.
-
-    Devuelve: total de datasets, organizaciones, grupos, tags.
-    """
+    """Portal-wide totals for datos.gob.do: datasets, institutions, groups, tags."""
     return await ckan.get_site_stats()
 
 

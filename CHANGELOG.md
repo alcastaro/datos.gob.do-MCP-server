@@ -81,6 +81,16 @@ are about how the server looks from outside a language model.
   Dominicano de las Telecomunicaciones (INDOTEL))?* When nothing matches, the
   reply says so and explains that slugs are full names rather than acronyms.
 
+- **One language per audience.** Ten of the twenty-four tool descriptions were
+  in Spanish and fourteen in English, with parameter descriptions mixed the
+  same way. Everything a model reads — tool descriptions, parameter
+  descriptions, error messages — is now English, which is what the ecosystem's
+  conventions and every other MCP server use, and matters for the agents that
+  are not Claude. Everything a person reads — prompt titles and descriptions,
+  resource names, the verification guide — stays Spanish, because the audience
+  is Dominican. Spanish column names in examples (`"Año"`, `"Abril"`) stay as
+  they are: they are data, not prose.
+
 - **A resource search now names who published the file.** CKAN's
   `resource_search` answers with the file and nothing around it: a name, a
   format and a URL, with no dataset and no institution. In this catalog that
