@@ -205,6 +205,21 @@ def _forbidden_windows(raw: str) -> bool:
     return False
 
 
+def _is_unc_dest(raw: str) -> bool:
+    """True if this names a network location rather than a local path.
+
+    Separated from the system-path check so the refusal can say what it is. A
+    Windows tester was told `\\\\servidor\\equipo\\salida.csv` was a "system
+    path", which it is not: it is a network share, refused by a different
+    decision for a different reason, and a message that misnames it sends the
+    reader looking in the wrong place.
+    """
+    lowered = raw.replace("\\", "/").lower()
+    if lowered.startswith(("//?/", "//./")):
+        lowered = lowered[4:]
+    return lowered.startswith("//") or lowered.startswith("unc/")
+
+
 def _is_forbidden_dest(*candidates: str) -> bool:
     """True if any spelling of the destination sits under a system path."""
     return any(_forbidden_posix(raw) or _forbidden_windows(raw) for raw in candidates)
@@ -2333,6 +2348,19 @@ async def save_query_to_csv(
         tmp_root = Path(tempfile.gettempdir()).resolve()
         in_scratch = tmp_root in dest_path.parents and not _forbidden_windows(str(tmp_root))
         if not in_scratch:
+            # Network locations are refused, and told apart from system paths so the
+            # message names the actual policy. Checked first because a UNC path to a
+            # system directory is both, and "network" is the more useful thing to say.
+            if _is_unc_dest(dest) or _is_unc_dest(str(dest_path)):
+                return {
+                    "error": f"Network paths are not a supported destination: {dest}",
+                    "hint": (
+                        "This tool writes a CSV for a person to open, so it only writes to "
+                        "local paths — a UNC or mapped-network destination is refused rather "
+                        "than written to a host you did not name. Write it locally and copy "
+                        "it to the share afterwards."
+                    ),
+                }
             # Check both the raw path and the resolved path (macOS resolves /etc → /private/etc).
             if _is_forbidden_dest(dest, str(dest_path)):
                 return {"error": f"Cannot write to system path: {dest}"}

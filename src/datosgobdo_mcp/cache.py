@@ -461,6 +461,8 @@ class LocalDiskCache:
         # Oldest first; key as tie-break so eviction order is deterministic
         # when two entries share a timestamp.
         entries.sort(key=lambda x: (x[1], x[0]))
+        stuck = 0
+        stuck_bytes = 0
         for key, _accessed, size in entries:
             if total <= max_bytes:
                 break
@@ -468,8 +470,28 @@ class LocalDiskCache:
                 self._entry_path(key).unlink(missing_ok=True)
                 self._index.pop(key, None)
                 total -= size
-            except Exception:
-                pass
+            except OSError as e:
+                # Windows refuses to delete a file another process holds open, so
+                # a reader can pin every eviction candidate at once. Measured on
+                # Windows 11: 60 pinned Parquet files kept the cache at 122,000
+                # bytes against a 5,000-byte cap — 24× over, recovering by itself
+                # the moment the reader let go. Nothing is corrupt and a retry
+                # would not help while the read continues, but silence made the
+                # symptom unattributable: the cache exceeds its ceiling and
+                # nothing anywhere says why. So it is reported once per pass.
+                stuck += 1
+                stuck_bytes += size
+                logger.debug("could not evict %s: %s", key, e)
+        if stuck:
+            logger.warning(
+                "cache is %d bytes over its %d limit: %d file(s) holding %d bytes could not be "
+                "deleted, most likely open in another process (normal on Windows). The limit "
+                "will be enforced on the next write after they are released.",
+                total - max_bytes,
+                max_bytes,
+                stuck,
+                stuck_bytes,
+            )
 
     def stats(self) -> dict:
         entries = [

@@ -599,3 +599,41 @@ def test_the_lock_error_is_in_the_envelope_tuple():
     from datosgobdo_mcp import analytics
 
     assert cache_mod.CacheLockError in analytics._ENVELOPE_ERRORS
+
+
+def test_eviction_says_so_when_it_cannot_free_space(tmp_path, monkeypatch, caplog):
+    """Windows refuses to delete a file another process holds open, so a reader can
+    pin every eviction candidate. Measured on Windows 11: 60 pinned Parquet files
+    held the cache at 122,000 bytes against a 5,000-byte cap — 24x over, and not one
+    word anywhere about why. It recovers on its own once the reader lets go, so the
+    defect was never the size; it was that the size had no explanation.
+    """
+    # Seeded under a cap that does not evict, so the pinned state is set up before
+    # the cap tightens — which is the real sequence: files exist, then a write
+    # arrives and eviction has to free room it cannot free.
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path, max_bytes=1_000_000)
+    for k in ("a", "b"):
+        c.put_path(k).write_bytes(b"x" * 4_000)
+        c.finalize(k)
+
+    def refuse(*_a, **_kw):
+        raise PermissionError(13, "The process cannot access the file")
+
+    monkeypatch.setattr(cache_mod.Path, "unlink", refuse)
+    with caplog.at_level("WARNING", logger="datosgobdo_mcp.cache"):
+        c.evict_to_fit(1_000)
+    assert "over its 1000 limit" in caplog.text
+    assert "could not be deleted" in caplog.text
+    assert "open in another process" in caplog.text
+
+
+def test_a_normal_eviction_stays_quiet(tmp_path, caplog):
+    """The warning has to mean something, so it must not fire when eviction works."""
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path, max_bytes=5_000)
+    for k in ("a", "b"):
+        c.put_path(k).write_bytes(b"x" * 4_000)
+        c.finalize(k)
+    with caplog.at_level("WARNING", logger="datosgobdo_mcp.cache"):
+        c.evict_to_fit(5_000)
+    assert "could not be deleted" not in caplog.text
+    assert c.stats()["total_bytes"] <= 5_000

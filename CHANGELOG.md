@@ -129,10 +129,35 @@ Defender active and a non-administrator account.
   writers doing 200 entries each produced one 6.2 s wait against that ~10 s
   ceiling, and at four writers two processes died with
   `OSError: [Errno 36] Resource deadlock avoided`. It now uses the non-blocking
-  mode with exponential backoff and jitter — millisecond retries instead of
-  whole seconds, and no lockstep to starve on. The ten-second give-up is kept
-  deliberately, but raises `CacheLockError` naming the index and the way out
+  mode with exponential backoff and jitter — 44 to 48 attempts in ten seconds
+  where `LK_LOCK` managed about ten. The ten-second give-up is kept deliberately,
+  but raises `CacheLockError` naming the index and the way out
   (`DATOSGOBDO_CACHE_DIR`) rather than an errno from inside the standard library.
+
+  **What this does not do is shorten the waits, and the second Windows run
+  measured that:** two writers waited 6,209 ms at worst before the change and
+  6,251 ms after — the same figure. Retry granularity decides how quickly you take
+  the lock once it is free; it cannot change how long the other process holds it.
+  Four writers now reach ~10 s of waiting and none of them die, which is the whole
+  of the improvement: a process that used to be killed now skips one index entry
+  and says so.
+- **An eviction that cannot free space now says so.** Windows refuses to delete a
+  file another process holds open, so a reader can pin every eviction candidate at
+  once: measured on Windows 11, 60 pinned Parquet files held the cache at 122,000
+  bytes against a 5,000-byte cap — **24× over the limit, with nothing logged
+  anywhere**. It recovers by itself the moment the reader lets go, so the defect
+  was never the size; it was that the size had no explanation, which turns "the
+  cache is 20 GB and I do not know why" into an unanswerable question. One warning
+  per pass now names how far over the limit it is, how many files could not be
+  deleted and how many bytes they hold. Retrying was considered and rejected: it
+  cannot help while the read continues, and the grace period already covers the
+  ordinary case.
+- **A network destination is refused as a network destination.** `save_query_to_csv`
+  reported `\\servidor\equipo\salida.csv` as a "system path", which an ordinary
+  company share is not — the reader then looks for the problem where it is not, and
+  never learns the actual policy. UNC paths, including admin shares and the
+  `\\?\UNC\` spelling, now get their own message and a hint saying to write
+  locally and copy afterwards.
 - **A lock timeout no longer discards work already done.** `finalize` and `touch`
   are bookkeeping: by the time they run the Parquet is written and correct, so a
   lock they cannot get is logged and skipped rather than turned into a failed

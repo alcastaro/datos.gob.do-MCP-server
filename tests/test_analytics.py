@@ -789,14 +789,17 @@ def test_forbidden_dest_leaves_legitimate_destinations_alone(dest):
 
 
 async def test_save_query_to_csv_refuses_a_unc_destination(tmp_cache_dir):
-    """Refused wholesale, and reported as such: an admin share is not the only
-    way to reach a system directory on another host, and a CSV a person will
-    open does not need a remote destination."""
+    """Refused wholesale — an admin share is not the only way to reach a system
+    directory on another host, and a CSV a person will open does not need a remote
+    destination. This assertion used to require the words "system path", which is
+    what a Windows tester was shown for a perfectly ordinary company share; the
+    refusal now names the policy it is actually applying.
+    """
     out = await analytics.save_query_to_csv(
         "https://example.test/any.csv", "csv", dest="\\\\fileserver\\equipo\\salida.csv"
     )
     assert "error" in out
-    assert "system path" in out["error"].lower()
+    assert "Network paths are not a supported destination" in out["error"]
 
 
 def test_the_temp_exception_does_not_apply_to_a_windows_system_temp():
@@ -1999,3 +2002,27 @@ async def test_a_page_under_a_spreadsheet_name_is_refused_not_read_as_csv(
 
     assert "error" in out
     assert "not a valid ODS" in out["error"]
+
+
+async def test_a_network_destination_is_refused_as_a_network_path(tmp_cache_dir):
+    """It used to be reported as a "system path", which a UNC share is not. The
+    Windows tester's note was exact: someone who reads that goes looking for the
+    problem where it is not, and the policy — this tool writes local files — never
+    reaches them."""
+    out = await analytics.save_query_to_csv(
+        "https://example.test/any.csv", "csv", dest="\\\\servidor\\equipo\\salida.csv"
+    )
+    assert "error" in out
+    assert "Network paths are not a supported destination" in out["error"]
+    assert "system path" not in out["error"].lower()
+    assert "copy it to the share afterwards" in out["hint"]
+
+
+async def test_a_unc_path_into_a_system_directory_is_still_called_a_network_path(tmp_cache_dir):
+    """An admin share is both. Network is the more useful half to report, because
+    it is the one that tells the caller what to do instead."""
+    out = await analytics.save_query_to_csv(
+        "https://example.test/any.csv", "csv", dest="\\\\localhost\\C$\\Windows\\Temp\\evil.csv"
+    )
+    assert "error" in out
+    assert "Network paths are not a supported destination" in out["error"]
