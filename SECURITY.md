@@ -152,7 +152,7 @@ with the user's privileges and is driven by an LLM. The design assumptions:
 
 ### Known limitations (tracked)
 
-- **DNS rebind window** — *not fixed as of 0.13.0*. The SSRF guard resolves DNS
+- **DNS rebind window** — *not fixed as of 0.14.0*. The SSRF guard resolves DNS
   to validate, then httpx resolves again to connect; a fast-flux rebind between
   the two lookups is not blocked. Full mitigation (pinning the validated IP at
   the transport layer) remains tracked for the hosted milestone. Exposure is

@@ -217,7 +217,7 @@ Lo que este servidor declara al conectarse, verificado en sesión real el 2026-0
 
 ```json
 {
-  "serverInfo": { "name": "datosgobdo-mcp", "version": "0.13.0" },
+  "serverInfo": { "name": "datosgobdo-mcp", "version": "0.14.0" },
   "protocolVersion": "2025-11-25",
   "capabilities": {
     "tools":     { "listChanged": false },
@@ -310,7 +310,7 @@ DuckDB sobre una caché Parquet persistente. La primera llamada por recurso desc
 | `detect_outliers_resource` | Filas fuera del cerco IQR de una columna numérica, ordenadas por distancia a la mediana. |
 | `query_resource` | Escape hatch para usuarios avanzados: SQL de solo lectura contra la tabla `data`. Solo SELECT/WITH; DDL/DML/COPY/PRAGMA/ATTACH/LOAD rechazados, y en sandbox (ver [§15](#s15)). |
 | `save_query_to_csv` | Escribe el resultado de un filtro o SQL a un CSV local. Destino absoluto, o el de por defecto `~/Downloads/datosgobdo-exports/`. Deshabilitado en modo hosted. |
-| `get_cache_stats` | Estadísticas de la caché Parquet en disco. |
+| `get_cache_stats` | Estadísticas de la caché Parquet en disco, más la identidad del servidor y el modo de seguridad efectivo. `total_bytes` es uso de disco, no del índice: `orphan_entries` cuenta los Parquet que el índice no lista —escritos por una llamada que perdió el candado de la caché, o por un proceso que murió antes de registrarlos— y un valor distinto de cero ahí significa contención, no una caché sana. |
 | `clear_cache` | Borra la caché Parquet local. La única herramienta no de solo lectura del servidor (`destructiveHint: true`). Deshabilitada en modo hosted. |
 
 ### Catálogo
@@ -542,6 +542,14 @@ El defecto más común de este catálogo: **93 de 540 recursos legibles** guarda
 **`linked_files`** — la URL sirvió una página, y la página enlazaba archivos de datos.
 
 37 recursos del catálogo responden con una página web en vez de un archivo. Cuando un archivo enlazado coincide claramente con lo pedido, se descarga y `cache.resolved_from` registra `{page, followed}` — pediste una URL y recibiste datos de otra, y la respuesta lo dice en vez de esconderlo. Cuando varios candidatos son indistinguibles, vuelven como `linked_files` con nombres y puntajes, para que elijas y llames de nuevo. En este catálogo existen archivos llamados `clss.csv` y `xls.csv`; adivinar entre ellos sería inventar.
+
+Un archivo que la página abre desde JavaScript también cuenta como enlazado. Algunos portales ponen la dirección en `onclick="window.location.assign('…')"` y en ningún otro sitio —el Tribunal Constitucional publica así sus tres formatos—, así que leer sólo las anclas hacía responder «no hay archivo de datos» sobre una página de la que cualquiera descarga con un clic.
+
+**`cache.format_corrected`** — el formato que declara el catálogo estaba mal, y la respuesta dice en qué sentido.
+
+El formato del catálogo es una afirmación sobre el archivo, y 83 de los 1,595 recursos hermanos la tienen mal en los dos sentidos: una hoja de cálculo registrada como CSV, y un CSV registrado como ODS. El contenedor se identifica por lo que hay dentro —el miembro `mimetype` para ODS, una parte de libro para XLSX— y nunca por la firma sola, porque `PK` es como empiezan ambos. Un ZIP con exactamente un archivo de datos se desempaqueta y `detected_from` nombra el miembro; uno con varios se deja en paz, porque decidir cuál es «el dato» sería inventar. `source_sha256` siempre corresponde a lo que sirvió el portal, así que una descarga posterior puede compararse aunque lo que se leyó viniera de dentro de un archivo comprimido.
+
+Un `.xls` anterior a 2007 (BIFF/OLE2) no se puede leer y lo dice, con qué pedirle al publicador. Es el formato peor servido del catálogo: 12 de 22 legibles.
 
 **Sobre el CSV que escribe `save_query_to_csv`.** Es UTF-8, con saltos CRLF y **sin BOM**. Ese CSV es correcto, y Excel en un Windows en español lo va a abrir como cp1252 y mostrar `AÃ±o` donde dice `Año`, porque sin BOM es lo que Excel asume. El archivo está bien; el problema es la herramienta con la que este público lo va a abrir. Dos salidas: ábrelo con `Datos → Desde texto/CSV`, que pregunta la codificación, o usa LibreOffice, que detecta UTF-8. Medido en Windows 11: `4E 6F 6D 62 72 65 2C 41 C3 B1 6F 0D` — `Nombre,Año\r`, UTF-8 válido, sin `EF BB BF`.
 

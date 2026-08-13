@@ -205,7 +205,7 @@ What this server declares on connection, verified over a live session on 2026-08
 
 ```json
 {
-  "serverInfo": { "name": "datosgobdo-mcp", "version": "0.13.0" },
+  "serverInfo": { "name": "datosgobdo-mcp", "version": "0.14.0" },
   "protocolVersion": "2025-11-25",
   "capabilities": {
     "tools":     { "listChanged": false },
@@ -294,7 +294,7 @@ DuckDB over a persistent Parquet cache. The first call per resource downloads an
 | `detect_outliers_resource` | Rows outside the IQR fence on a numeric column, sorted by distance from the median. |
 | `query_resource` | Power-user escape hatch: read-only SQL against table `data`. SELECT/WITH only; DDL/DML/COPY/PRAGMA/ATTACH/LOAD rejected, and sandboxed (see [§15](#15-security-and-environment-variables)). |
 | `save_query_to_csv` | Write a filter or SQL result to a local CSV. Absolute destination, or the default `~/Downloads/datosgobdo-exports/`. Disabled in hosted mode. |
-| `get_cache_stats` | On-disk Parquet cache statistics. |
+| `get_cache_stats` | On-disk Parquet cache statistics, plus the server's own identity and effective security mode. `total_bytes` is disk usage, not index usage: `orphan_entries` counts Parquet files the index does not list — written by a call whose bookkeeping lost the cache lock, or by a process that died before recording them — and a non-zero value there means contention rather than a healthy cache. |
 | `clear_cache` | Wipe the local Parquet cache. The only non-read-only tool in the server (`destructiveHint: true`). Disabled in hosted mode. |
 
 ### Catalog
@@ -514,6 +514,14 @@ The most common defect in this catalog: **93 of 540 readable resources** hold nu
 **`linked_files`** — the URL served a page, and the page linked data files.
 
 37 catalog resources answer with a web page instead of a file. When one linked file clearly matches the request it is fetched, and `cache.resolved_from` records `{page, followed}` — you asked for one URL and received data from another, which the reply says rather than hides. When several candidates are indistinguishable they come back as `linked_files` with names and scores, for you to choose and call again. Files named `clss.csv` and `xls.csv` both exist in this catalog; guessing between them would be inventing.
+
+A file the page opens from JavaScript counts as linked. Some portals put the address in `onclick="window.location.assign('…')"` and nowhere else — the Tribunal Constitucional publishes all three of its formats that way — so reading only anchors reported "no data file on it" about a page anyone can download from in one click.
+
+**`cache.format_corrected`** — the catalog's declared format was wrong, and the reply says which way.
+
+The format in the catalog is a claim about the file, and 83 of 1,595 sibling resources have it wrong in both directions: a spreadsheet registered as CSV, and a CSV registered as ODS. The container is identified from what is inside it — the `mimetype` member for ODS, a workbook part for XLSX — never from the signature alone, because `PK` is how both start. A ZIP holding exactly one data file is unpacked and `detected_from` names the member; a ZIP holding several is left alone, because deciding which one is "the data" would be inventing. `source_sha256` always covers what the portal served, so a re-download can be compared against it even when what was parsed came from inside an archive.
+
+A pre-2007 `.xls` (BIFF/OLE2) cannot be read at all and says so, with what to ask the publisher for. It is the worst-served format in the catalog: 12 of 22 readable.
 
 **A note on the CSV `save_query_to_csv` writes.** It is UTF-8 with CRLF line endings and **no BOM**. That is a correct CSV, and Excel on a Spanish-language Windows will still open it as cp1252 and show `AÃ±o` for `Año`, because without a BOM that is what Excel assumes. The file is fine; the tool most of this audience will open it with is the problem. Two ways around it: open it through Excel's `Data → From Text/CSV`, which asks for the encoding, or use LibreOffice, which detects UTF-8. Measured on Windows 11: `4E 6F 6D 62 72 65 2C 41 C3 B1 6F 0D` — `Nombre,Año\r`, valid UTF-8, no `EF BB BF`.
 
