@@ -86,6 +86,35 @@ with the user's privileges and is driven by an LLM. The design assumptions:
     portals.
   The default is deliberately *not* a host allowlist: CKAN resources
   legitimately live on ministry sites, S3 buckets and CDNs.
+
+  **Where you set this matters.** `DATOSGOBDO_NETGUARD` and
+  `DATOSGOBDO_ALLOW_HOSTS` must go in the `env` block of your MCP client's
+  configuration:
+
+  ```json
+  {
+    "mcpServers": {
+      "datosgobdo": {
+        "command": "/Users/YOUR_USERNAME/.local/bin/uvx",
+        "args": ["dominican-open-data-mcp"],
+        "env": { "DATOSGOBDO_NETGUARD": "strict" }
+      }
+    }
+  }
+  ```
+
+  A stdio MCP server inherits only a limited, platform-dependent subset of the
+  environment from the client that launches it — see the
+  [MCP debugging guidance](https://modelcontextprotocol.io/docs/tools/debugging).
+  **`export DATOSGOBDO_NETGUARD=strict` in your shell therefore does not reach the
+  server**, which starts in `public-only` while the operator believes it is
+  restricted. There is no warning for this and there cannot be: from the server's
+  side, no one asked for `strict`. Two ways to verify instead of assuming: call
+  `get_cache_stats`, whose `server.netguard_mode` field reports the mode actually
+  in force, or read the startup line in the client's log for this server, which
+  records the effective netguard mode and whether the archive is on. Claude Code
+  passes them explicitly:
+  `claude mcp add datosgobdo -e DATOSGOBDO_NETGUARD=strict -- uvx dominican-open-data-mcp`.
 - **Page→file resolution is bounded.** 37 catalog URLs answer with an HTML page
   instead of a file. When the server follows a link found in such a page, the
   followed URL passes the same SSRF guard, only same-origin/HTTP(S) data-file
@@ -99,19 +128,27 @@ with the user's privileges and is driven by an LLM. The design assumptions:
 - **Archive fallback cannot fabricate provenance.** The archived-copy path
   (`DATOSGOBDO_ARCHIVE_DIR`, off by default) always tries the origin first, and
   every archive-served answer carries `cache.provenance` with the capture date,
-  `sha256`, licence and the reason the origin was not used.
+  `sha256`, licence and the reason the origin was not used. The variable takes an
+  **absolute** path; if it does not name a directory the server logs a warning and
+  leaves the fallback off, so a misconfigured archive is distinguishable from an
+  archive nobody asked for.
 - **Cache poisoning across parser versions** — the Parquet cache key includes
   the parser build (package version + DuckDB's, which decides column types), so
   an upgrade cannot serve types inferred by the previous build. The warm path
   (`get_by_url`) validates against a build stamp for the same reason.
-- **Filesystem writes (`save_query_to_csv`)** — destination must end in
-  `.csv`/`.tsv`, may not contain `..`, may not target system paths (OS temp
-  dir excepted), and the final write uses `O_NOFOLLOW` so a symlink swapped in
-  after validation is not followed.
+- **Filesystem writes (`save_query_to_csv`)** — destination must be an
+  **absolute** path ending in `.csv`/`.tsv`, may not contain `..`, may not target
+  system paths (OS temp dir excepted), and the final write uses `O_NOFOLLOW` so a
+  symlink swapped in after validation is not followed. The absolute-path
+  requirement is a correctness control as much as a safety one: a client-launched
+  server has an undefined working directory, so a relative destination resolved
+  against the filesystem root — refused with an explanation instead.
 - **Hosted mode drops local-filesystem tools.** With
   `DATOSGOBDO_TRANSPORT=streamable-http`, `save_query_to_csv` and `clear_cache`
   return a disabled result instead of executing, and cache statistics omit
-  server paths.
+  server paths. Note that nothing captures the server's stderr under this
+  transport — an operator who wants an audit trail has to collect it, or wire up
+  OpenTelemetry.
 
 ### Known limitations (tracked)
 

@@ -113,6 +113,8 @@ Pega esto, reemplazando `TU_USUARIO`:
 
 Usa la **ruta completa** a `uvx` — Claude Desktop no lee el `PATH` de tu shell. Luego cierra Claude Desktop por completo (Cmd+Q en macOS, no solo cerrar la ventana) y vuelve a abrirlo. En `Configuración → Desarrollador` debe aparecer `datosgobdo` en estado **running**.
 
+No hace falta nada más. Si después quieres cambiar alguna opción — la guardia de red, el directorio de caché — va en un bloque `"env"` **dentro de este mismo archivo**, no en tu shell: ver [§13](#s13).
+
 **Claude Code.** Una línea:
 
 ```bash
@@ -226,6 +228,8 @@ Lo que este servidor declara al conectarse, verificado en sesión real el 2026-0
 ```
 
 `listChanged: false` y `subscribe: false` son declaraciones honestas, no omisiones: la lista de tools queda fija al arrancar, y ningún resource aquí cambia con la frecuencia que justificaría una suscripción.
+
+> **Sobre los dos números de versión.** Los enlaces de especificación de arriba apuntan a `2026-07-28`, la especificación vigente, porque es la que conviene leer. El servidor negocia **`2025-11-25`** porque fija `mcp>=1.9.0,<2` — el SDK 2.0 renombró `FastMCP` a `MCPServer` y eliminó la ruta de importación anterior sin capa de compatibilidad. Lo que 2026-07-28 agrega y este servidor por tanto no implementa: [`server/discover`](https://modelcontextprotocol.io/specification/2026-07-28/server/discover), los campos `_meta` por petición, y niveles de log por petición. La migración está registrada como pendiente, no es un descuido.
 
 <a id="s7"></a>
 
@@ -471,9 +475,39 @@ Claude Desktop y Claude Code están en [§2](#s2). Para seguir la versión de de
 
 Para Cursor y otros el principio es idéntico — registra `uvx` como comando. La ubicación del archivo de configuración de cada cliente está en su propia documentación; el [directorio de clientes MCP](https://modelcontextprotocol.io/clients) es el índice.
 
+### Pasarle opciones al servidor: el bloque `env`
+
+Cada variable `DATOSGOBDO_*` de este README va en un objeto `"env"` dentro de la configuración del cliente:
+
+```json
+{
+  "mcpServers": {
+    "datosgobdo": {
+      "command": "/Users/TU_USUARIO/.local/bin/uvx",
+      "args": ["dominican-open-data-mcp"],
+      "env": {
+        "DATOSGOBDO_NETGUARD": "strict",
+        "DATOSGOBDO_CACHE_DIR": "/Users/TU_USUARIO/.cache/datosgobdo-mcp"
+      }
+    }
+  }
+}
+```
+
+**`export DATOSGOBDO_NETGUARD=strict` en tu shell no llega al servidor.** Un servidor MCP stdio lanzado por un cliente hereda solo un subconjunto limitado del entorno, dependiente de plataforma — la [guía de depuración de MCP](https://modelcontextprotocol.io/docs/tools/debugging) lo dice explícitamente. Si pones la variable en el shell, el servidor arranca en el modo por defecto mientras crees que quedó restringido. Importa sobre todo para `DATOSGOBDO_NETGUARD`, que es un control de seguridad ([§15](#s15)).
+
+Dos consecuencias del mismo hecho, útiles antes de reportar un bug:
+
+- **Usa rutas absolutas en toda opción que sea una ruta.** El directorio de trabajo de un servidor lanzado por el cliente es indefinido — `/` en macOS. `DATOSGOBDO_ARCHIVE_DIR=mi-archivo` no resuelve a ninguna parte, y el servidor ahora registra `is not a directory … Archive fallback stays off` en vez de quedarse callado. Igual para `DATOSGOBDO_CACHE_DIR` y para el argumento `dest` de `save_query_to_csv`, que rechaza de plano una ruta relativa.
+- **`uv run datosgobdo-mcp` en una terminal se comporta distinto** — ahí el directorio de trabajo es donde lo corriste, y tu entorno de shell sí aplica. Un bug que solo aparece bajo el cliente suele ser esto.
+
+En Claude Code se pasan con `-e`: `claude mcp add datosgobdo -e DATOSGOBDO_NETGUARD=strict -- uvx dominican-open-data-mcp`.
+
 ### Modo hosted (experimental)
 
 `DATOSGOBDO_TRANSPORT=streamable-http` sirve MCP sobre HTTP (sin estado, para escalado horizontal) en vez de stdio. En ese modo `save_query_to_csv` y `clear_cache` quedan deshabilitadas — tocan el filesystem del servidor y la caché compartida — y las estadísticas de caché omiten rutas del servidor.
+
+**Los registros ahí corren por tu cuenta.** Bajo stdio el cliente captura el stderr del servidor y lo escribe en un archivo que puedes seguir con `tail`; sobre Streamable HTTP no. Recoge el stderr tú mismo, o conecta [OpenTelemetry](https://opentelemetry.io/), y usa herramientas HTTP normales (`curl`, el panel de red del navegador) para inspeccionar peticiones y flujos SSE.
 
 | Variable | Por defecto | Significado |
 |---|---|---|
@@ -515,7 +549,9 @@ Un archivo solo guarda lo que se pudo descargar, así que no contiene los recurs
 
 | Variable | Por defecto | Significado |
 |---|---|---|
-| `DATOSGOBDO_ARCHIVE_DIR` | sin definir (apagado) | Directorio con `manifest.json` + copias Parquet a las que recurrir. |
+| `DATOSGOBDO_ARCHIVE_DIR` | sin definir (apagado) | Ruta **absoluta** a un directorio con `manifest.json` + copias Parquet a las que recurrir. |
+
+Se define en el bloque `env` del cliente ([§13](#s13)), con ruta absoluta. Si el directorio no existe, el servidor registra una advertencia y deja el fallback apagado — no finge estar armado.
 
 <a id="s15"></a>
 
@@ -528,12 +564,14 @@ Política completa, modelo de amenazas y proceso de reporte: **[SECURITY.md](SEC
 - **`query_resource` está en sandbox.** Además de validar que la sentencia sea un único SELECT/WITH de solo lectura, el recurso se materializa en una tabla en memoria y entonces se fijan `enable_external_access=false` + `lock_configuration=true` antes de correr el SQL del usuario — de modo que las funciones de tabla de DuckDB (`read_text`, `read_csv`, `glob`, …) no pueden alcanzar el filesystem ni la red.
 - **Guardia SSRF en cada descarga**, URL inicial **y** cada salto de redirección: solo http/https, y cada dirección a la que resuelva el host debe ser globalmente ruteable. Metadatos de nube (`169.254.169.254`), loopback, RFC-1918, link-local y ULA de IPv6 quedan bloqueados. La ruta guardada cubre también el HEAD de metadatos, no solo la descarga.
 - **Topes de bytes** en las descargas remotas (5 MB preview, 100 MB analytics), en streaming — acotando memoria y exposición a bombas de descompresión.
-- **`save_query_to_csv`** exige destino `.csv`/`.tsv`, rechaza `..` y rutas de sistema, y escribe con `O_NOFOLLOW`.
+- **`save_query_to_csv`** exige destino **absoluto** terminado en `.csv`/`.tsv`, rechaza `..` y rutas de sistema, y escribe con `O_NOFOLLOW`.
 
 | Variable | Valores | Significado |
 |---|---|---|
 | `DATOSGOBDO_NETGUARD` | `public-only` (por defecto) / `strict` / `off` | `strict` restringe los hosts a `datos.gob.do` y subdominios; `off` desactiva la guardia. |
 | `DATOSGOBDO_ALLOW_HOSTS` | separados por coma, comodines `*.` | Hosts de confianza del operador — el escape hatch para forks apuntando a otro portal CKAN. |
+
+> **Estas van en el bloque `env` del cliente, no en tu shell** — [§13](#s13) tiene el JSON exacto. Un servidor stdio hereda solo un subconjunto limitado del entorno, así que `export DATOSGOBDO_NETGUARD=strict` deja el servidor corriendo con la guardia por defecto. No hay advertencia para esto, porque desde el lado del servidor no pasó nada. Para comprobarlo: `get_cache_stats` reporta el modo real en `server.netguard_mode`, y la línea de arranque en el log del cliente registra el modo efectivo.
 
 El valor por defecto deliberadamente **no** es una lista blanca de hosts: como muestra [§7](#s7), los recursos legítimos viven en 273 sitios ministeriales, buckets y CDNs.
 
@@ -570,7 +608,7 @@ src/datosgobdo_mcp/
 - **El trabajo bloqueante corre en `asyncio.to_thread`** (transcodificación ODS, detección de codificación, COPY a Parquet) para que un parseo largo nunca detenga el event loop.
 - **Truncado defensivo.** Las descripciones largas — algunas instituciones publican 5+ KB por organización — se cortan a 300 caracteres en las respuestas de listado, para que una llamada no queme miles de tokens de contexto.
 - **`list_recent_datasets` está reorientada.** CKAN expone `recently_changed_packages_activity_list`, pero devuelve actividades sin hidratar (`{object_id: "uuid", activity_type: "changed package"}`) que el modelo no puede interpretar. Usamos `package_search?sort=metadata_modified+desc` y devolvemos datasets ya formateados en una sola llamada.
-- **Todo el logging a stderr.** Según la [guía de depuración de MCP](https://modelcontextprotocol.io/docs/tools/debugging), un servidor stdio nunca debe escribir a stdout — corrompe el flujo del protocolo.
+- **Todo el logging a stderr, y nada por el protocolo.** Según la [guía de depuración de MCP](https://modelcontextprotocol.io/docs/tools/debugging), un servidor stdio nunca debe escribir a stdout — corrompe el flujo del protocolo. El canal de logging del propio protocolo (`notifications/message`) nunca se usó aquí, y desde la especificación `2026-07-28` está desaconsejado: stderr es lo que la especificación ahora recomienda. Nada que migrar — pero no «mejores» esto agregando logging por protocolo.
 
 ### Stack
 
@@ -657,7 +695,22 @@ npx -y @modelcontextprotocol/inspector --cli uvx dominican-open-data-mcp \
 
 ### Logs
 
-Claude Desktop en macOS: `tail -f ~/Library/Logs/Claude/mcp-server-datosgobdo.log`. El servidor registra el arranque (endpoint, transporte, tools registradas), errores fatales con traceback, y el apagado — todo a stderr.
+Claude Desktop escribe un archivo de log por servidor, más el suyo:
+
+```bash
+tail -f ~/Library/Logs/Claude/mcp-server-datosgobdo.log   # macOS — este servidor
+tail -n 20 -F ~/Library/Logs/Claude/mcp*.log              # macOS — todos los servidores + el cliente
+```
+
+```powershell
+type "$env:AppData\Claude\logs\mcp*.log"                  # Windows
+```
+
+El servidor registra el arranque (endpoint, transporte, modo de guardia de red, archivo activado o no), aciertos y fallos de caché, sustituciones página→archivo, formas de parseo sospechosas, variables de entorno mal configuradas, errores fatales con traceback, y el apagado — todo a stderr, que el cliente captura. Bajo `DATOSGOBDO_TRANSPORT=streamable-http` no lo captura: ver [§13](#s13).
+
+Los logs contienen URLs de recursos, llaves de caché y rutas de destino. No contienen credenciales — el servidor no tiene ninguna para el portal — y las herramientas GCP opcionales se autentican con tu propio ADC, que nunca se registra.
+
+Cuando el sospechoso es el cliente y no el servidor, Claude Desktop puede abrir las DevTools de Chrome: escribe `{"allowDevTools": true}` en `~/Library/Application Support/Claude/developer_settings.json` y luego `Cmd-Option-I`. El panel Console muestra errores del lado cliente; el panel Network, cargas de mensajes y tiempos.
 
 ### Iteración
 

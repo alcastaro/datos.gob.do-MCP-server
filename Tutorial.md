@@ -48,6 +48,8 @@ Claude Desktop config (`claude_desktop_config.json`):
 }
 ```
 
+Settings go in an `"env"` object next to `"args"` — `{"env": {"DATOSGOBDO_NETGUARD": "strict"}}` — **not** in your shell. A stdio server inherits only a limited subset of the environment from the client, so an `export` in your terminal never reaches it. Same reason: use absolute paths everywhere, because the working directory of a client-launched server is undefined (`/` on macOS). Both facts come from the [MCP debugging guide](https://modelcontextprotocol.io/docs/tools/debugging), and both cost real debugging time when you build your own server — see Step 7.
+
 Restart the client. Everything the server offers appears automatically: **24 tools, 3 resources with 1 URI template, and 6 prompts**. This part of the tutorial walks the tools first because they do the work; §1.7 covers the other two, which is where most people should actually start.
 
 ### 1.2 The five tool categories
@@ -312,11 +314,16 @@ client, communicating over stdin/stdout. The single most important rule:
 > **Never `print()` to stdout.** stdout is the MCP protocol channel. All logs go to
 > stderr. (See `server.py` — `logging.basicConfig(stream=sys.stderr, ...)`.)
 
+The client captures that stderr and writes it to a file — `~/Library/Logs/Claude/mcp-server-datosgobdo.log` for Claude Desktop on macOS, `%APPDATA%\Claude\logs\mcp*.log` on Windows. Two things worth knowing:
+
+- **The protocol has its own logging channel and you should not use it.** `notifications/message` is [deprecated as of spec `2026-07-28`](https://modelcontextprotocol.io/docs/tools/debugging); stderr is what the specification now recommends. This server never used it, so there is nothing to migrate — the point is not to add it.
+- **Over Streamable HTTP nobody captures stderr for you.** The stdio convenience is a property of the transport, not of MCP. A hosted server needs its own log collection or [OpenTelemetry](https://opentelemetry.io/).
+
 ### 2.2 Module map
 
 ```
 src/datosgobdo_mcp/
-├── server.py     FastMCP entry — 23 @mcp.tool decorators (the public surface)
+├── server.py     FastMCP entry — 24 @mcp.tool decorators (the public surface)
 ├── ckan.py       Async CKAN HTTP client + Solr-escaping + JSON formatters
 ├── download.py   Capped streaming download + encoding detection
 ├── preview.py    CSV/TSV/XLSX/JSON parsers for the preview tool
@@ -511,6 +518,13 @@ the network entirely on a warm hit.
 - `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`.
 - Publish to **PyPI** (`uv build && uv publish`) and the **MCP Registry**
   (`mcp-publisher publish` with a `server.json`).
+
+**Assume nothing about the environment you are launched into.** Your server works in your terminal and then behaves differently under a client, for two reasons the [MCP debugging guide](https://modelcontextprotocol.io/docs/tools/debugging) states plainly: the client passes only a limited subset of environment variables, and the working directory is undefined (`/` on macOS). Both bit this project:
+
+- A user who sets a **security** variable in their shell gets the default. Document the `env` block, not `export`.
+- A relative path resolves against a directory nobody chose. `DATOSGOBDO_ARCHIVE_DIR=mi-archivo` silently disabled the archive fallback; a relative `dest` for `save_query_to_csv` sent the write to the filesystem root, failing with `[Errno 30] Read-only file system`.
+
+The lesson generalizes: **for any path-valued input, require an absolute path and say why in the error; for any configuration you cannot find, log that you looked.** A feature that is off because it was misconfigured must not look identical to a feature that was never asked for.
 
 ### Step 8 — Generalize across sources (optional)
 

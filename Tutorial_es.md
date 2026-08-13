@@ -49,6 +49,8 @@ Config de Claude Desktop (`claude_desktop_config.json`):
 }
 ```
 
+Las opciones van en un objeto `"env"` junto a `"args"` — `{"env": {"DATOSGOBDO_NETGUARD": "strict"}}` — y **no** en tu shell. Un servidor stdio hereda del cliente solo un subconjunto limitado del entorno, así que un `export` en tu terminal nunca le llega. Por la misma razón: usa rutas absolutas en todo, porque el directorio de trabajo de un servidor lanzado por el cliente es indefinido (`/` en macOS). Los dos hechos salen de la [guía de depuración de MCP](https://modelcontextprotocol.io/docs/tools/debugging), y los dos cuestan horas de depuración cuando construyes tu propio servidor — ver el Paso 7.
+
 Reinicia el cliente. Aparece automáticamente todo lo que el servidor ofrece: **24 tools, 3 resources con 1 plantilla de URI, y 6 prompts**. Esta parte del tutorial recorre primero las tools porque son las que hacen el trabajo; la §1.7 cubre las otras dos, que es por donde debería empezar casi todo el mundo.
 
 ### 1.2 Las cinco categorías de herramientas
@@ -318,11 +320,16 @@ cliente, comunicándose por stdin/stdout. La regla más importante:
 > **Nunca `print()` a stdout.** stdout es el canal del protocolo MCP. Todos los logs van a
 > stderr. (Ver `server.py` — `logging.basicConfig(stream=sys.stderr, ...)`.)
 
+El cliente captura ese stderr y lo escribe en un archivo — `~/Library/Logs/Claude/mcp-server-datosgobdo.log` en Claude Desktop para macOS, `%APPDATA%\Claude\logs\mcp*.log` en Windows. Dos cosas que vale saber:
+
+- **El protocolo tiene su propio canal de logging y no conviene usarlo.** `notifications/message` quedó [desaconsejado desde la especificación `2026-07-28`](https://modelcontextprotocol.io/docs/tools/debugging); stderr es lo que la especificación ahora recomienda. Este servidor nunca lo usó, así que no hay nada que migrar — el punto es no agregarlo.
+- **Sobre Streamable HTTP nadie captura el stderr por ti.** La comodidad de stdio es una propiedad del transporte, no de MCP. Un servidor hospedado necesita su propia recolección de logs o [OpenTelemetry](https://opentelemetry.io/).
+
 ### 2.2 Mapa de módulos
 
 ```
 src/datosgobdo_mcp/
-├── server.py     Entrada FastMCP — 23 decoradores @mcp.tool (la superficie pública)
+├── server.py     Entrada FastMCP — 24 decoradores @mcp.tool (la superficie pública)
 ├── ckan.py       Cliente HTTP CKAN async + escape de Solr + formateadores JSON
 ├── download.py   Descarga con tope + detección de encoding
 ├── preview.py    Parsers CSV/TSV/XLSX/JSON para la tool de preview
@@ -517,6 +524,13 @@ salta la red por completo en un hit caliente.
 - `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`.
 - Publica a **PyPI** (`uv build && uv publish`) y al **MCP Registry**
   (`mcp-publisher publish` con un `server.json`).
+
+**No asumas nada del entorno en el que te lanzan.** Tu servidor funciona en tu terminal y luego se comporta distinto bajo un cliente, por dos razones que la [guía de depuración de MCP](https://modelcontextprotocol.io/docs/tools/debugging) dice sin rodeos: el cliente pasa solo un subconjunto limitado de variables de entorno, y el directorio de trabajo es indefinido (`/` en macOS). Las dos golpearon a este proyecto:
+
+- Quien define una variable de **seguridad** en su shell se queda con el valor por defecto. Documenta el bloque `env`, no `export`.
+- Una ruta relativa resuelve contra un directorio que nadie eligió. `DATOSGOBDO_ARCHIVE_DIR=mi-archivo` apagaba el fallback de archivo en silencio; un `dest` relativo en `save_query_to_csv` mandaba la escritura a la raíz del filesystem y fallaba con `[Errno 30] Read-only file system`.
+
+La lección generaliza: **para toda entrada que sea una ruta, exige ruta absoluta y explica por qué en el error; para toda configuración que no encuentres, registra que la buscaste.** Una función apagada por mala configuración no debe verse igual que una función que nadie pidió.
 
 ### Paso 8 — Generaliza entre fuentes (opcional)
 

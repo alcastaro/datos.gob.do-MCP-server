@@ -109,6 +109,8 @@ Paste this, replacing `YOUR_USERNAME`:
 
 Use the **full path** to `uvx` — Claude Desktop does not read your shell's `PATH`. Then quit Claude Desktop completely (Cmd+Q on macOS, not just closing the window) and reopen it. Under `Settings → Developer` you should see `datosgobdo` **running**.
 
+Nothing else is required. If you later want to change a setting — the network guard, the cache directory — it goes in an `"env"` block **inside this file**, not in your shell: see [§13](#13-installation-and-client-configuration).
+
 **Claude Code.** One line:
 
 ```bash
@@ -214,6 +216,8 @@ What this server declares on connection, verified over a live session on 2026-08
 ```
 
 `listChanged: false` and `subscribe: false` are honest declarations, not omissions: the tool list is fixed at startup, and no resource here changes often enough to be worth a subscription.
+
+> **On the two version numbers.** The spec links above point to `2026-07-28`, the current specification, because that is what you should read. The server negotiates **`2025-11-25`** because it pins `mcp>=1.9.0,<2` — SDK 2.0 renamed `FastMCP` to `MCPServer` and dropped the old import path with no shim. What 2026-07-28 adds and this server therefore does not implement: [`server/discover`](https://modelcontextprotocol.io/specification/2026-07-28/server/discover), the per-request `_meta` fields, and per-request log levels. Migration is tracked, not accidental.
 
 ## 7. What is datos.gob.do?
 
@@ -445,9 +449,39 @@ Claude Desktop and Claude Code are covered in [§2](#2-quick-start). To track th
 
 For Cursor and others, the principle is identical — register `uvx` as the command. Each client's config file location is in its own docs; the [MCP clients directory](https://modelcontextprotocol.io/clients) is the index.
 
+### Passing settings to the server: the `env` block
+
+Every `DATOSGOBDO_*` variable in this README goes in an `"env"` object inside the client's config:
+
+```json
+{
+  "mcpServers": {
+    "datosgobdo": {
+      "command": "/Users/YOUR_USERNAME/.local/bin/uvx",
+      "args": ["dominican-open-data-mcp"],
+      "env": {
+        "DATOSGOBDO_NETGUARD": "strict",
+        "DATOSGOBDO_CACHE_DIR": "/Users/YOUR_USERNAME/.cache/datosgobdo-mcp"
+      }
+    }
+  }
+}
+```
+
+**`export DATOSGOBDO_NETGUARD=strict` in your shell does not reach the server.** A stdio MCP server launched by a client inherits only a limited, platform-dependent subset of the environment — [MCP debugging guidance](https://modelcontextprotocol.io/docs/tools/debugging) is explicit about it. Set the variable in your shell and the server starts in the default mode while you believe it is locked down. This matters most for `DATOSGOBDO_NETGUARD`, which is a security control ([§15](#15-security-and-environment-variables)).
+
+Two consequences of the same fact, both worth knowing before you file a bug:
+
+- **Use absolute paths for every path-valued setting.** The working directory of a client-launched server is undefined — `/` on macOS. `DATOSGOBDO_ARCHIVE_DIR=mi-archivo` resolves nowhere, and the server now logs `is not a directory … Archive fallback stays off` rather than going quiet. Same for `DATOSGOBDO_CACHE_DIR` and for the `dest` argument of `save_query_to_csv`, which refuses a relative path outright.
+- **`uv run datosgobdo-mcp` in a terminal behaves differently** — there the working directory is wherever you ran it, and your shell environment does apply. A bug that only appears under the client is usually this.
+
+For Claude Code, pass them with `-e`: `claude mcp add datosgobdo -e DATOSGOBDO_NETGUARD=strict -- uvx dominican-open-data-mcp`.
+
 ### Hosted mode (experimental)
 
 `DATOSGOBDO_TRANSPORT=streamable-http` serves MCP over HTTP (stateless, for horizontal scaling) instead of stdio. In this mode `save_query_to_csv` and `clear_cache` are disabled — they touch the server's filesystem and shared cache — and cache statistics omit server paths.
+
+**Logs are your problem in this mode.** Under stdio the client captures the server's stderr and writes it to a file you can tail; over Streamable HTTP it does not. Collect stderr yourself, or wire up [OpenTelemetry](https://opentelemetry.io/), and use ordinary HTTP tooling (`curl`, a browser's Network panel) to inspect requests and SSE streams.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -487,7 +521,9 @@ An archive only holds what could be downloaded, so it does not contain the resou
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DATOSGOBDO_ARCHIVE_DIR` | unset (off) | Directory with `manifest.json` + Parquet copies to fall back on. |
+| `DATOSGOBDO_ARCHIVE_DIR` | unset (off) | **Absolute** path to a directory with `manifest.json` + Parquet copies to fall back on. |
+
+Set it in the client's `env` block ([§13](#13-installation-and-client-configuration)), with an absolute path. If the directory does not exist the server logs a warning and leaves the fallback off — it will not pretend to be armed.
 
 ## 15. Security and environment variables
 
@@ -498,12 +534,14 @@ Full policy, threat model and reporting process: **[SECURITY.md](SECURITY.md)**.
 - **`query_resource` is sandboxed.** Beyond validating that the statement is a single read-only SELECT/WITH, the resource is materialized into an in-memory table and then `enable_external_access=false` + `lock_configuration=true` are set before the user's SQL runs — so DuckDB table functions (`read_text`, `read_csv`, `glob`, …) cannot reach the filesystem or the network.
 - **SSRF guard on every download**, initial URL and each redirect hop: http/https only, and every address the hostname resolves to must be globally routable. Cloud metadata (`169.254.169.254`), loopback, RFC-1918, link-local and IPv6 ULA are blocked. The guarded path covers the metadata HEAD probe as well as the download itself.
 - **Byte caps** on remote fetches (5 MB preview, 100 MB analytics), streamed — bounding memory and decompression-bomb exposure.
-- **`save_query_to_csv`** requires a `.csv`/`.tsv` destination, rejects `..` and system paths, and writes with `O_NOFOLLOW`.
+- **`save_query_to_csv`** requires an **absolute** `.csv`/`.tsv` destination, rejects `..` and system paths, and writes with `O_NOFOLLOW`.
 
 | Variable | Values | Meaning |
 |---|---|---|
 | `DATOSGOBDO_NETGUARD` | `public-only` (default) / `strict` / `off` | `strict` restricts hosts to `datos.gob.do` and subdomains; `off` disables the guard. |
 | `DATOSGOBDO_ALLOW_HOSTS` | comma-separated, `*.` wildcards | Operator-trusted hosts — the escape hatch for forks pointing at another CKAN portal. |
+
+> **Set these in the client's `env` block, not in your shell** — [§13](#13-installation-and-client-configuration) shows the exact JSON. A stdio server inherits only a limited subset of the environment, so `export DATOSGOBDO_NETGUARD=strict` leaves the server running with the default guard. There is no warning for this, because from the server's side nothing happened. To check: `get_cache_stats` reports the mode actually in force as `server.netguard_mode`, and the startup line in the client's log records the effective mode.
 
 The default is deliberately **not** a host allowlist: as [§7](#7-what-is-datosgobdo) shows, legitimate resources live on 273 ministry sites, buckets and CDNs.
 
@@ -538,7 +576,7 @@ src/datosgobdo_mcp/
 - **Blocking work runs in `asyncio.to_thread`** (ODS transcode, encoding detection, Parquet COPY) so a long parse never stalls the event loop.
 - **Defensive truncation.** Long descriptions — some institutions publish 5+ KB per organization — are cut to 300 characters in list responses, so one call cannot burn thousands of tokens of context.
 - **`list_recent_datasets` is reoriented.** CKAN exposes `recently_changed_packages_activity_list`, but it returns un-hydrated activities (`{object_id: "uuid", activity_type: "changed package"}`) the model cannot interpret. We use `package_search?sort=metadata_modified+desc` and return formatted datasets in one call.
-- **All logging to stderr.** Per the [MCP debugging guidance](https://modelcontextprotocol.io/docs/tools/debugging), a stdio server must never write to stdout — it corrupts the protocol stream.
+- **All logging to stderr, and none over the protocol.** Per the [MCP debugging guidance](https://modelcontextprotocol.io/docs/tools/debugging), a stdio server must never write to stdout — it corrupts the protocol stream. The protocol's own logging channel (`notifications/message`) was never used here, and as of spec `2026-07-28` it is deprecated: stderr is now what the specification recommends. Nothing to migrate — but do not "improve" this by adding protocol logging.
 
 ### Stack
 
@@ -621,7 +659,22 @@ npx -y @modelcontextprotocol/inspector --cli uvx dominican-open-data-mcp \
 
 ### Logs
 
-Claude Desktop on macOS: `tail -f ~/Library/Logs/Claude/mcp-server-datosgobdo.log`. The server logs startup (endpoint, transport, registered tools), fatal errors with traceback, and shutdown — all to stderr.
+Claude Desktop writes one log file per server, plus its own:
+
+```bash
+tail -f ~/Library/Logs/Claude/mcp-server-datosgobdo.log   # macOS — this server
+tail -n 20 -F ~/Library/Logs/Claude/mcp*.log              # macOS — all servers + the client
+```
+
+```powershell
+type "$env:AppData\Claude\logs\mcp*.log"                  # Windows
+```
+
+The server logs startup (endpoint, transport, network-guard mode, archive on or off), cache hits and misses, page→file substitutions, suspicious parse shapes, misconfigured environment variables, fatal errors with traceback, and shutdown — all to stderr, which the client captures. Under `DATOSGOBDO_TRANSPORT=streamable-http` it does not: see [§13](#13-installation-and-client-configuration).
+
+Logs contain resource URLs, cache keys and destination paths. They contain no credentials — the server holds none for the portal — and the optional GCP tools authenticate through your own ADC, which is never logged.
+
+When the client itself is the suspect rather than the server, Claude Desktop can open Chrome DevTools: write `{"allowDevTools": true}` to `~/Library/Application Support/Claude/developer_settings.json`, then `Cmd-Option-I`. The Console panel shows client-side errors, the Network panel shows message payloads and timing.
 
 ### Iteration
 

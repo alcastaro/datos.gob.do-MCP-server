@@ -4,6 +4,57 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Three defects with one cause, found by re-reading the
+[MCP debugging guidance](https://modelcontextprotocol.io/docs/tools/debugging)
+against this server: a client-launched stdio server inherits neither a
+meaningful working directory nor the operator's shell environment.
+
+### Fixed
+
+- **A relative `dest` in `save_query_to_csv` is now refused with an explanation.**
+  It used to be resolved against a working directory nobody chose — `/` under a
+  client on macOS — so `dest="export.csv"` became `/export.csv` and the write
+  failed with `[Errno 30] Read-only file system`, an error the caller could not
+  act on. On a writable root it would have landed where nobody would look.
+  `~/x.csv` is now expanded rather than resolved to a literal `~` directory.
+- **A misconfigured `DATOSGOBDO_ARCHIVE_DIR` warns instead of going quiet.** A
+  value that does not name a directory — most often a relative path, which
+  resolves nowhere for the same reason as above — silently left the archive
+  fallback off while the operator believed it was armed. The module's promise is
+  "opt-in, never silent"; that now holds for the misconfigured case too. One
+  warning per bad value, not one per fetch.
+
+### Added
+
+- **The startup line records the effective configuration**, not the requested
+  one: network-guard mode and whether the archive is on. A client passes only a
+  limited subset of the environment to a stdio server, so an operator who set
+  `DATOSGOBDO_NETGUARD` in a shell is running with the default and has no other
+  way to notice. `get_cache_stats` already reported the same mode as
+  `server.netguard_mode`.
+
+### Documentation
+
+- **The `env` block, which the READMEs listed variables without ever showing.**
+  `export DATOSGOBDO_NETGUARD=strict` does not reach a client-launched server —
+  a documented security control that was not applying. README §13 now shows the
+  JSON, §15 and `SECURITY.md` say where to set it and how to verify what is in
+  force.
+- Hosted mode: nothing captures stderr under `streamable-http`, so log
+  collection or OpenTelemetry is the operator's job.
+- The protocol's own logging channel (`notifications/message`) is deprecated as
+  of spec `2026-07-28`; stderr-only was already what the specification now
+  recommends, so this is recorded as "nothing to migrate, do not add it".
+- Why two version numbers appear: the spec links point at `2026-07-28` while the
+  server negotiates `2025-11-25`, because `mcp>=1.9.0,<2` is pinned deliberately.
+  `server/discover`, per-request `_meta` and per-request log levels are therefore
+  not implemented.
+- Tutorial §2.1 and Step 7 (both languages) generalize the lesson: require
+  absolute paths for path-valued inputs, and log the configuration you looked
+  for and did not find.
+
 ## [0.13.0] — 2026-08-12
 
 Both entries below were found by running the reference
