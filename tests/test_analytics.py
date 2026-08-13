@@ -1880,3 +1880,102 @@ async def test_a_file_we_cut_short_is_not_reported_as_malformed(
     assert "error" in out
     assert "cut short" in out["error"]
     assert "not malformed" in out["error"]
+
+
+# ─── The catalog's format is a claim, not a fact ───────────────────────────────
+
+
+async def test_an_ods_registered_as_csv_reads_as_an_ods(tmp_cache_dir, httpx_mock):
+    """The Tribunal Constitucional publishes `mayo-2026.ods` and the catalog calls
+    it CSV. The first version of the correction answered `PK` → XLSX, so it went to
+    `read_xlsx` and came back as "No [Content_Types].xml found in xlsx file"."""
+    url = "https://example.test/mayo-2026.ods"
+    body = _make_ods([["Año", "Mes", "Cantidad"], ["2026", "mayo", "160"]])
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "o1"})
+    httpx_mock.add_response(url=url, method="GET", content=body)
+
+    out = await analytics.get_resource_schema(url, "csv")
+
+    assert "error" not in out, out
+    assert [c["name"] for c in out["columns"]] == ["Año", "Mes", "Cantidad"]
+    corrected = out["cache"]["format_corrected"]
+    assert (corrected["declared"], corrected["actual"]) == ("csv", "ods")
+
+
+async def test_a_csv_registered_as_ods_reads_as_a_csv(tmp_cache_dir, httpx_mock):
+    """The other direction, which was not handled at all: the check demanded that
+    an ODS start with `PK` and refused everything else, so a readable CSV was
+    reported as "not a valid ODS" — true about the declaration, useless about the
+    file. Measured on DGP's passport series."""
+    url = "https://example.test/pasaportes.ods"
+    body = b"Provincia,Cantidad,Mes,Ano\r\nDISTRITO NACIONAL,12347,octubre,2017\r\n"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "c1"})
+    httpx_mock.add_response(url=url, method="GET", content=body)
+
+    out = await analytics.get_resource_schema(url, "ods")
+
+    assert "error" not in out, out
+    assert [c["name"] for c in out["columns"]] == ["Provincia", "Cantidad", "Mes", "Ano"]
+    assert out["cache"]["format_corrected"]["actual"] == "csv"
+
+
+async def test_a_zipped_json_is_unpacked_and_the_digest_is_of_the_archive(
+    tmp_cache_dir, httpx_mock
+):
+    """Unpacking happens after the digest on purpose: whoever re-downloads this URL
+    gets the archive, so that is what the digest has to name."""
+    import hashlib
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("listado.json", b'[{"a": 1}, {"a": 2}]')
+    body = buf.getvalue()
+
+    url = "https://example.test/listado.json"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "z1"})
+    httpx_mock.add_response(url=url, method="GET", content=body)
+
+    out = await analytics.get_resource_schema(url, "json")
+
+    assert "error" not in out, out
+    assert out["row_count"] == 2
+    assert out["cache"]["source_sha256"] == hashlib.sha256(body).hexdigest()
+    assert "listado.json" in out["cache"]["format_corrected"]["detected_from"]
+
+
+async def test_a_legacy_xls_is_refused_with_a_sentence_about_the_file(tmp_cache_dir, httpx_mock):
+    url = "https://example.test/nomina.xls"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "b1"})
+    httpx_mock.add_response(
+        url=url, method="GET", content=b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 128
+    )
+
+    out = await analytics.get_resource_schema(url, "xls")
+
+    assert "error" in out
+    assert "pre-2007" in out["error"]
+
+
+async def test_one_ragged_line_does_not_collapse_a_csv_into_one_column(tmp_cache_dir, httpx_mock):
+    """The most dangerous shape of all, because nothing fails. With `IGNORE_ERRORS`
+    and no padding, a single row whose field count surprises the sniffer makes
+    DuckDB fall back to *one* column named after the entire header — and it still
+    returns every row, each as one string. Line 1,423 of DGP's passport series does
+    exactly this."""
+    rows = [b"Provincia,Cantidad,Mes,Ano"]
+    rows += [b"DN,%d,octubre,2017" % n for n in range(40)]
+    rows.append(b"SAMBIL,789,julio")  # one field short
+    rows += [b"SANTIAGO,%d,julio,2018" % n for n in range(40)]
+    body = b"\r\n".join(rows) + b"\r\n"
+
+    url = "https://example.test/ragged.csv"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "r1"})
+    httpx_mock.add_response(url=url, method="GET", content=body)
+
+    out = await analytics.get_resource_schema(url, "csv")
+
+    assert "error" not in out, out
+    assert [c["name"] for c in out["columns"]] == ["Provincia", "Cantidad", "Mes", "Ano"]
+    assert out["row_count"] == 81

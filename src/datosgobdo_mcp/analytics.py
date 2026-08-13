@@ -22,8 +22,10 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 import tempfile
 import unicodedata
+import zipfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal, TypeVar
@@ -41,6 +43,8 @@ from .download import (
     err_text,
     headers_for,
     looks_like_html,
+    looks_like_text_table,
+    sniff_container,
 )
 from .netguard import NetGuardError, guard_request_hook
 
@@ -419,6 +423,22 @@ _MEM_LIMIT_RE = re.compile(r"\A\d+(\.\d+)?\s*(KB|MB|GB|TB|KiB|MiB|GiB|TiB)?\Z", 
 # the only ceiling worth having is the download cap. Set just above it so this
 # limit never fires before the one the operator can see.
 JSON_MAX_OBJECT_BYTES = ANALYTICS_MAX_BYTES + 8 * 1024 * 1024
+
+
+def _extract_single_member(archive_path: Path, member: str) -> Path:
+    """Unpack the one data file inside a ZIP archive, next to the archive.
+
+    Only ever called with a member name that `sniff_container` already found to be
+    the single data file in the container, so there is no choice to get wrong. The
+    name is not used to build the output path — a zip entry can be called
+    `../../etc/passwd`, and a reader that trusts it writes wherever the archive
+    says. Only the extension travels.
+    """
+    suffix = member.rsplit(".", 1)[-1].lower()
+    target = archive_path.with_name(archive_path.name + ".unpacked." + suffix)
+    with zipfile.ZipFile(archive_path) as z, z.open(member) as src, target.open("wb") as out:
+        shutil.copyfileobj(src, out, length=1024 * 1024)
+    return target
 
 
 def _json_unwrap_sql(con: duckdb.DuckDBPyConnection, src: str, dst: str) -> str | None:
@@ -893,6 +913,7 @@ async def _ensure_cached_live(
     os.close(fd)
     raw = Path(tmp_path_str)
     raw_ods: Path | None = None  # declared here so finally block can always reference it
+    raw_archive: Path | None = None  # the container, when the bytes were a ZIP archive
     resolved_from: dict[str, str] | None = None
     format_corrected: dict[str, str] | None = None
     try:
@@ -929,46 +950,57 @@ async def _ensure_cached_live(
                     )
             resolved_from = {"page": url, "followed": target}
 
-        # The reverse mistake: a spreadsheet registered in the catalog as CSV.
-        # DuckDB then reads the ZIP header as a column name and answers with
-        # `Parser Error: unterminated quoted identifier at or near ""PK`, which
-        # names nothing the caller can act on and reads like a bug in this
-        # server. The bytes say what the file is; the catalog only says what
-        # someone typed. Trusting the bytes and declaring the correction is the
-        # same bargain as numeric coercion — do the useful thing, and say so.
-        if fmt in ("csv", "tsv", "json"):
+        # What the bytes are, whatever the catalog says they are. The first
+        # version of this check went one way only — a `PK` signature under a
+        # `.csv` declaration became XLSX — and both halves of that were wrong.
+        # `PK` is also how every ODS starts, so an ODS registered as CSV went to
+        # `read_xlsx` and came back as "No [Content_Types].xml found in xlsx
+        # file": a sentence about our internals, about a file whose own name ended
+        # in `.ods`. And the reverse case was not handled at all — a CSV
+        # registered as ODS was refused for not starting like a spreadsheet, which
+        # describes the declaration and not the file. 24 resources in the sibling
+        # corpus, and trusting the bytes while declaring the correction is the
+        # same bargain as numeric coercion: do the useful thing, and say so.
+        sniffed, refusal = sniff_container(raw)
+        if sniffed is None and fmt in ("xlsx", "xls", "xlsm", "ods"):
             with raw.open("rb") as fh:
-                magic = fh.read(4)
-            if magic.startswith(b"PK\x03\x04"):
-                logger.info("declared %s but the bytes are a zip container: %s", fmt, url)
-                format_corrected = {
-                    "declared": fmt,
-                    "actual": "xlsx",
-                    "detected_from": "magic bytes (PK zip signature)",
-                    "note": (
-                        f"The catalog declares this resource as {fmt.upper()}, but the file "
-                        "is a ZIP container — the signature every XLSX and ODS starts with. "
-                        "It was read as a spreadsheet. The wrong format in the catalog is a "
-                        "finding about the publisher, not about the data."
-                    ),
-                }
-                fmt = "xlsx"
-
-        if fmt in ("xlsx", "xls", "xlsm", "ods"):
-            # These are all zip containers. Portals answer a gated or moved
-            # download with a login page carrying the original filename and
-            # HTTP 200, and that page is not always shaped like the HTML the
-            # guard above recognises. Checking the magic bytes turns "IO Error:
-            # Failed to open zip for reading" — which reads like a bug in this
-            # server — into a sentence about the file.
-            with raw.open("rb") as fh:
-                magic = fh.read(4)
-            if not magic.startswith(b"PK") and fmt != "xls":
-                raise AnalyticsError(
-                    f"The file is not a valid {fmt.upper()} — it does not start "
-                    "like a spreadsheet. The portal most likely served a web "
-                    "page or an error document under a spreadsheet filename."
-                )
+                sniffed = looks_like_text_table(fh.read(4096))
+        zip_member: str | None = None
+        if sniffed is not None and sniffed != fmt:
+            if sniffed.startswith("zip:"):
+                zip_member = sniffed[4:]
+                sniffed = classify_format(zip_member.rsplit(".", 1)[-1]) or "xlsx"
+            logger.info("declared %s but the bytes are %s: %s", fmt, sniffed, url)
+            format_corrected = {
+                "declared": fmt,
+                "actual": sniffed,
+                "detected_from": (
+                    f"the single member {zip_member!r} inside a ZIP archive"
+                    if zip_member
+                    else "the file's own signature"
+                ),
+                "note": (
+                    f"The catalog declares this resource as {fmt.upper()}, and the bytes "
+                    f"are {sniffed.upper()}. It was read as {sniffed.upper()}. The wrong "
+                    "format in the catalog is a finding about the publisher, not about "
+                    "the data."
+                ),
+            }
+            fmt = sniffed
+        elif refusal is not None:
+            # Recognisable and unsupported, or a broken container: say which.
+            raise AnalyticsError(refusal)
+        elif fmt in ("xlsx", "xlsm", "ods") and sniffed is None:
+            # Nothing identifiable. Portals answer a gated or moved download with a
+            # page carrying the original filename and HTTP 200, and that page is not
+            # always shaped like the HTML the guard above recognises. This turns
+            # "IO Error: Failed to open zip for reading" into a sentence about the
+            # file.
+            raise AnalyticsError(
+                f"The file is not a valid {fmt.upper()} — it does not start "
+                "like a spreadsheet. The portal most likely served a web "
+                "page or an error document under a spreadsheet filename."
+            )
 
         # The digest of the bytes exactly as they will be parsed — after
         # following a page to its file, before any transcoding — so any figure
@@ -979,6 +1011,14 @@ async def _ensure_cached_live(
         source_sha256: str | None = None
         if not truncated:
             source_sha256 = await asyncio.to_thread(_sha256_file, raw)
+
+        # Unpacking happens after the digest on purpose: the digest has to name
+        # what the portal served, so an independent capture can be compared
+        # against it. Whoever re-downloads this URL gets the archive, not what was
+        # inside it.
+        if zip_member is not None:
+            raw_archive = raw  # the finally block has to remove both files
+            raw = await asyncio.to_thread(_extract_single_member, raw, zip_member)
 
         effective_fmt = fmt
         if fmt == "ods":
@@ -1002,9 +1042,20 @@ async def _ensure_cached_live(
         dst = str(parquet_path).replace("'", "''")
         fallback_sql: str | None = None
         if effective_fmt in ("csv", "tsv"):
+            # `null_padding` is not a nicety, it is what keeps a ragged line from
+            # destroying the whole file. One row with a field count the sniffer
+            # does not expect — line 1,423 of the DGP passport series has one —
+            # and `IGNORE_ERRORS` makes DuckDB fall back to a *single column*
+            # named after the entire header row: `Provincia,Cantidad_Pasaportes_
+            # Emitidos,Mes,Ano`. The call succeeds, 1,434 rows come back, and
+            # every one of them is a single string. That is the failure this
+            # server exists to prevent — a wrong answer, delivered confidently.
+            # With padding the same file reads as its four real columns and the
+            # short row is filled with NULLs, which is a fact about the row rather
+            # than a verdict on the file.
             copy_sql = (
                 f"COPY (SELECT * FROM read_csv_auto('{src}', "
-                f"SAMPLE_SIZE=-1, IGNORE_ERRORS=TRUE)) "
+                f"SAMPLE_SIZE=-1, IGNORE_ERRORS=TRUE, null_padding=true)) "
                 f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
             )
             # A header wrapped across two lines inside a quoted field is legal
@@ -1014,7 +1065,7 @@ async def _ensure_cached_live(
             # which is only paid by files that already failed.
             fallback_sql = (
                 f"COPY (SELECT * FROM read_csv_auto('{src}', "
-                f"SAMPLE_SIZE=-1, IGNORE_ERRORS=TRUE, strict_mode=false)) "
+                f"SAMPLE_SIZE=-1, IGNORE_ERRORS=TRUE, null_padding=true, strict_mode=false)) "
                 f"TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)"
             )
         elif effective_fmt in ("xlsx", "xls", "xlsm"):
@@ -1153,6 +1204,8 @@ async def _ensure_cached_live(
         _safe_unlink(raw)
         if raw_ods is not None:
             _safe_unlink(raw_ods)
+        if raw_archive is not None:
+            _safe_unlink(raw_archive)
 
 
 async def ensure_cached(

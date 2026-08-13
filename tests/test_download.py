@@ -232,3 +232,97 @@ def test_google_gets_no_fetch_metadata_headers():
 def test_every_other_host_still_states_its_context():
     sent = download.headers_for("https://migracion.gob.do/x.xlsx")
     assert sent["Sec-Fetch-Site"] == "cross-site"
+
+
+# ─── What the file actually is, whatever the catalog says ──────────────────────
+
+
+def _zip_of(entries: dict[str, bytes], mimetype: bytes | None = None) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        if mimetype is not None:
+            z.writestr("mimetype", mimetype)
+        for name, body in entries.items():
+            z.writestr(name, body)
+    return buf.getvalue()
+
+
+def test_an_ods_declares_itself_and_is_not_guessed_to_be_xlsx(tmp_path):
+    """`PK` is how both start, so the signature alone cannot separate them. An ODS
+    registered as CSV used to be routed to `read_xlsx`, which answered "No
+    [Content_Types].xml found in xlsx file" — about a file whose own name ended in
+    `.ods`."""
+    p = tmp_path / "x.bin"
+    p.write_bytes(
+        _zip_of(
+            {"content.xml": b"<x/>"},
+            mimetype=b"application/vnd.oasis.opendocument.spreadsheet",
+        )
+    )
+    assert download.sniff_container(p) == ("ods", None)
+
+
+def test_a_workbook_part_makes_it_an_xlsx(tmp_path):
+    p = tmp_path / "x.bin"
+    p.write_bytes(_zip_of({"xl/workbook.xml": b"<w/>", "[Content_Types].xml": b"<c/>"}))
+    assert download.sniff_container(p) == ("xlsx", None)
+
+
+def test_a_zip_holding_one_data_file_is_an_archive(tmp_path):
+    """Three MIVHED resources are declared JSON and are a zipped-up `.json`. Read
+    as a spreadsheet they produced a message about a missing workbook part; what
+    they need is unpacking."""
+    p = tmp_path / "x.bin"
+    p.write_bytes(_zip_of({"listado.json": b'[{"a": 1}]'}))
+    assert download.sniff_container(p) == ("zip:listado.json", None)
+
+
+def test_a_zip_of_several_data_files_is_not_unpacked(tmp_path):
+    """Which of the two is 'the data' is not something to guess."""
+    p = tmp_path / "x.bin"
+    p.write_bytes(_zip_of({"a.csv": b"x\n1", "b.csv": b"y\n2"}))
+    assert download.sniff_container(p) == (None, None)
+
+
+def test_a_legacy_xls_is_refused_in_terms_of_the_file(tmp_path):
+    """`d0cf11e0` is OLE2, the pre-2007 container. `read_xlsx` cannot read BIFF and
+    complains about a missing zip member, which sounds like corruption."""
+    p = tmp_path / "old.xls"
+    p.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)
+    fmt, refusal = download.sniff_container(p)
+    assert fmt is None
+    assert refusal is not None
+    assert "pre-2007" in refusal and "XLSX" in refusal
+
+
+def test_a_truncated_zip_says_so(tmp_path):
+    p = tmp_path / "cut.xlsx"
+    p.write_bytes(b"PK\x03\x04" + b"\x00" * 40)
+    fmt, refusal = download.sniff_container(p)
+    assert fmt is None
+    assert refusal is not None
+    assert "truncated" in refusal
+
+
+def test_plain_text_is_left_unidentified(tmp_path):
+    p = tmp_path / "x.csv"
+    p.write_bytes(b"a,b\n1,2\n")
+    assert download.sniff_container(p) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "head,expected",
+    [
+        (b"Provincia,Cantidad,Mes\r\nDN,12347,octubre\r\n", "csv"),
+        (b"a;b;c\n1;2;3\n", "csv"),
+        (b'[{"a": 1}]', "json"),
+        (b'\xef\xbb\xbf{"a": 1}', "json"),
+        (b"just one sentence with no delimiter at all", None),
+        (b"", None),
+    ],
+)
+def test_looks_like_text_table(head, expected):
+    assert download.looks_like_text_table(head) == expected

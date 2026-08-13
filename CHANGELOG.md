@@ -26,6 +26,37 @@ Defender active and a non-administrator account.
 
 ### Fixed
 
+- **One ragged line could silently reduce a CSV to a single column.** The worst
+  shape of failure there is, because nothing fails. With `IGNORE_ERRORS` and no
+  padding, a single row whose field count surprises DuckDB's sniffer makes it fall
+  back to *one* column named after the entire header row — and it still returns
+  every row, each one a single string. Line 1,423 of DGP's passport series does
+  exactly this: 1,434 rows, all of them one field, presented as a successful read.
+  `null_padding` reads the same file as its four real columns and fills the short
+  row with NULLs, which is a fact about that row rather than a verdict on the file.
+- **The catalog's declared format was trusted in one direction and refused in the
+  other.** The magic-byte correction answered `PK` → XLSX, but `PK` is how every
+  ODS starts too, so an ODS registered as CSV went to `read_xlsx` and came back as
+  "No [Content_Types].xml found in xlsx file" — a sentence about this server's
+  internals, about a file whose own name ended in `.ods`. The reverse case was not
+  handled at all: a CSV registered as ODS was refused for not starting like a
+  spreadsheet, which describes the declaration and not the file. The container is
+  now identified from what is inside it — the `mimetype` member for ODS, a
+  workbook part for XLSX — and a text file is recognised as CSV or JSON when the
+  declared spreadsheet reader has already refused it. Verified live: the Tribunal
+  Constitucional's `mayo-2026.ods` reads as 160 × 3 with its real headers, and
+  DGP's series as 1,434 × 4. 24 resources in the sibling corpus.
+- **A ZIP holding one data file is an archive, not a workbook.** Three MIVHED
+  resources are declared JSON and are a zipped-up `.json`. The single member is
+  unpacked and read — after the digest is taken, because whoever re-downloads the
+  URL gets the archive, so that is what `source_sha256` has to name. A ZIP with
+  several data files is left alone: which one is "the data" is not something to
+  guess.
+- **A pre-2007 `.xls` now says what it is.** `d0cf11e0` is OLE2, and `read_xlsx`
+  cannot read BIFF — it complains about a missing ZIP member, which reads like
+  corruption. `xls` is the worst-served format in the catalog (12 of 22 readable);
+  the ones that stay unreadable at least say why, and what to ask the publisher
+  for.
 - **A clearer lock error had become an unhandled one.** Naming the cache-lock
   timeout `CacheLockError` was right, and it moved the failure *out* of
   `_ENVELOPE_ERRORS`: the old `OSError: [Errno 36]` was in that tuple, so a

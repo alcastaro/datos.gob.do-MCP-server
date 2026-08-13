@@ -7,6 +7,7 @@ reuse it with different caps.
 from __future__ import annotations
 
 import re
+import zipfile
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -337,4 +338,106 @@ def classify_format(fmt: str | None) -> FormatKind | None:
     f = normalize_format(fmt)
     if f in ("csv", "tsv", "xlsx", "xls", "xlsm", "json", "ods"):
         return f  # type: ignore[return-value]
+    return None
+
+
+# ─── What the file actually is ────────────────────────────────────────────────
+
+# Both formats are zip containers, so `PK` alone cannot tell them apart. ODS
+# declares itself in a `mimetype` member; XLSX has a workbook part. Reading the
+# declaration is the whole trick, and skipping it cost real resources: the
+# catalog carries an ODS registered as CSV, and answering `PK` → XLSX sent it to
+# `read_xlsx`, which replied "No [Content_Types].xml found in xlsx file" — a
+# sentence about our internals, about a file whose own name ended in `.ods`.
+_ODS_MIMETYPE = b"application/vnd.oasis.opendocument.spreadsheet"
+
+# `d0cf11e0` is OLE2, the pre-2007 Excel container. `read_xlsx` cannot read BIFF
+# and says so in terms of a missing zip member, which sounds like corruption.
+_OLE2_MAGIC = b"\xd0\xcf\x11\xe0"
+
+
+def sniff_container(path: Path) -> tuple[str | None, str | None]:
+    """What this file is, and what to say when it is nothing we read.
+
+    Returns `(format, refusal)` — exactly one of the two is set. `format` is a
+    supported kind inferred from the bytes; `refusal` is a sentence for the caller
+    when the bytes are recognisable but unsupported.
+
+    Only the container is identified, never the contents: a zip is opened to read
+    its member names, not its data.
+    """
+    try:
+        with path.open("rb") as fh:
+            magic = fh.read(8)
+    except OSError:  # pragma: no cover — the file was just written
+        return None, None
+
+    if magic.startswith(_OLE2_MAGIC):
+        return None, (
+            "The file is a pre-2007 Excel workbook (BIFF/OLE2), which this server "
+            "cannot read — the reader handles the ZIP-based formats: XLSX, XLSM and "
+            "ODS. Ask the publisher for the same table saved as XLSX or CSV."
+        )
+
+    if not magic.startswith(b"PK\x03\x04"):
+        return None, None
+
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+            if "mimetype" in names:
+                try:
+                    if z.read("mimetype").strip().startswith(_ODS_MIMETYPE):
+                        return "ods", None
+                except (KeyError, OSError):  # pragma: no cover — truncated member
+                    pass
+            if any(n.startswith("xl/") for n in names):
+                return "xlsx", None
+            # A zip holding exactly one data file is an archive, not a workbook —
+            # three resources in this catalog are a single `.json` zipped up. Read
+            # as a spreadsheet it produced a message about a missing workbook part;
+            # what it needs is to be unpacked.
+            data = [n for n in names if not n.endswith("/") and classify_format(_suffix(n))]
+            if len(data) == 1:
+                return "zip:" + data[0], None
+    except (zipfile.BadZipFile, OSError):
+        return None, (
+            "The file starts like a ZIP container but cannot be opened as one. It "
+            "is most likely truncated in the portal's own copy."
+        )
+    return None, None
+
+
+def _suffix(name: str) -> str:
+    return name.rsplit(".", 1)[-1] if "." in name else ""
+
+
+def looks_like_text_table(head: bytes) -> str | None:
+    """`csv` or `json` when these opening bytes are that, else None.
+
+    The mirror image of the ZIP case, and just as common: a CSV registered as ODS.
+    The old check demanded that an ODS start with `PK` and refused everything else,
+    so a perfectly readable CSV was reported as "not a valid ODS" — accurate about
+    the declaration and useless about the file.
+    """
+    probe = head[:4096].lstrip()
+    if probe.startswith(b"\xef\xbb\xbf"):
+        probe = probe[3:].lstrip()
+    if not probe:
+        return None
+    if probe[:1] in (b"{", b"["):
+        return "json"
+    try:
+        text = probe.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            text = probe.decode("cp1252")
+        except UnicodeDecodeError:  # pragma: no cover — binary
+            return None
+    first = text.splitlines()[0] if text.splitlines() else ""
+    # A delimiter in the first line is the whole test. Deliberately weak: this
+    # only ever runs on a file whose declared reader has already refused it, so
+    # the alternative to a guess is no data at all.
+    if any(d in first for d in (",", ";", "\t", "|")):
+        return "csv"
     return None
