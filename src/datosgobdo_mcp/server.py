@@ -889,7 +889,7 @@ async def catalog_institutions() -> dict[str, Any]:
 
 
 @mcp.resource(
-    "datosgobdo://guia/verificacion",
+    "datosgobdo://guide/verification",
     name="Cómo verificar una cifra",
     description="Los cuatro campos que hacen comprobable un número, y qué hacer si faltan.",
     mime_type="text/markdown",

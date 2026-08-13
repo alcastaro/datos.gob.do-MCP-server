@@ -825,8 +825,8 @@ async def test_serie_temporal_warns_against_summing_the_year():
 
 async def test_verification_guide_is_readable_and_names_the_four_fields():
     resources = {str(r.uri) for r in await mcp.list_resources()}
-    assert "datosgobdo://guia/verificacion" in resources
-    contents = await mcp.read_resource("datosgobdo://guia/verificacion")
+    assert "datosgobdo://guide/verification" in resources
+    contents = await mcp.read_resource("datosgobdo://guide/verification")
     text = "".join(c.content for c in contents if isinstance(c.content, str))
     for field in ("source", "source_sha256", "computation", "numeric_coercion"):
         assert field in text
