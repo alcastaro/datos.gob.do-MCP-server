@@ -481,3 +481,121 @@ def test_the_index_is_written_as_utf8_not_the_platform_codepage(tmp_path):
     assert raw.decode("utf-8"), "must be valid UTF-8 regardless of platform default"
     fresh = cache_mod.LocalDiskCache(cache_dir=tmp_path)
     assert fresh.provenance(key)["note"] == "Dirección General de Migración — Año 2024 (ñ, Ó)"
+
+
+# ─── Parquet the index never heard about ──────────────────────────────────────
+
+
+def _abandon(path, seconds: float = 3600.0) -> None:
+    """Backdate a file past the orphan grace period.
+
+    Writing it and expecting it to be reclaimed at once would test a behaviour
+    that must not exist: inside the grace window a file may be a live write.
+    """
+    import os
+
+    old = time.time() - seconds
+    os.utime(path, (old, old))
+
+
+def test_an_unrecorded_parquet_still_counts_against_the_ceiling(tmp_path):
+    """`finalize` degrades when it cannot take the lock, which leaves a valid
+    Parquet with no index entry. Eviction walked the index alone, so such a file
+    was invisible to it: the cache could pass max_bytes and never come back
+    down."""
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path, max_bytes=1_000)
+    for name in ("orphan-a.parquet", "orphan-b.parquet"):
+        (tmp_path / name).write_bytes(b"x" * 800)
+        _abandon(tmp_path / name)
+
+    assert c.stats()["total_bytes"] == 1_600, "disk usage, not index usage"
+    assert c.stats()["orphan_entries"] == 2
+
+    c.evict_to_fit(1_000)
+
+    remaining = sorted(p.name for p in tmp_path.glob("*.parquet"))
+    assert len(remaining) == 1, "one of the two had to go to get under 1,000 bytes"
+    assert c.stats()["total_bytes"] == 800
+
+
+def test_an_orphan_is_evicted_before_a_recorded_entry(tmp_path):
+    """An orphan has no access time and cannot be served — a hit needs the index
+    — so it is the oldest thing in the cache by definition."""
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path, max_bytes=10_000)
+    c.put_path("recorded").write_bytes(b"x" * 500)
+    c.finalize("recorded", url="https://example.test/a.csv")
+    (tmp_path / "orphan.parquet").write_bytes(b"x" * 500)
+    _abandon(tmp_path / "orphan.parquet")
+
+    c.evict_to_fit(500)
+
+    assert (tmp_path / "recorded.parquet").exists()
+    assert not (tmp_path / "orphan.parquet").exists()
+
+
+def test_a_write_in_progress_is_not_mistaken_for_an_orphan(tmp_path):
+    """The regression this grace period exists to prevent, and the reason it is
+    not optional. `put_path` records only in memory, so between the write and the
+    `finalize` that persists it, every other process sees a Parquet nobody claims.
+    Reclaiming it deletes a file that is being written right now — the
+    parallel-eviction test caught exactly that, as a `FileNotFoundError` inside a
+    peer's `finalize`."""
+    writer = cache_mod.LocalDiskCache(cache_dir=tmp_path, max_bytes=100)
+    writer.put_path("in-flight").write_bytes(b"x" * 4_000)  # well over the cap
+
+    # A second process: same directory, and the index on disk names nothing.
+    other = cache_mod.LocalDiskCache(cache_dir=tmp_path, max_bytes=100)
+    assert other.stats()["orphan_entries"] == 0, "too young to be abandoned"
+    other.evict_to_fit(100)
+
+    assert (tmp_path / "in-flight.parquet").exists(), "a live write must survive"
+    writer.finalize("in-flight", url="https://example.test/a.csv")
+
+
+def test_a_crash_before_finalize_does_not_leak_disk_forever(tmp_path):
+    """The same hole with no Windows in the picture. `put_path` records the entry
+    in memory only — nothing reaches `_index.json` until a `finalize` saves it —
+    so a process that dies after writing the Parquet leaves a file the next
+    process has no record of at all."""
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path, max_bytes=100)
+    c.put_path("half-done").write_bytes(b"x" * 400)
+    del c  # the process goes away before finalize
+    _abandon(tmp_path / "half-done.parquet")
+
+    fresh = cache_mod.LocalDiskCache(cache_dir=tmp_path, max_bytes=100)
+    assert "half-done" not in fresh._index, "nothing was ever persisted"
+    assert fresh.stats()["orphan_entries"] == 1
+    assert fresh.stats()["total_bytes"] == 400, "the disk holds it either way"
+
+    fresh.evict_to_fit(100)
+    assert not (tmp_path / "half-done.parquet").exists()
+
+
+def test_a_contended_clear_is_reported_not_raised(tmp_path, monkeypatch):
+    """The lock used to fail as `OSError`, which `_ENVELOPE_ERRORS` catches, so a
+    contended index came back as a readable error. Naming the failure
+    `CacheLockError` took it out of that tuple — and `clear_cache` is synchronous,
+    so `_tool_envelope` never covered it either. The clearer message would have
+    reached the client as a traceback."""
+    from datosgobdo_mcp import analytics
+
+    fake = _FakeMsvcrt(busy=10_000)
+    monkeypatch.setattr(cache_mod, "fcntl", None)
+    monkeypatch.setattr(cache_mod, "msvcrt", fake)
+    monkeypatch.setattr(cache_mod.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(cache_mod, "LOCK_TIMEOUT_SECONDS", 0.0)
+    monkeypatch.setattr(cache_mod, "_singleton", cache_mod.LocalDiskCache(cache_dir=tmp_path))
+
+    result = analytics.clear_cache()
+
+    assert "error" in result, "must be an envelope, not an exception"
+    assert "DATOSGOBDO_CACHE_DIR" in result["error"]
+    assert "removed_entries" not in result
+
+
+def test_the_lock_error_is_in_the_envelope_tuple():
+    """The async tools reach the lock through `ensure_cached`; the tuple is what
+    keeps that path returning a sentence instead of a stack trace."""
+    from datosgobdo_mcp import analytics
+
+    assert cache_mod.CacheLockError in analytics._ENVELOPE_ERRORS

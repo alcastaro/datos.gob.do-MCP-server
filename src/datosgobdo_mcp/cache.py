@@ -44,6 +44,11 @@ INDEX_FILENAME = "_index.json"
 # A mutation under this lock is a JSON write measured in milliseconds, so ten
 # seconds of contention means something is wrong rather than merely busy.
 LOCK_TIMEOUT_SECONDS = 10.0
+
+# How long a Parquet with no index entry is left alone before it counts as
+# abandoned. It has to exceed the window between writing a file and recording it,
+# because inside that window a live write is indistinguishable from an orphan.
+_ORPHAN_GRACE_SECONDS = 60.0
 _LOCK_FIRST_DELAY = 0.01
 _LOCK_MAX_DELAY = 0.25
 
@@ -327,7 +332,16 @@ class LocalDiskCache:
         with self._index_if_lockable(f"cache bookkeeping for {key}") as index:
             if index is None:
                 return
-            index.setdefault(key, {})["bytes"] = p.stat().st_size
+            try:
+                size = p.stat().st_size
+            except OSError:
+                # Another process evicted it between the check above and here.
+                # Recording a size for a file that is gone would put a name in the
+                # index that no `get` can honour, and raising would fail a call
+                # whose answer was already computed.
+                logger.info("entry %s vanished before it could be recorded", key)
+                return
+            index.setdefault(key, {})["bytes"] = size
             index[key]["accessed_at"] = time.time()
             index[key]["build"] = _parser_build()
             if url is not None:
@@ -391,12 +405,56 @@ class LocalDiskCache:
         with self._locked_index():
             self._evict_to_fit_locked(max_bytes)
 
+    def _orphans(self) -> list[tuple[str, float, int]]:
+        """Parquet files on disk with no index entry, as eviction candidates.
+
+        They exist because `finalize` is best-effort: when it cannot take the
+        lock it logs and returns, leaving a valid Parquet that the index never
+        heard about. A crash between writing the file and recording it does the
+        same, on any platform.
+
+        Counting them matters because the alternative is a ceiling that is not a
+        ceiling. Eviction walked `self._index`, so an unrecorded file was invisible
+        to it and `stats()` under-reported the total — the cache could pass 1 GB
+        with `get_cache_stats` reporting less and nothing ever reclaiming the
+        difference. They sort as the oldest possible entries: an orphan has no
+        access time, and nothing is going to serve it, since a hit needs the index.
+
+        **The grace period is the whole safety argument.** A write in progress
+        looks exactly like an orphan: `put_path` records the entry in memory only,
+        so between the write and the `finalize` that persists it, another process
+        reading `_index.json` sees a Parquet nobody claims. Without the grace
+        period this method deletes files that are being written *right now* — the
+        parallel-eviction test caught it doing precisely that, with three
+        processes and a `FileNotFoundError` inside a peer's `finalize`. A minute
+        is far longer than a download-and-convert holds the file unrecorded, and
+        an abandoned orphan simply waits one more pass.
+        """
+        out: list[tuple[str, float, int]] = []
+        cutoff = time.time() - _ORPHAN_GRACE_SECONDS
+        try:
+            for p in self.cache_dir.glob("*.parquet"):
+                key = p.stem
+                if key in self._index:
+                    continue
+                try:
+                    stat = p.stat()
+                except OSError:  # pragma: no cover — vanished mid-scan
+                    continue
+                if stat.st_mtime > cutoff:
+                    continue  # someone may be writing it as we look
+                out.append((key, 0.0, stat.st_size))
+        except OSError:  # pragma: no cover — unreadable cache dir
+            return []
+        return out
+
     def _evict_to_fit_locked(self, max_bytes: int) -> None:
         entries = [
             (k, v.get("accessed_at", 0), v.get("bytes", 0))
             for k, v in self._index.items()
             if self._entry_path(k).exists()
         ]
+        entries += self._orphans()
         total = sum(b for _, _, b in entries)
         if total <= max_bytes:
             return
@@ -420,10 +478,16 @@ class LocalDiskCache:
             if self._entry_path(k).exists()
         ]
         current = _parser_build()
+        orphans = self._orphans()
         return {
             "cache_dir": str(self.cache_dir),
             "entries": len(entries),
-            "total_bytes": sum(s for _, s in entries),
+            # Disk usage, not index usage. A Parquet whose `finalize` could not
+            # take the lock is still occupying the disk and still counts against
+            # `max_bytes`; reporting only what the index knows about made this
+            # number smaller than `du` and the ceiling unenforceable.
+            "total_bytes": sum(s for _, s in entries) + sum(b for _, _, b in orphans),
+            "orphan_entries": len(orphans),
             "max_bytes": self.max_bytes,
             "parser_build": current,
             # Written by an older parser: still on disk, never served, and the

@@ -32,7 +32,7 @@ import duckdb
 import httpx
 
 from . import archive, pagelink, reachability
-from .cache import LocalDiskCache, build_cache_key, get_cache
+from .cache import CacheLockError, LocalDiskCache, build_cache_key, get_cache
 from .download import (
     ANALYTICS_MAX_BYTES,
     classify_format,
@@ -247,7 +247,22 @@ class PageInsteadOfDataError(AnalyticsError):
 # to DuckDB. Anything in this tuple becomes an `{"error": ...}` result the model
 # can read and act on; anything outside it is a bug in this server and should
 # surface as a real traceback rather than be silently swallowed.
-_ENVELOPE_ERRORS = (httpx.HTTPError, AnalyticsError, duckdb.Error, NetGuardError, OSError)
+#
+# CacheLockError belongs here for a reason worth recording: the cache lock used
+# to fail as `OSError: [Errno 36]`, which this tuple already caught, so a
+# contended index came back as a readable `{"error": ...}`. Giving that failure a
+# clearer type moved it *out* of the tuple and turned a handled result into a
+# traceback — a message improvement that made the behaviour worse. Only on
+# Windows, because POSIX `flock` queues and never times out, and therefore only
+# on the platform the clearer message was written for.
+_ENVELOPE_ERRORS = (
+    httpx.HTTPError,
+    AnalyticsError,
+    duckdb.Error,
+    NetGuardError,
+    OSError,
+    CacheLockError,
+)
 
 
 _T = TypeVar("_T", bound=Callable[..., Awaitable[dict[str, Any]]])
@@ -2560,5 +2575,16 @@ def get_cache_stats() -> dict[str, Any]:
 
 
 def clear_cache() -> dict[str, Any]:
-    removed = get_cache().clear()
+    """Empty the cache, or say why it could not be emptied.
+
+    `_tool_envelope` only wraps coroutines and this is synchronous, so the
+    envelope tuple does not cover it — the one caller-facing path that takes the
+    index lock and is allowed to raise needs its own catch. Without it a
+    contended index reaches the client as a protocol-level traceback.
+    """
+    try:
+        removed = get_cache().clear()
+    except CacheLockError as e:
+        logger.warning("clear_cache failed: %s", e)
+        return {"error": str(e)}
     return {"removed_entries": removed}

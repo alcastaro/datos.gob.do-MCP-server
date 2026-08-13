@@ -217,6 +217,11 @@ class CacheStatsResult(_Result):
     entries: int | None = None
     total_bytes: int | None = None
     max_bytes: int | None = None
+    # Parquet on disk that the index does not list, because a `finalize` could
+    # not take the lock or a process died between writing and recording. Counted
+    # in total_bytes and reclaimed by the next eviction; surfaced because a
+    # non-zero value here means contention, not a healthy cache.
+    orphan_entries: int | None = None
 
 
 class ClearCacheResult(_Result):

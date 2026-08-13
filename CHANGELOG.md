@@ -4,7 +4,17 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [Unreleased] — 0.14.0
+
+The version in `pyproject.toml` and `__init__.py` reads **0.14.0**, not 0.13.1,
+because the listing-envelope change below breaks a caller reading
+`structuredContent.result`. It is a minor bump rather than a patch by that fact
+alone. It was raised as soon as the breaking change landed rather than at release
+time: leaving it at 0.13.0 meant two different trees both answering `--version`
+with `0.13.0`, one of them with a different interface — which is exactly the
+confusion the new `--version` flag exists to end. The bump also changes
+`_parser_build()`, so every Parquet written by 0.13.0 is superseded rather than
+served by a reader that may treat it differently.
 
 Two rounds of findings with one thing in common: the platform most of this
 server's audience uses had never run it. The first came from re-reading the
@@ -16,6 +26,27 @@ Defender active and a non-administrator account.
 
 ### Fixed
 
+- **A clearer lock error had become an unhandled one.** Naming the cache-lock
+  timeout `CacheLockError` was right, and it moved the failure *out* of
+  `_ENVELOPE_ERRORS`: the old `OSError: [Errno 36]` was in that tuple, so a
+  contended index used to come back as `{"error": ...}` and now arrived as a
+  protocol-level traceback. `clear_cache` was the exposed path — it is
+  synchronous, so `_tool_envelope`, which only wraps coroutines, never covered it
+  either. The type is in the tuple and `clear_cache` catches it directly. Windows
+  only, because POSIX `flock` queues and never times out; that is, it fired only
+  on the platform the clearer message was written for.
+- **A Parquet the index never heard about was invisible to the size ceiling.**
+  `finalize` is deliberately best-effort — a lock it cannot take must not turn a
+  correct answer into a failed call — but that leaves a valid Parquet with no
+  index entry. Eviction and `stats()` both walked the index alone, so such a file
+  could not be reclaimed and was not counted: the cache could pass its 1 GB cap
+  with `get_cache_stats` reporting less than `du` and nothing ever bringing it
+  back down. Both now see the files on disk, and an orphan evicts first — it has
+  no access time and cannot be served, since a hit needs the index. The same hole
+  opened without Windows in the picture, because `put_path` records only in
+  memory: a process that died between writing the Parquet and calling `finalize`
+  left the identical orphan. `get_cache_stats` reports `orphan_entries`, since a
+  non-zero value means contention rather than a healthy cache.
 - **A clean clone could not run the suite.** `pytest`, `pytest-asyncio` and
   `pytest-httpx` were declared only in the `dev` *extra*, while `uv sync`
   installs *groups* by default — so `uv sync && uv run pytest` produced dozens of
