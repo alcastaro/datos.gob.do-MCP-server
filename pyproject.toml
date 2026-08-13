@@ -45,6 +45,10 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-httpx>=0.30",
 ]
+# PREVIEW. These tools have unit tests against simulated clients and have
+# never been run against a live GCP project. They stay outside the API
+# stability promise until they have been. Everything in the base install has
+# been exercised against the real portal over a real protocol session.
 gcp = [
     "google-cloud-storage>=2.14",
     "google-cloud-bigquery>=3.17",

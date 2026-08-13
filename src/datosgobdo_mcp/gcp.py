@@ -204,10 +204,25 @@ async def get_bigquery_table_info(project: str, dataset: str, table: str) -> dic
 
 def register_gcp_tools(mcp_instance: Any) -> bool:
     """Register the GCP tools on a FastMCP instance — only when the SDKs are
-    installed, so the base install's tool surface is unchanged."""
+    installed, so the base install's tool surface is unchanged.
+
+    **These tools are preview, and stay outside the stability promise.** They
+    have unit tests against simulated clients and have never been run against
+    a live GCP project: no one has watched a table be created. Everything else
+    this package exposes has been exercised against the real portal over a
+    real protocol session, and it would be dishonest to let an opt-in extra
+    borrow that credibility silently. Whoever installs `[gcp]` is told so at
+    registration, once.
+    """
     if not gcp_available():
         logger.info("GCP libraries not found — pipeline tools not registered")
         return False
+
+    logger.warning(
+        "GCP pipeline tools registered — PREVIEW. Tested only against simulated "
+        "clients, never against a live project, and outside this package's API "
+        "stability promise. Verify results before relying on them."
+    )
 
     @mcp_instance.tool(
         annotations=ToolAnnotations(
