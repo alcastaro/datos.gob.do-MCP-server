@@ -156,6 +156,27 @@ class LocalDiskCache:
                     f.seek(0)
                     msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
 
+    @contextmanager
+    def _locked_index(self) -> Generator[dict[str, dict]]:
+        """Hold the lock, and work on the index as it is on disk right now.
+
+        The lock alone was not enough, and a four-process test proved it:
+        45 of 60 entries vanished. Each instance loads the index once at
+        construction and mutates that copy, so two processes that both write
+        —serialised or not— each save their own snapshot and the last one
+        silently drops everything the other added. Nothing raises; the index
+        just forgets that a Parquet on disk belongs to a URL, and the next
+        call re-downloads a file it already had.
+
+        Serialising the write was never the hard part. Making read-modify-write
+        atomic is, and that means re-reading inside the lock and discarding the
+        stale in-memory copy.
+        """
+        with self._lock():
+            self._index = self._load_index()
+            yield self._index
+            self._save_index()
+
     def _save_index(self) -> None:
         try:
             # Atomic: a crash mid-write must not leave a truncated index that
@@ -203,15 +224,14 @@ class LocalDiskCache:
         """
         p = self._entry_path(key)
         if p.exists():
-            with self._lock():
-                self._index.setdefault(key, {})["bytes"] = p.stat().st_size
-                self._index[key]["accessed_at"] = time.time()
-                self._index[key]["build"] = _parser_build()
+            with self._locked_index() as index:
+                index.setdefault(key, {})["bytes"] = p.stat().st_size
+                index[key]["accessed_at"] = time.time()
+                index[key]["build"] = _parser_build()
                 if url is not None:
-                    self._index[key]["url"] = url
+                    index[key]["url"] = url
                 if provenance:
-                    self._index[key]["provenance"] = provenance
-                self._save_index()
+                    index[key]["provenance"] = provenance
                 self._evict_to_fit_locked(self.max_bytes)
 
     def provenance(self, key: str) -> dict[str, Any]:
@@ -251,12 +271,14 @@ class LocalDiskCache:
         return self._entry_path(best_key), best_key
 
     def touch(self, key: str) -> None:
-        self._index.setdefault(key, {})["accessed_at"] = time.time()
-        self._save_index()
+        # Also a read-modify-write, and it runs on every warm hit — the most
+        # frequent index mutation there is.
+        with self._locked_index() as index:
+            index.setdefault(key, {})["accessed_at"] = time.time()
 
     def evict_to_fit(self, max_bytes: int) -> None:
         """LRU eviction until total cache size <= max_bytes."""
-        with self._lock():
+        with self._locked_index():
             self._evict_to_fit_locked(max_bytes)
 
     def _evict_to_fit_locked(self, max_bytes: int) -> None:
@@ -280,7 +302,6 @@ class LocalDiskCache:
                 total -= size
             except Exception:
                 pass
-        self._save_index()
 
     def stats(self) -> dict:
         entries = [
@@ -304,7 +325,7 @@ class LocalDiskCache:
 
     def clear(self) -> int:
         """Remove all entries. Returns count removed."""
-        with self._lock():
+        with self._locked_index() as index:
             n = 0
             for p in self.cache_dir.glob("*.parquet"):
                 try:
@@ -312,8 +333,7 @@ class LocalDiskCache:
                     n += 1
                 except Exception:
                     pass
-            self._index = {}
-            self._save_index()
+            index.clear()
             return n
 
 

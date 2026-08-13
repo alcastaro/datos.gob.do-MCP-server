@@ -131,11 +131,20 @@ def test_save_index_is_atomic(tmp_path):
 
 
 def test_eviction_tie_break_is_deterministic(tmp_path):
-    c = cache_mod.LocalDiskCache(cache_dir=tmp_path, max_bytes=10)
+    # Roomy while writing, so finalize does not evict as we go; the cap under
+    # test is applied explicitly below.
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path, max_bytes=10_000)
     for key in ("zz", "aa"):
         p = c.put_path(key)
         p.write_bytes(b"123456")  # 6 bytes each → 12 total > 10
-        c._index[key] = {"accessed_at": 100.0, "bytes": 6}  # identical timestamps
+        c.finalize(key, url=f"https://example.test/{key}.csv")
+    # Identical timestamps, written to disk: eviction reloads the index inside
+    # the lock, so state that exists only in memory is not state it can see.
+    index = json.loads((tmp_path / cache_mod.INDEX_FILENAME).read_text())
+    for key in ("zz", "aa"):
+        index[key]["accessed_at"] = 100.0
+        index[key]["bytes"] = 6
+    (tmp_path / cache_mod.INDEX_FILENAME).write_text(json.dumps(index))
     c.evict_to_fit(10)
     # Same accessed_at → lexicographically smaller key evicted first.
     assert not (tmp_path / "aa.parquet").exists()
