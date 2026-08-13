@@ -49,14 +49,16 @@ Config de Claude Desktop (`claude_desktop_config.json`):
 }
 ```
 
-Reinicia el cliente. Las 23 herramientas aparecen automáticamente.
+Reinicia el cliente. Aparece automáticamente todo lo que el servidor ofrece: **24 tools, 3 resources con 1 plantilla de URI, y 6 prompts**. Esta parte del tutorial recorre primero las tools porque son las que hacen el trabajo; la §1.7 cubre las otras dos, que es por donde debería empezar casi todo el mundo.
 
 ### 1.2 Las cinco categorías de herramientas
+
+Ojo con la colisión de nombres, porque despista: MCP tiene una primitiva llamada *resources* (§1.7), y este catálogo también llama *recursos* a sus archivos descargables. La categoría de abajo es el segundo sentido — los archivos de CKAN.
 
 | Categoría | Herramientas | Para qué sirven |
 |---|---|---|
 | **Descubrimiento** | `search_datasets`, `get_dataset`, `list_recent_datasets`, `get_site_stats` | Encontrar datasets |
-| **Recursos** | `get_resource`, `search_resources`, `download_resource_preview` | Inspeccionar archivos individuales |
+| **Archivos de recursos** | `get_resource`, `search_resources`, `download_resource_preview`, `check_resources` | Inspeccionar archivos individuales, y preguntar si se pueden descargar |
 | **Analytics** | `get_resource_schema`, `summarize_resource`, `filter_resource`, `aggregate_resource`, `query_resource`, `quantiles_resource`, `find_duplicates_resource`, `detect_outliers_resource`, `save_query_to_csv`, `get_cache_stats`, `clear_cache` | Consultar los datos reales |
 | **Catálogo** | `list_organizations`, `get_organization`, `list_groups`, `list_tags` | Navegar el catálogo de instituciones/temas |
 | **Autocompletado** | `autocomplete` | Resolver nombres parciales → slugs exactos |
@@ -130,7 +132,7 @@ primitiva del protocolo:
   `numeric_coercion` nombrando lo que quedó fuera, el `source_sha256` y el SQL en
   `computation`. Es exactamente lo que recibe un modelo, sin editar.
 - **Resources** — el catálogo como contexto de sólo lectura.
-- **Prompts** — las cuatro plantillas, que de paso sirven de guía sobre qué preguntar.
+- **Prompts** — las seis plantillas, que de paso sirven de guía sobre qué preguntar; ver §1.7.
 - **Monitoring** — el tráfico JSON-RPC en vivo. Útil cuando algo se ve raro y hay que
   saber si la causa fue el servidor o el cliente.
 
@@ -166,6 +168,143 @@ npx -y @modelcontextprotocol/inspector ~/bin/datosgobdo-server.sh
 
 El repositorio incluye `scripts/inspector.sh`, que hace las dos cosas: el paquete
 publicado por defecto, o un wheel local si le pasas uno.
+
+### 1.7 Prompts, resources y plantillas — los otros dos tercios de MCP
+
+Casi todo tutorial de MCP cubre las tools y ahí para. Eso deja fuera las dos primitivas
+que deciden *quién tiene el control*, que es la parte que vale entender:
+
+| Primitiva | Quién decide cuándo se usa | Especificación |
+|---|---|---|
+| **Tools** | el **modelo**, en medio de la conversación | [server/tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools) |
+| **Resources** | la **aplicación**, adjuntando un URI | [server/resources](https://modelcontextprotocol.io/specification/2026-07-28/server/resources) |
+| **Prompts** | el **usuario**, deliberadamente | [server/prompts](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts) |
+
+#### Prompts: el punto de entrada que controla el usuario
+
+Un prompt es una plantilla que invocas a propósito — normalmente un comando de barra. No
+es una tool que el modelo pueda elegir, y eso es justamente el punto: permite que quien
+escribe el servidor distribuya un método, no solo capacidades.
+
+Este servidor tiene seis. Empieza aquí:
+
+```
+/empezar_aqui
+```
+
+Los otros cinco reciben un argumento cada uno — `/serie_temporal` (un tema),
+`/auditar_nomina` (una institución), `/verificar_fuente` (una URL),
+`/explorar_institucion` (una institución), `/cruzar_fuentes` (un tema). En un cliente que
+presenta los prompts como menú en vez de comandos de barra, eliges desde ese menú; el
+soporte es opcional por cliente, así que revisa el
+[directorio de clientes](https://modelcontextprotocol.io/clients).
+
+**La lección está en por qué existen estos seis.** Cada uno codifica un error que este
+catálogo invita a cometer. Un dataset titulado `2020-2025` puede contener solo 2022, así
+que `serie_temporal` declara el período real antes de graficar nada. Una columna de nómina
+deja de ser numérica porque 37 celdas dicen `#REF!`, así que `auditar_nomina` reporta las
+filas excluidas junto a cualquier total. La mitad del catálogo no se puede descargar, así
+que `empezar_aqui` lo dice antes de que te encariñes con una pregunta. Veinticuatro tools
+no pueden enseñar eso; un prompt sí.
+
+En código es un decorador que devuelve un string:
+
+```python
+@mcp.prompt(
+    name="serie_temporal",
+    title="Serie temporal — declarando el periodo real",
+    description="Serie por año declarando el periodo real y sin tratar el año como medida.",
+)
+def serie_temporal(tema: str) -> str:
+    return f"Arma una serie anual sobre {tema}. …"
+```
+
+El nombre del parámetro se vuelve el argumento del prompt, y su presencia lo hace
+obligatorio. Aquí no ocurre I/O — un prompt devuelve texto, y el modelo hace el trabajo.
+
+#### Resources: contexto que controla la aplicación
+
+Un resource es dato que la *aplicación anfitriona* puede adjuntar, direccionado por URI.
+No se llama nada; no hay efectos secundarios. Recurre a uno cuando un hecho es pequeño,
+estable, y un desperdicio de una llamada a herramienta redescubrirlo:
+
+```
+datosgobdo://catalog/overview       application/json   totales del portal
+datosgobdo://catalog/institutions   application/json   quién publica, con conteos
+datosgobdo://guide/verification     text/markdown      cómo hacer comprobable una cifra
+```
+
+El tercero es la decisión de diseño interesante. Podría haber sido un prompt, y no debe
+serlo: no es una petición de actuar, es texto de referencia que conviene tener en contexto
+mientras trabajas. **Prompt = «haz esto». Resource = «ten presente esto».**
+
+```python
+@mcp.resource(
+    "datosgobdo://catalog/overview",
+    name="Resumen del catálogo",
+    description="Totales del portal: datasets, instituciones, grupos y etiquetas.",
+    mime_type="application/json",
+)
+async def catalog_overview() -> dict[str, Any]:
+    return ckan.with_provenance(await ckan.get_site_stats())
+```
+
+#### Plantillas de recurso: una definición, todos los datasets
+
+Una [plantilla de recurso](https://modelcontextprotocol.io/specification/2026-07-28/server/resources#resource-templates)
+es un URI con un parámetro, para no tener que enumerar 1.061 resources estáticos — uno por
+cada dataset del catálogo — y que cada uno sea direccionable:
+
+```
+datosgobdo://dataset/{dataset_id}       →  datosgobdo://dataset/nomina-poder-judicial
+```
+
+En FastMCP el placeholder del URI y el parámetro de la función solo tienen que coincidir:
+
+```python
+@mcp.resource("datosgobdo://dataset/{dataset_id}", ...)
+async def dataset_resource(dataset_id: str) -> dict[str, Any]: ...
+```
+
+Las plantillas las lista `resources/templates/list`, **no** `resources/list` — una fuente
+común de «mi plantilla no aparece».
+
+#### Ver las tres de verdad
+
+El Inspector es la vista honesta, porque muestra el protocolo y no la interpretación que
+hace un cliente de él:
+
+```bash
+npx -y @modelcontextprotocol/inspector --cli uvx dominican-open-data-mcp \
+  --method prompts/list --format json
+npx -y @modelcontextprotocol/inspector --cli uvx dominican-open-data-mcp \
+  --method resources/list --format json
+npx -y @modelcontextprotocol/inspector --cli uvx dominican-open-data-mcp \
+  --method resources/templates/list --format json
+```
+
+En la interfaz, el panel **Prompts** renderiza el texto expandido de un prompt antes de que
+algo llegue a un modelo — la forma más rápida de ver qué va a pedir realmente un comando
+de barra.
+
+#### Lo que este servidor no implementa
+
+MCP define también primitivas del lado del cliente — [sampling](https://modelcontextprotocol.io/specification/2026-07-28/client/sampling)
+(el servidor le pide al cliente una respuesta del modelo), [elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation)
+(el servidor le pide un dato al usuario en medio de una llamada) y [roots](https://modelcontextprotocol.io/specification/2026-07-28/client/roots)
+(el cliente le dice al servidor qué directorios están en alcance). Ninguna se usa aquí, y
+la declaración de capacidades lo dice en vez de reclamarlas:
+
+```json
+"capabilities": {
+  "tools":     {"listChanged": false},
+  "resources": {"subscribe": false, "listChanged": false},
+  "prompts":   {"listChanged": false}
+}
+```
+
+`listChanged: false` es una promesa, no una carencia: las listas quedan fijas al arrancar,
+así que un cliente puede cachearlas.
 
 ---
 
@@ -335,6 +474,21 @@ Lee las reglas de diseño de tools horneadas en este proyecto:
 3. **Annotations obligatorias.** `readOnlyHint`, `destructiveHint`, `title` — son pass/fail para el Anthropic Directory y manejan la UX de auto-aprobación.
 4. **Separación read/write.** Una tool o es read-only o muta — nunca ambas.
 5. **≤ ~30 tools.** Cada schema cuesta tokens de contexto en cada turno. Pasando ~30, cambia a un par `search_actions` + `execute_action`.
+
+### Paso 3b — Distribuye un método, no solo capacidades
+
+Las tools son lo que tu servidor *puede* hacer; los prompts son lo que tú crees que
+alguien *debería* hacer primero. Si tu dominio tiene trampas — un título que miente sobre
+su rango de fechas, un total que está mal si no revisas qué se excluyó — la descripción de
+una tool no puede cargar eso de forma fiable, porque el modelo solo la lee cuando ya
+eligió la tool.
+
+Entonces: cuando las tools funcionen, escribe dos o tres prompts (§1.7). Uno sin
+argumentos que oriente a alguien nuevo, y uno por cada flujo que te molestaría ver hecho
+mal. Después agrega resources para los hechos permanentes en los que una conversación no
+debería gastar una llamada, y una plantilla de recurso si tu dominio tiene una entidad
+direccionable obvia (un dataset, un repo, un ticket). Es la palanca de calidad más barata
+de todo el servidor: ~30 líneas que evitan el mal uso más común de las otras 3.000.
 
 ### Paso 4 — No vuelques datos crudos al contexto
 

@@ -6,277 +6,99 @@
 
 # datosgobdo-mcp
 
-**Servidor [Model Context Protocol](https://modelcontextprotocol.io) que expone los datos abiertos de la República Dominicana ([datos.gob.do](https://datos.gob.do)) como herramientas consumibles por cualquier asistente de IA.**
+**Hazle una pregunta sobre datos públicos dominicanos a un asistente de IA y recibe una respuesta que se puede rastrear hasta el archivo del gobierno de donde salió.**
 
-Convierte el portal oficial de datos abiertos del Estado dominicano en una integración nativa para Claude Desktop, Claude Code, Cursor, ChatGPT Desktop o cualquier cliente compatible con MCP. Permite que el modelo busque, lea, analice y previsualice los 1,053+ datasets publicados por las 266 instituciones gubernamentales dominicanas, todo desde una conversación.
+Este es un servidor [Model Context Protocol](https://modelcontextprotocol.io) para [datos.gob.do](https://datos.gob.do), el portal oficial de datos abiertos de la República Dominicana. Se conecta a Claude Desktop, Claude Code, Cursor, ChatGPT Desktop o cualquier cliente compatible con MCP, y permite que el modelo busque en el catálogo, descargue los archivos reales, los interprete y haga análisis de verdad — sin que tú escribas código, abras una URL ni bajes una hoja de cálculo.
 
 > **Fuente oficial.** El repositorio canónico es
 > [`alcastaro/datos.gob.do-MCP-server`](https://github.com/alcastaro/datos.gob.do-MCP-server).
-> Las únicas distribuciones oficiales son el paquete PyPI
+> Las únicas distribuciones oficiales son el paquete de PyPI
 > [`dominican-open-data-mcp`](https://pypi.org/project/dominican-open-data-mcp/)
 > y la entrada del MCP Registry `io.github.alcastaro/datos.gob.do-MCP-server`.
-> Las copias publicadas en otros lugares no son mantenidas por el autor y pueden
-> estar desactualizadas o modificadas — verifica contra este repositorio antes de instalar.
+> Las copias publicadas en otros lugares no las mantiene el autor y pueden estar
+> desactualizadas o modificadas — verifica contra este repositorio antes de instalar.
 
-> 📚 **¿Nuevo aquí?** Lee el [Tutorial](Tutorial_es.md) — cómo funciona el servidor, cómo
-> usarlo, y cómo construir tu propio servidor MCP igual. ([English](Tutorial.md))
-
----
-
-## ¿Qué problema resuelve?
-
-[datos.gob.do](https://datos.gob.do) publica miles de archivos CSV, XLSX y JSON con información pública: nóminas, presupuestos, estadísticas de seguridad, indicadores de salud, datos electorales, etc. Hoy esa información es accesible solo a quien sabe navegar el portal CKAN y descargar archivos manualmente.
-
-Este MCP cierra esa brecha. Cualquier persona puede preguntarle a su asistente:
-
-- *"¿Cuánto gasta el Poder Judicial en remuneraciones?"*
-- *"Compará el presupuesto aprobado vs. ejecutado de FONDOMARENA en los últimos tres años."*
-- *"Listame las 10 instituciones que más datos publican."*
-- *"¿Qué columnas tiene el dataset de robos del Ministerio de Interior?"*
-
-…y el modelo, sin que el usuario tenga que escribir código, navegar a URLs ni descargar archivos, ejecuta las consultas reales contra el portal, baja los datos, los parsea y los analiza.
-
-## ¿Para quién es?
-
-- **Periodistas de datos** que quieren explorar fuentes oficiales sin escribir scrapers.
-- **Investigadores y académicos** que necesitan acceso programático a datos del Estado dominicano.
-- **Activistas de transparencia y sociedad civil** que monitorean ejecución presupuestaria, contrataciones, gestión pública.
-- **Desarrolladores y científicos de datos** que prototipan dashboards o análisis sobre datos públicos.
-- **Funcionarios públicos** que quieren consultar lo que su propia institución (u otras) ya publica.
-- **Cualquiera con curiosidad cívica** sobre cómo opera el gobierno.
-
-## ¿Qué es MCP?
-
-[Model Context Protocol](https://modelcontextprotocol.io) es un estándar abierto (creado por Anthropic, adoptado por OpenAI y otros) que permite a los modelos de lenguaje conectarse de forma segura a fuentes de datos y herramientas externas. Un "servidor MCP" expone una colección de funciones tipadas; el modelo decide cuándo invocarlas, con qué argumentos, y cómo combinar los resultados.
-
-Este proyecto es un servidor MCP especializado en `datos.gob.do`.
-
-## ¿Qué es datos.gob.do?
-
-Es el portal oficial de datos abiertos del Gobierno dominicano, administrado por la Oficina Gubernamental de Tecnologías de la Información y Comunicación (OGTIC). Corre sobre **CKAN 2.11.3**, el mismo software de gestión de datos abiertos que usan portales como data.gov (EEUU), data.gov.uk y muchos gobiernos latinoamericanos.
-
-A mayo de 2026 contiene aproximadamente:
-
-- **1,053 datasets** publicados
-- **266 organizaciones** publicadoras (ministerios, alcaldías, organismos autónomos, etc.)
-- **11 categorías temáticas** (Economía, Salud, Educación, Gestión Pública…)
-- **852 etiquetas**
-
-Cada dataset agrupa uno o varios "recursos" (archivos descargables) en formatos como CSV, XLSX, ODS, PDF o JSON.
-
-Este MCP está inspirado en [`datagouv-mcp`](https://github.com/datagouv/datagouv-mcp) (Francia), pero datos.gob.do corre una plataforma distinta (CKAN, no udata), así que la implementación es propia.
+Este README está escrito para leerse en orden. **La Parte 1 no requiere conocimientos técnicos.** La Parte 2 enseña qué es MCP en realidad, usando este servidor como ejemplo trabajado. Las Partes 3 a 6 son la referencia y el detalle de ingeniería. Si prefieres el mismo material como recorrido guiado, lee el [Tutorial](Tutorial_es.md) ([English](Tutorial.md)).
 
 ---
 
-## Herramientas (tools) expuestas
+## Contenido
 
-23 funciones tipadas, organizadas en cinco grupos. Las herramientas que producen
-datos (analytics + preview + cache) devuelven `outputSchema` / `structuredContent`
-tipados, para que los hosts MCP validen resultados; las de metadatos devuelven JSON.
+**Parte 1 — Empieza aquí (sin conocimientos técnicos)**
+1. [Qué es esto, en palabras llanas](#s1)
+2. [Arranque rápido](#s2)
+3. [Los seis prompts guiados — empieza con `/empezar_aqui`](#s3)
+4. [Qué puedes preguntar](#s4)
+5. [Lee esto antes de citar una cifra](#s5)
 
-### Descubrimiento
+**Parte 2 — Entender MCP (educativo)**
 
-| Tool | Qué hace |
-|---|---|
-| `search_datasets` | Busca datasets por palabra clave, organización, tag o grupo. Filtros combinables, paginación. |
-| `get_dataset` | Devuelve metadatos completos de un dataset: título, descripción, licencia, autor, y la lista completa de sus recursos con URLs de descarga directa. |
-| `list_recent_datasets` | Datasets ordenados por fecha de última modificación. Útil para monitorear actualizaciones del portal. |
-| `get_site_stats` | Conteos globales del portal (totales de datasets, organizaciones, grupos, tags). |
+6. [¿Qué es MCP? Tools, resources y prompts](#s6)
+7. [¿Qué es datos.gob.do?](#s7)
 
-### Recursos (archivos)
+**Parte 3 — Qué expone este servidor**
 
-| Tool | Qué hace |
-|---|---|
-| `get_resource` | Metadatos de un recurso individual (URL, formato, tamaño, fecha). |
-| `search_resources` | Busca recursos por nombre. |
-| `download_resource_preview` | Baja un archivo y devuelve N filas. CSV, TSV, XLSX, XLS, JSON. Tope de 5 MB. Modos: head / tail / random. |
+8. [Tools (24, más 3 opcionales)](#s8)
+9. [Resources (3) y una plantilla de recurso](#s9)
+10. [Prompts (6)](#s10)
+11. [A qué primitiva recurrir](#s11)
 
-### Analytics (v0.2+)
+**Parte 4 — Por qué existe este servidor**
 
-Capa analítica con DuckDB sobre cache persistente en Parquet. Primera llamada por recurso descarga + cachea (hasta 100 MB). Llamadas siguientes son sub-segundo.
+12. [Cómo se compara con otros MCP de CKAN](#s12)
 
-| Tool | Qué hace |
-|---|---|
-| `get_resource_schema` | Nombres de columnas, tipos inferidos, valores de muestra por columna. Paso de reconocimiento barato. |
-| `summarize_resource` | Perfil automático: row count, nulls/distinct por columna, min/max/mean en numéricas, top-N valores en categóricas. |
-| `filter_resource` | WHERE / SELECT / ORDER BY / LIMIT tipados. Ops: `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in`, `contains`, `starts_with`, `ends_with`, `is_null`, `is_not_null`. |
-| `aggregate_resource` | GROUP BY + agregaciones + HAVING + ORDER BY tipados. Fns: `count`, `count_distinct`, `sum`, `avg`, `mean`, `median`, `min`, `max`, `stddev`, `variance`. |
-| `query_resource` | Escape hatch para power users: SQL read-only contra tabla `data`. Solo SELECT/WITH; DDL/DML/COPY/PRAGMA/ATTACH/LOAD rechazados. Aislado (sandbox) — el recurso se materializa en memoria con el acceso externo deshabilitado, así las funciones de tabla no pueden leer archivos locales ni acceder a la red. |
-| `quantiles_resource` | Distribución de percentiles (p25/p50/p75/p90/p95/p99) de columnas numéricas. Útil para perfiles estadísticos de nóminas y presupuestos. |
-| `find_duplicates_resource` | Encuentra filas duplicadas en columnas indicadas (o en todas). Esencial para control de calidad en nóminas y padrones. |
-| `detect_outliers_resource` | Detecta filas fuera del rango IQR en una columna numérica. Devuelve filas ordenadas por distancia a la mediana. |
-| `save_query_to_csv` | Exporta un resultado de filtro o SQL a un archivo CSV local. Destino por defecto: `~/Downloads/datosgobdo-exports/`. |
-| `get_cache_stats` | Stats del cache Parquet en disco. |
-| `clear_cache` | Borra todo el cache. |
+**Parte 5 — Referencia técnica**
 
-### Catálogo
+13. [Instalación y configuración de clientes](#s13)
+14. [Lo que las respuestas dicen sobre sí mismas](#s14)
+15. [Seguridad y variables de entorno](#s15)
+16. [Arquitectura](#s16)
+17. [Limitaciones medidas](#s17)
 
-| Tool | Qué hace |
-|---|---|
-| `list_organizations` | Todas las instituciones que publican, con conteo de datasets de cada una. |
-| `get_organization` | Detalle de una institución (descripción, número de datasets, URL). |
-| `list_groups` | Categorías temáticas con conteo de datasets. |
-| `list_tags` | Etiquetas disponibles, opcionalmente filtradas por prefijo. |
+**Parte 6 — Desarrollo**
 
-### Autocompletado
-
-| Tool | Qué hace |
-|---|---|
-| `autocomplete` | Resuelve nombres parciales para datasets, organizaciones, grupos o tags. Útil cuando el usuario solo da nombre parcial — el modelo lo usa internamente para encontrar slugs exactos. |
-
-### Pipeline GCP (opcional — `pip install 'dominican-open-data-mcp[gcp]'`)
-
-Tres herramientas extra se registran automáticamente cuando las librerías de
-google-cloud están instaladas. Convierten el servidor en la mitad de *ingesta*
-de un pipeline BigQuery: descubre datasets aquí, cárgalos a BigQuery, y
-consúltalos con el BigQuery MCP oficial de Google (JOINs entre datasets que el
-DuckDB local no puede hacer).
-
-| Tool | Qué hace |
-|---|---|
-| `load_resource_to_bigquery` | Recurso → cache Parquet → subida a GCS → External Table de BigQuery (default, cero-ETL) o Load Job. |
-| `list_bigquery_exports` | Lista las tablas de un dataset de BigQuery. |
-| `get_bigquery_table_info` | Esquema, conteo de filas y URIs de origen de una tabla. |
-
-Define `DATOSGOBDO_GCS_BUCKET` para no pasar el bucket en cada llamada.
-
-### Lo que las respuestas dicen sobre sí mismas
-
-Tres campos aparecen cuando el servidor tuvo que hacer algo que nadie le pidió.
-Cada uno existe porque una herramienta de auditoría no puede tapar en silencio
-un defecto del dato.
-
-**`numeric_coercion`** — una columna guardada como texto se leyó como números.
-
-Es el defecto más común del catálogo dominicano: **93 de 540 recursos legibles**
-guardan columnas numéricas como texto, porque unas pocas celdas dicen `N/A` o
-`#REF!` y eso basta para volver no numérica una columna de sueldos entera.
-`aggregate_resource`, `quantiles_resource` y `detect_outliers_resource` leen esa
-columna como números donde cada valor lo permite, y declaran qué costó:
-
-```json
-"numeric_coercion": [{
-  "column": "SUELDO BRUTO (RD$)", "coerced": true,
-  "values_used": 21469, "values_excluded": 37,
-  "excluded_values": [{"value": "N/A", "count": 21}, {"value": "#REF!", "count": 16}]
-}]
-```
-
-**Mira `values_excluded` antes de citar el total.** Una columna que convierte
-menos del 90 % se deja como texto y la respuesta explica por qué, en vez de
-responder sobre una medida usando un subconjunto arbitrario de filas.
-
-**`linked_files`** — la URL sirvió una página, y la página enlazaba archivos.
-
-37 recursos del catálogo responden con una página web en vez de un archivo.
-Cuando un enlace coincide claramente con lo pedido, se descarga y
-`cache.resolved_from` registra `{page, followed}` — pediste una URL y recibiste
-datos de otra, y la respuesta lo dice en vez de esconderlo. Cuando varios
-candidatos son indistinguibles, vuelven como `linked_files` con nombre y
-puntaje, para que elijas y llames de nuevo. En este catálogo existen archivos
-llamados `clss.csv` y `xls.csv`; adivinar entre ellos sería inventar.
-
-**`cache.provenance`** — la respuesta vino de una copia archivada, no del
-portal. Ver *Copias archivadas* más abajo.
-
-### Seguridad: guardia de descargas salientes
-
-Cada descarga de recursos pasa por una guardia anti-SSRF (URL inicial **y**
-cada salto de redirect): solo http/https, y toda dirección a la que resuelva el
-host debe ser públicamente enrutable (metadata de nube, loopback y rangos
-privados quedan bloqueados). Variables de entorno:
-
-| Variable | Valores | Significado |
-|---|---|---|
-| `DATOSGOBDO_NETGUARD` | `public-only` (default) / `strict` / `off` | `strict` restringe los hosts a `datos.gob.do`; `off` desactiva la guardia. |
-| `DATOSGOBDO_ALLOW_HOSTS` | separados por coma, comodines `*.` | Hosts de confianza del operador (p. ej. forks apuntando a otro portal CKAN). |
-
-### Copias archivadas (opcional)
-
-Los enlaces del Estado se pudren. Un censo del catálogo completo el 2026-08-08
-encontró 15 URLs de recursos ya muertas y 99 instituciones cuyos sitios habían
-adquirido reglas que rechazan el acceso programático: una cifra que cites hoy
-puede ser incomprobable el año que viene.
-
-Apunta `DATOSGOBDO_ARCHIVE_DIR` a un directorio con un `manifest.json` y sus
-Parquet, y cuando el portal no responda el servidor contestará desde la copia
-archivada. Viene apagado, el portal siempre se intenta primero, y **la respuesta
-siempre lo dice**: `cache.provenance` lleva la fecha de captura, el `sha256`, la
-licencia y por qué no se usó el origen. Una herramienta que devolviera la copia
-de ayer como si fuera la de hoy dejaría de servir para una auditoría.
-
-Un archivo sólo contiene lo que se pudo descargar, así que **no** contiene los
-recursos que un portal rechaza. Es la suposición natural y es falsa.
-
-| Variable | Por omisión | Significado |
-|---|---|---|
-| `DATOSGOBDO_ARCHIVE_DIR` | sin definir (apagado) | Directorio con `manifest.json` + copias Parquet a las que replegarse. |
-
-### Modo hosted (experimental)
-
-`DATOSGOBDO_TRANSPORT=streamable-http` sirve MCP por HTTP (stateless, para
-escalar horizontalmente) en vez de stdio. En este modo `save_query_to_csv` y
-`clear_cache` quedan deshabilitadas (tocan el filesystem del servidor / la
-cache compartida) y las estadísticas de cache omiten rutas del servidor.
-
-| Variable | Default | Significado |
-|---|---|---|
-| `DATOSGOBDO_TRANSPORT` | `stdio` | `streamable-http` para despliegues hosted. |
-| `DATOSGOBDO_HOST` / `DATOSGOBDO_PORT` | `127.0.0.1` / `8000` | Dirección HTTP. |
-| `DATOSGOBDO_DUCKDB_MEMORY` | `2GB` | Techo de memoria DuckDB por conexión. |
-| `DATOSGOBDO_DUCKDB_THREADS` | `4` | Tope de hilos DuckDB. |
-| `DATOSGOBDO_QUERY_TIMEOUT` | `0` (off) | Segundos de reloj antes de interrumpir una ejecución de DuckDB. Cubre tanto el SQL de `query_resource` como la conversión de un archivo recién descargado al cache Parquet. |
+18. [Desarrollo, pruebas y el MCP Inspector](#s18)
+19. [Contribuir, créditos, cómo citar, licencia](#s19)
 
 ---
+---
 
-## Instalación y configuración
+# Parte 1 — Empieza aquí
 
-### Opción A — Vía `uvx` desde PyPI (recomendado)
+<a id="s1"></a>
 
-Paquete: [`dominican-open-data-mcp`](https://pypi.org/project/dominican-open-data-mcp/).
+## 1. Qué es esto, en palabras llanas
 
-```bash
-uvx dominican-open-data-mcp
-```
+El Estado dominicano publica miles de archivos: nóminas públicas, ejecución presupuestaria, actividad hospitalaria, flujos migratorios, contratos de compras, pérdidas eléctricas, incendios forestales. Todo es público. Casi nadie lo lee, porque leerlo implica saber cuál de 266 instituciones publicó qué, encontrar el archivo, bajar una hoja de cálculo con el encabezado en la fila 3 y saber qué hacer después.
 
-El paquete también trae un binario corto, `datosgobdo-mcp` — ambos comandos arrancan el mismo servidor:
+Este servidor le entrega ese trabajo completo a tu asistente de IA. Preguntas con tus propias palabras. El asistente encuentra el dataset, descarga el archivo del servidor de la propia institución, deduce las columnas, hace la suma o el promedio, y te da la respuesta **junto con de dónde salió y qué tuvo que dejar fuera**.
 
-```bash
-uvx --from dominican-open-data-mcp datosgobdo-mcp
-```
+Tres cosas conviene saberlas de entrada, porque condicionan todo lo demás:
 
-> **¿Vienes de una versión ≤ 0.7.0?** Esas versiones fijaban `mcp>=1.9.0` sin tope superior, y el SDK de Python de MCP 2.0 (publicado el 2026-07-28) eliminó la ruta de import `mcp.server.fastmcp` — así que una instalación nueva falla con `ModuleNotFoundError`. Instala 0.7.1 o posterior, o fija el SDK tú: `uvx --with "mcp<2" --from dominican-open-data-mcp datosgobdo-mcp`.
+- **Solo lee.** Nada de aquí puede modificar el portal ni publicar nada. No hay usuario ni contraseña.
+- **Corre en tu computadora**, al lado de tu asistente. Tus preguntas no pasan por ningún servidor de este proyecto.
+- **Te avisa cuando el dato está mal.** Cerca de la mitad del catálogo no se puede descargar por programa, y las herramientas lo dicen en vez de inventar una cifra. Ese es el eje del diseño, no una advertencia escondida al final.
 
-### Opción A-bis — Vía `uvx` desde GitHub (versión dev más reciente)
+<a id="s2"></a>
 
-Requisito previo: [`uv`](https://docs.astral.sh/uv/) instalado. En macOS:
+## 2. Arranque rápido
+
+Necesitas [`uv`](https://docs.astral.sh/uv/), una herramienta pequeña que ejecuta programas de Python sin que instales nada más. En macOS o Linux, pega esto en una terminal:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Luego configurar el cliente MCP. El comando es siempre el mismo:
+En Windows, sigue la [página de instalación de uv](https://docs.astral.sh/uv/getting-started/installation/).
 
-```
-uvx --from git+https://github.com/alcastaro/datos.gob.do-MCP-server.git datosgobdo-mcp
-```
+Después, dile a tu asistente que el servidor existe.
 
-`uvx` clona el repo a `~/.cache/uv/`, crea un venv aislado, instala las dependencias y arranca el servidor. La primera vez tarda unos segundos; subsiguientes son instantáneas.
+**Claude Desktop.** Abre `Configuración → Desarrollador → Editar configuración`, o edita el archivo directamente:
 
-### Opción B — Clone local (para desarrollo)
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
-```bash
-git clone https://github.com/alcastaro/datos.gob.do-MCP-server.git
-cd datos.gob.do-MCP-server
-uv sync
-uv run datosgobdo-mcp   # arranca el servidor en stdio (Ctrl+C para salir)
-```
-
-> **Nota macOS:** evitá clonar dentro de `~/Library/CloudStorage/GoogleDrive-*` o similares. macOS bloquea la ejecución de binarios desde paths sincronizados con cloud (TCC restriction). Usá `~/code/` o equivalente.
-
-### Configuración en Claude Desktop
-
-Editar `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+Pega esto, reemplazando `TU_USUARIO`:
 
 ```json
 {
@@ -289,139 +111,503 @@ Editar `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 }
 ```
 
-Usar la ruta absoluta a `uvx` — Claude Desktop no hereda el `PATH` de tu shell. Para seguir la versión de desarrollo, reemplazar los args por `["--from", "git+https://github.com/alcastaro/datos.gob.do-MCP-server.git", "datosgobdo-mcp"]`.
+Usa la **ruta completa** a `uvx` — Claude Desktop no lee el `PATH` de tu shell. Luego cierra Claude Desktop por completo (Cmd+Q en macOS, no solo cerrar la ventana) y vuelve a abrirlo. En `Configuración → Desarrollador` debe aparecer `datosgobdo` en estado **running**.
 
-Reiniciar Claude Desktop completamente (Cmd+Q, no solo cerrar la ventana). Settings → Developer → Local MCP servers debería mostrar `datosgobdo` en estado **running**.
-
-### Configuración en Claude Code
+**Claude Code.** Una línea:
 
 ```bash
 claude mcp add datosgobdo -- uvx dominican-open-data-mcp
 ```
 
-Versión de desarrollo: `claude mcp add datosgobdo -- uvx --from git+https://github.com/alcastaro/datos.gob.do-MCP-server.git datosgobdo-mcp`
+**Cualquier otro cliente.** La misma idea: registra `uvx` como comando con `dominican-open-data-mcp` como argumento. El [directorio de clientes MCP](https://modelcontextprotocol.io/clients) indica qué cliente soporta qué. Las opciones completas — versión de desarrollo, clone local, modo hosted — están en [§13](#s13).
 
-### Configuración en Cursor / otros clientes
+<a id="s3"></a>
 
-Mismo principio: registrar `uvx` como comando con los args `--from git+... datosgobdo-mcp`. Consultar la documentación específica de cada cliente para la ubicación del archivo de configuración.
+## 3. Los seis prompts guiados — empieza con `/empezar_aqui`
 
----
+Veinticuatro herramientas no son una invitación. Alguien que nunca ha visto este catálogo no tiene forma de saber que nóminas, ejecución presupuestaria e inversión pública son las tres cosas que mejor cubre.
 
-## Ejemplos de uso
+Por eso el servidor trae **seis prompts**: preguntas ya hechas, escritas para codificar los hábitos que costó aprender una auditoría completa del catálogo. En Claude Code y Claude Desktop aparecen como comandos de barra. Escribe:
 
-Una vez configurado, podés pedirle al modelo:
+```
+/empezar_aqui
+```
 
-### Exploración básica
+y el asistente te presentará el portal, te dirá qué cubre bien, propondrá tres preguntas concretas que podrías hacer a continuación, y te advertirá desde el principio qué no se puede descargar.
 
-> *Usá el MCP datosgobdo y dime cuántos datasets hay en el portal datos.gob.do.*
+Los otros cinco reciben un argumento cada uno:
 
-→ Invoca `get_site_stats`. Respuesta: 1,053 datasets, 266 organizaciones.
+| Prompt | Le das | Qué hace |
+|---|---|---|
+| `/empezar_aqui` | — | Panorama del portal y tres preguntas para arrancar. |
+| `/serie_temporal` | un tema | Arma una serie año por año, declarando el período real cubierto y sin tratar la columna de año como una medida. |
+| `/auditar_nomina` | una institución | Suma, promedio y distribución salarial de una nómina pública, declarando cuántas filas se excluyeron y por qué. |
+| `/verificar_fuente` | la URL de un recurso | Comprueba alcance, procedencia y forma de un archivo **antes** de que te apoyes en él. |
+| `/explorar_institucion` | una institución | Inventario de todo lo que publica esa institución, con el estado real de descarga de cada archivo. |
+| `/cruzar_fuentes` | un tema | Cruza dos recursos declarando unidades, períodos y los límites del cruce. |
 
-### Búsqueda con análisis
+Si tu cliente no muestra los prompts como comandos de barra, revisa su entrada en el [directorio de clientes](https://modelcontextprotocol.io/clients) — el soporte de prompts es [opcional para los clientes](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts), y el [MCP Inspector](#s18) siempre puede listarlos y ejecutarlos.
 
-> *Buscá los 5 datasets más relevantes sobre presupuesto en datos.gob.do y resumime de qué institución es cada uno.*
+<a id="s4"></a>
 
-→ Invoca `search_datasets(query="presupuesto", limit=5)` y el modelo redacta el resumen.
+## 4. Qué puedes preguntar
 
-### Resolución de nombres + detalle
+Preguntas normales, en español o en inglés. Algunas que funcionan hoy:
 
-> *Encontrá el slug del Ministerio de Hacienda y dime cuántos datasets tiene publicados.*
+> *¿Cuántos datasets hay en el portal datos.gob.do y qué instituciones publican más?*
 
-→ `autocomplete(kind="organization", query="hacienda")` → `get_organization(id="ministerio-de-hacienda")`.
+> *Encuentra los cinco datasets más relevantes sobre presupuesto y dime qué institución publica cada uno.*
 
-### Análisis de datos reales
-
-> *Mostrame las primeras 20 filas del CSV de presupuesto del Poder Judicial y dime cuáles son las tres partidas más grandes.*
-
-→ `search_datasets(query="poder judicial")` → `get_dataset("presupuesto-poder-judicial")` → `download_resource_preview(url=..., format="csv", rows=20)` → el modelo identifica las partidas mayores.
-
-### Analítica sobre archivos grandes (v0.2+)
+> *¿Cuánto gasta el Poder Judicial en sueldos?*
 
 > *¿Cuántos empleados activos tiene el Ministerio de Agricultura en abril de 2026, desglosados por estatus?*
 
-El CSV de nómina de Agricultura tiene 826,000 filas y 94 MB — demasiado para la tool de preview. El flujo de analítica:
+Vale la pena detenerse en la última, porque es el tipo de pregunta para la que existe toda la capa analítica. La nómina de Agricultura es un CSV de **826.000 filas y 94 MB** — muchísimo más de lo que cabe pegar en una conversación. El servidor lo descarga una vez, lo convierte a caché columnar y responde con una agregación agrupada: 6 tipos de estatus, unos 8.915 empleados. La primera llamada toma unos 14 segundos; cada pregunta posterior sobre el mismo archivo responde en menos de medio segundo.
 
-→ `search_datasets(query="nomina agricultura")` → `get_dataset(...)` → `get_resource_schema(url, "csv")` para ver las columnas (Nombre, Departamento, Función, Estatus, Sueldo Bruto, Mes, Año) → `aggregate_resource(...)` con `group_by=["Estatus"]`, filtros `Año=2026, Mes='Abril'`, y `count_distinct` sobre `Nombre`.
+> *Compara el presupuesto aprobado contra el ejecutado de FONDOMARENA en los últimos tres años.*
 
-Resultado: 6 tipos de estatus, ~8,915 empleados en total. Primera llamada en frío: ~14 s (descarga + conversión a Parquet). Llamadas siguientes sobre el mismo archivo: <0.5 s (acierto de caché).
+> *¿Qué columnas tiene el dataset de robo de vehículos del Ministerio de Interior?*
 
-### Monitoreo
+> *Lista los diez datasets actualizados más recientemente.*
 
-> *Listame los 10 datasets que se actualizaron más recientemente en el portal.*
+**A quién le suele servir:** periodistas de datos que si no tendrían que escribir un scraper; investigadores que necesitan acceso programático; organizaciones de transparencia que siguen ejecución presupuestaria y compras; desarrolladores prototipando sobre datos públicos; funcionarios que quieren ver qué publica ya su propia institución; y cualquiera con curiosidad cívica sobre cómo opera el Estado.
 
-→ `list_recent_datasets(limit=10)`.
+<a id="s5"></a>
+
+## 5. Lee esto antes de citar una cifra
+
+Este catálogo tiene defectos reales, y se midieron — un censo del catálogo completo el **2026-08-08**, un recurso por dataset, 1.056 recursos sobre sesiones MCP reales. Cuatro hallazgos cambian cómo debes leer cualquier cifra que salga de aquí:
+
+**Cerca de la mitad del catálogo no se puede descargar por programa.** 540 de 1.056 recursos se pudieron leer. La causa individual mayor no es este servidor y ninguna versión suya puede arreglarla: **360 recursos de 98 instituciones** están detrás de una configuración de sitio que rechaza la descarga programática de los archivos que esas mismas instituciones publican como datos abiertos. Desde la misma dirección, 21 otros hosts gubernamentales detrás del mismo CDN responden con normalidad — así que es configuración por sitio, no nuestra red. Otros 15 enlaces están muertos, 37 devuelven una página web en vez de un archivo, y 8 archivos son ilegibles.
+
+**Uno de cada tres datasets multiformato se contradice a sí mismo.** De 528 datasets cuyos formatos se pudieron comparar, **176 no coinciden** en número de filas o de columnas. Un ejemplo: `recaudaciones-sirite-2021-2025` de la Tesorería Nacional trae 971.818 filas como CSV y 197.338 como ODS. Un ciudadano que baja el ODS y un periodista que baja el CSV citarían cifras distintas del mismo dataset oficial. **Regla práctica: revisa más de un formato antes de publicar un total.**
+
+**Los números suelen estar guardados como texto.** 93 de los 540 recursos legibles tienen columnas numéricas como texto, normalmente porque un puñado de celdas dice `N/A` o `#REF!`. Las herramientas leen esa columna como números donde cada valor lo permite y **reportan lo que costó** — ver [§14](#s14). Lee `values_excluded` antes de citar el total.
+
+**Ningún dataset declara cada cuánto se actualiza.** El campo `periodicidad` está vacío en los 1.056. Un dataset rotulado «2018-2026» puede haberse alimentado el mes pasado o haberse congelado hace dos años; la frescura hay que inferirla del último período con datos.
+
+Nada de esto es razón para no usar el catálogo. Es razón para citarlo con precisión — que es para lo que existen `/verificar_fuente` y los campos que describen la propia respuesta.
 
 ---
+---
 
-## Arquitectura
+# Parte 2 — Entender MCP
+
+<a id="s6"></a>
+
+## 6. ¿Qué es MCP? Tools, resources y prompts
+
+[Model Context Protocol](https://modelcontextprotocol.io) es un estándar abierto — creado por Anthropic y hoy adoptado en toda la industria — para conectar modelos de lenguaje con datos y capacidades externas. En vez de que cada aplicación invente su propio formato de plugin, una app con modelo (el **cliente**, p. ej. Claude Desktop) habla con cualquier cantidad de **servidores** por un solo protocolo.
+
+Un servidor puede ofrecer tres tipos de cosa. La distinción importa, porque determina *quién decide* cuándo se usa:
+
+| Primitiva | La controla | Qué es | En este servidor |
+|---|---|---|---|
+| **[Tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)** | el **modelo** | Funciones que el modelo puede llamar, con argumentos tipados. El modelo elige cuándo y con qué. | 24 funciones: buscar, descargar, agregar, consultar… |
+| **[Resources](https://modelcontextprotocol.io/specification/2026-07-28/server/resources)** | la **aplicación** | Datos que la app puede adjuntar como contexto, direccionados por URI. Sin efectos secundarios. | 3 documentos + 1 plantilla de URI |
+| **[Prompts](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts)** | el **usuario** | Plantillas que el usuario invoca deliberadamente, normalmente como comandos de barra. | 6 flujos guiados |
+
+El protocolo define también primitivas del lado del cliente — [sampling](https://modelcontextprotocol.io/specification/2026-07-28/client/sampling), [elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation), [roots](https://modelcontextprotocol.io/specification/2026-07-28/client/roots) — que este servidor no usa.
+
+Guías de concepto: [tools](https://modelcontextprotocol.io/docs/concepts/tools), [resources](https://modelcontextprotocol.io/docs/concepts/resources), [prompts](https://modelcontextprotocol.io/docs/concepts/prompts). Si quieres construir uno, empieza por [Build a server](https://modelcontextprotocol.io/docs/develop/build-server), y lee la [Parte 3 de nuestro Tutorial](Tutorial_es.md#parte-3--construye-tu-propio-servidor-mcp-receta) para lo que este proyecto aprendió haciéndolo.
+
+Lo que este servidor declara al conectarse, verificado en sesión real el 2026-08-12:
+
+```json
+{
+  "serverInfo": { "name": "datosgobdo-mcp", "version": "0.13.0" },
+  "protocolVersion": "2025-11-25",
+  "capabilities": {
+    "tools":     { "listChanged": false },
+    "resources": { "subscribe": false, "listChanged": false },
+    "prompts":   { "listChanged": false }
+  }
+}
+```
+
+`listChanged: false` y `subscribe: false` son declaraciones honestas, no omisiones: la lista de tools queda fija al arrancar, y ningún resource aquí cambia con la frecuencia que justificaría una suscripción.
+
+<a id="s7"></a>
+
+## 7. ¿Qué es datos.gob.do?
+
+El portal oficial de datos abiertos del Estado dominicano, operado por OGTIC. Corre sobre **CKAN 2.11.3** — la misma plataforma detrás de data.gov (EE. UU.), data.gov.uk y buena parte de América Latina.
+
+**Lo que el portal declara** (consultado en vivo el 2026-08-12):
+
+| | |
+|---|---|
+| Datasets | **1.061** |
+| Organizaciones registradas | **266** |
+| Grupos temáticos | **11** |
+| Etiquetas | **874** |
+| Extensiones CKAN cargadas | `activity`, `datosgobdo_theme` |
+
+**Lo que midió la auditoría del 2026-08-08**, que es otra cosa y la diferencia es instructiva:
+
+| | |
+|---|---|
+| Recursos (archivos) en el catálogo | **3.826** |
+| Organizaciones que realmente tienen un dataset | **261** de las 266 registradas |
+| Recursos probados (uno por dataset) | **1.056** |
+| Legibles por máquina | **540** (51,1 %) |
+| Filas descargadas y cacheadas | **13.371.601** |
+| Recursos alojados en `datos.gob.do` mismo | **66** — el resto vive en **273 dominios distintos** |
+
+Esa última fila es el hecho estructural detrás de casi todo este proyecto. **El portal es un catálogo de enlaces, no un repositorio.** Cada institución guarda sus archivos en su propio servidor web, así que la disponibilidad, la higiene de formato y las reglas de acceso se deciden en 273 lugares que el portal no controla.
+
+Nota también lo que la lista de extensiones **no** incluye: **el DataStore de CKAN no está instalado aquí.** Ese solo hecho es la razón de que este servidor tenga la forma que tiene — ver [§12](#s12).
+
+Este proyecto se inspiró en [`datagouv-mcp`](https://github.com/datagouv/datagouv-mcp) (Etalab, Francia), pero datos.gob.do corre CKAN y no udata, así que la implementación es propia.
+
+---
+---
+
+# Parte 3 — Qué expone este servidor
+
+<a id="s8"></a>
+
+## 8. Tools (24, más 3 opcionales)
+
+Funciones tipadas, agrupadas en cinco familias. Las que producen datos (analytics, preview, caché) devuelven `outputSchema` / `structuredContent` tipados para que los hosts validen resultados; las de metadatos navegacionales devuelven JSON. Toda herramienta que toca el portal está anotada `readOnlyHint: true`; las que salen a la red, `openWorldHint: true`.
+
+### Descubrimiento
+
+| Tool | Qué hace |
+|---|---|
+| `search_datasets` | Busca datasets por palabra clave, organización, etiqueta o grupo. Filtros combinables, paginación. |
+| `get_dataset` | Metadatos completos de un dataset: título, descripción, licencia, autor y cada recurso con su URL directa de descarga. |
+| `list_recent_datasets` | Datasets ordenados por modificación más reciente. Útil para monitorear actualizaciones del portal. |
+| `get_site_stats` | Totales del portal (datasets, organizaciones, grupos, etiquetas). |
+
+### Archivos de recursos
+
+| Tool | Qué hace |
+|---|---|
+| `get_resource` | Metadatos de un recurso individual (URL, formato, tamaño, fecha). |
+| `search_resources` | Busca recursos por nombre. |
+| `download_resource_preview` | Descarga un archivo y devuelve N filas. CSV, TSV, XLSX, XLS, ODS, JSON. Tope de 5 MB. Modo de muestra: head / tail / random. |
+| `check_resources` | Pregunta a hasta 25 URLs si sus archivos se pueden descargar de verdad, sin descargarlos. Devuelve una clase por URL — alcanzable, desafío de navegador, regla del sitio, enlace muerto, sin respuesta — porque una entrada de catálogo no es evidencia de que el archivo siga ahí. |
+
+### Analytics
+
+DuckDB sobre una caché Parquet persistente. La primera llamada por recurso descarga y cachea (hasta 100 MB); las siguientes responden en menos de un segundo. La caché vale aproximadamente **44×** sobre medianas medidas.
+
+| Tool | Qué hace |
+|---|---|
+| `get_resource_schema` | Nombres de columna, tipos inferidos, valores de muestra. El paso de reconocimiento barato antes de cualquier agregación. |
+| `summarize_resource` | Perfil automático: filas, nulos y distintos por columna, mín/máx/media en numéricas, top-N en categóricas. |
+| `filter_resource` | WHERE / SELECT / ORDER BY / LIMIT tipados. Ops: `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in`, `contains`, `starts_with`, `ends_with`, `is_null`, `is_not_null`. |
+| `aggregate_resource` | GROUP BY + agregaciones + HAVING + ORDER BY tipados. Fns: `count`, `count_distinct`, `sum`, `avg`, `mean`, `median`, `min`, `max`, `stddev`, `variance`. |
+| `quantiles_resource` | Distribución por percentiles (p25/p50/p75/p90/p95/p99) de columnas numéricas. |
+| `find_duplicates_resource` | Filas duplicadas según columnas dadas (o todas). Imprescindible para chequeos de calidad en nóminas y censos. |
+| `detect_outliers_resource` | Filas fuera del cerco IQR de una columna numérica, ordenadas por distancia a la mediana. |
+| `query_resource` | Escape hatch para usuarios avanzados: SQL de solo lectura contra la tabla `data`. Solo SELECT/WITH; DDL/DML/COPY/PRAGMA/ATTACH/LOAD rechazados, y en sandbox (ver [§15](#s15)). |
+| `save_query_to_csv` | Escribe el resultado de un filtro o SQL a un CSV local. Destino por defecto `~/Downloads/datosgobdo-exports/`. Deshabilitado en modo hosted. |
+| `get_cache_stats` | Estadísticas de la caché Parquet en disco. |
+| `clear_cache` | Borra la caché Parquet local. La única herramienta no de solo lectura del servidor (`destructiveHint: true`). Deshabilitada en modo hosted. |
+
+### Catálogo
+
+| Tool | Qué hace |
+|---|---|
+| `list_organizations` | Instituciones publicadoras con su número de datasets. |
+| `get_organization` | Detalle de una institución (descripción, número de datasets, URL). |
+| `list_groups` | Categorías temáticas con conteos. |
+| `list_tags` | Etiquetas, opcionalmente filtradas por prefijo. |
+
+### Autocompletado
+
+| Tool | Qué hace |
+|---|---|
+| `autocomplete` | Resuelve nombres parciales de datasets, organizaciones, grupos o etiquetas — para cuando el usuario solo da parte de un nombre. |
+
+### Pipeline GCP (opcional)
+
+Se instala con `pip install 'dominican-open-data-mcp[gcp]'`; tres herramientas extra se registran automáticamente cuando las librerías de Google Cloud están presentes, llevando el total a 27. Convierten este servidor en la mitad de *ingesta* de un pipeline BigQuery: descubre aquí, carga a BigQuery, y luego consulta con el MCP oficial de BigQuery para los JOIN entre datasets que una caché DuckDB local no puede hacer.
+
+| Tool | Qué hace |
+|---|---|
+| `load_resource_to_bigquery` | Recurso → caché Parquet → subida a GCS → tabla externa de BigQuery (por defecto, zero-ETL) o load job. |
+| `list_bigquery_exports` | Lista tablas de un dataset de BigQuery. |
+| `get_bigquery_table_info` | Esquema, número de filas y URIs de origen de una tabla. |
+
+Define `DATOSGOBDO_GCS_BUCKET` para no pasar el bucket en cada llamada. **Estado preview:** estas tres quedan fuera de la promesa de estabilidad y no se han ejercitado contra un proyecto real.
+
+<a id="s9"></a>
+
+## 9. Resources (3) y una plantilla de recurso
+
+Los [resources](https://modelcontextprotocol.io/specification/2026-07-28/server/resources) se direccionan por URI y los lee la *aplicación*, no los llama el modelo. Existen aquí para los hechos que son pequeños, estables y un desperdicio de una llamada a herramienta. Los tres son de solo lectura y sin efectos secundarios.
+
+| URI | Tipo | Qué contiene |
+|---|---|---|
+| `datosgobdo://catalog/overview` | `application/json` | Totales del portal: datasets, instituciones, grupos, etiquetas. |
+| `datosgobdo://catalog/institutions` | `application/json` | Cada institución publicadora con su número de datasets — la respuesta a «¿qué institución?» antes de cualquier consulta. |
+| `datosgobdo://guide/verification` | `text/markdown` | Los cuatro campos que hacen comprobable un número, y qué hacer cuando faltan. |
+
+Ese último es un resource y no un prompt a propósito: no es una petición de actuar, es texto de referencia que conviene tener en contexto mientras trabajas.
+
+Una [plantilla de recurso](https://modelcontextprotocol.io/specification/2026-07-28/server/resources#resource-templates) — un patrón de URI con un parámetro, de modo que una sola definición direcciona cualquier dataset del catálogo:
+
+| Plantilla | Rellenas | Devuelve |
+|---|---|---|
+| `datosgobdo://dataset/{dataset_id}` | un id o slug de dataset | Los metadatos de ese dataset como contexto adjuntable. |
+
+Ejemplo: `datosgobdo://dataset/nomina-poder-judicial`.
+
+**Cómo usarlos.** En Claude Desktop los resources aparecen en el menú de adjuntar de una conversación con el servidor conectado. En otros clientes, revisa su entrada en el [directorio de clientes](https://modelcontextprotocol.io/clients) — el soporte de resources es opcional. En cualquier cliente, el panel **Resources** del Inspector los lista y muestra el payload crudo, incluida la expansión de la plantilla.
+
+<a id="s10"></a>
+
+## 10. Prompts (6)
+
+Los [prompts](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts) los controla el usuario: nada los invoca salvo tú. Cada uno de estos codifica un hábito aprendido a golpes durante la auditoría del catálogo — razón por la cual vale la pena usarlos incluso cuando ya conoces bien las herramientas.
+
+| Prompt | Argumento | El hábito que codifica |
+|---|---|---|
+| `empezar_aqui` | — | Orientación antes de exploración, y la advertencia de descarga dicha de entrada en vez de descubierta después. |
+| `serie_temporal` | `tema` (obligatorio) | Declarar el período **real** que cubre el dato, no el del título; nunca tratar la columna de año como una medida. |
+| `auditar_nomina` | `institucion` (obligatorio) | Reportar filas excluidas y su procedencia junto a cualquier total salarial. |
+| `verificar_fuente` | `url` (obligatorio) | Comprobar alcance, procedencia y forma **antes** de apoyarse en un archivo. |
+| `explorar_institucion` | `institucion` (obligatorio) | Inventario con el estado real de descarga de cada archivo, no solo su entrada de catálogo. |
+| `cruzar_fuentes` | `tema` (obligatorio) | Declarar unidades, períodos y límites del cruce antes de cruzar dos fuentes. |
+
+**Cómo invocarlos.** En Claude Code y Claude Desktop, como comandos de barra: `/empezar_aqui`, o `/serie_temporal` y luego el tema cuando lo pida. Algunos clientes los presentan en un menú. En el Inspector, el panel **Prompts** lista cada uno con sus argumentos y renderiza el texto expandido antes de que algo llegue a un modelo — la forma más fiable de ver exactamente qué hace un prompt.
+
+<a id="s11"></a>
+
+## 11. A qué primitiva recurrir
+
+| Quieres… | Usa | Por qué |
+|---|---|---|
+| Responder una pregunta concreta sobre datos | una **tool**, por conversación normal | El modelo las elige y las combina. |
+| Arrancar de cero, o seguir un método riguroso | un **prompt** | Seis flujos con las advertencias ya incorporadas. |
+| Darle al asistente contexto de fondo permanente | un **resource** | Se adjunta una vez; sin llamada a herramienta ni tokens gastados en decidir. |
+| Fijar un dataset como contexto | la **plantilla de recurso** | `datosgobdo://dataset/{id}`. |
+| Hacer algo que las tools tipadas no cubren | `query_resource` | SQL de solo lectura, en sandbox. El escape hatch, no el primer movimiento. |
+
+---
+---
+
+# Parte 4 — Por qué existe este servidor
+
+<a id="s12"></a>
+
+## 12. Cómo se compara con otros MCP de CKAN
+
+CKAN mueve cientos de portales gubernamentales, así que un MCP genérico de CKAN es una idea obvia y buena. El más desarrollado es **[`ondata/ckan-mcp-server`](https://github.com/ondata/ckan-mcp-server)** (MIT, TypeScript, adoptado por [AgID](https://github.com/AgID/ckan-mcp-server), la agencia digital de Italia): búsqueda de datasets con sintaxis Solr completa, organizaciones y grupos, descubrimiento de ~950 portales, y acceso tabular por la API DataStore de CKAN. Apunta a cualquier portal mediante un argumento `server_url`. Si tu portal tiene DataStore poblado, **úsalo** — es más amplio que este proyecto y tiene releases más activas.
+
+La diferencia no es de calidad, es de dónde vive el dato. Verificado en vivo el 2026-08-12:
+
+```
+GET /api/3/action/status_show   → extensions: ["activity", "datosgobdo_theme"]
+GET /api/3/action/datastore_search
+  → 400  "Action name not known: datastore_search"
+recursos con datastore_active: 0 / 254 muestreados
+```
+
+**datos.gob.do no tiene DataStore.** No hay `datastore_search`, no hay endpoint SQL, y ni un solo recurso está cargado en él. Un MCP genérico de CKAN apuntado aquí puede buscar metadatos perfectamente y no puede leer una sola fila de datos. Eso no es un defecto suyo — la extensión es opcional en CKAN y este portal nunca la habilitó.
+
+Así que los dos proyectos se dividen por una línea real:
+
+| | Portales **con** DataStore | Portales que son **catálogos de archivos** |
+|---|---|---|
+| Dónde está el dato | Cargado en CKAN, consultable por API | Archivos en 273 servidores web institucionales |
+| Cómo se lee | `datastore_search_sql` | Descargar, olfatear la codificación, parsear, cachear, consultar |
+| Mejor herramienta | [`ondata/ckan-mcp-server`](https://github.com/ondata/ckan-mcp-server) | esta |
+
+Todo lo que hace este código más grande que un wrapper de la API de CKAN existe por esa columna derecha: detección de codificación puntuada por el español que recupera, parseo ODS por streaming (cargar el DOM completo multiplicaba la memoria ~580×), caché Parquet con la build del parser en la llave, coerción numérica que declara lo que excluyó, resolución página→archivo para las 37 URLs que responden HTML, guardia SSRF para descargas que alcanzan 273 hosts de terceros, y un fallback opcional a copia archivada que siempre dice cuándo se activó.
+
+**Si estás construyendo para otro portal latinoamericano**, revisa `status_show` primero. Si DataStore no está — como en República Dominicana — la tubería de lectura de archivos de este repositorio es la parte que vas a necesitar, y el [Tutorial](Tutorial_es.md) la documenta para que se pueda reutilizar.
+
+---
+---
+
+# Parte 5 — Referencia técnica
+
+<a id="s13"></a>
+
+## 13. Instalación y configuración de clientes
+
+### Opción A — `uvx` desde PyPI (recomendado)
+
+Paquete: [`dominican-open-data-mcp`](https://pypi.org/project/dominican-open-data-mcp/).
+
+```bash
+uvx dominican-open-data-mcp
+```
+
+También trae un binario con alias corto — los dos lanzan el mismo servidor:
+
+```bash
+uvx --from dominican-open-data-mcp datosgobdo-mcp
+```
+
+`uvx` descarga el paquete, crea un venv aislado y lo ejecuta. La primera vez toma segundos; las siguientes son instantáneas.
+
+> **¿Vienes de ≤ 0.7.0?** Esas versiones fijaban `mcp>=1.9.0` sin tope superior, y el SDK de Python de MCP 2.0 (2026-07-28) eliminó la ruta de importación `mcp.server.fastmcp` — una instalación nueva falla con `ModuleNotFoundError`. Instala 0.7.1 o posterior, o fija el SDK tú mismo: `uvx --with "mcp<2" --from dominican-open-data-mcp datosgobdo-mcp`.
+
+### Opción B — `uvx` desde GitHub (versión de desarrollo)
+
+```bash
+uvx --from git+https://github.com/alcastaro/datos.gob.do-MCP-server.git datosgobdo-mcp
+```
+
+### Opción C — clone local (para desarrollo)
+
+```bash
+git clone https://github.com/alcastaro/datos.gob.do-MCP-server.git
+cd datos.gob.do-MCP-server
+uv sync
+uv run datosgobdo-mcp   # stdio; Ctrl+C para salir
+```
+
+> **Nota de macOS:** no clones dentro de `~/Library/CloudStorage/GoogleDrive-*` ni rutas similares. macOS bloquea la ejecución de binarios en rutas sincronizadas a la nube (restricción TCC). Usa `~/code/` o equivalente.
+
+### Configuración de clientes
+
+Claude Desktop y Claude Code están en [§2](#s2). Para seguir la versión de desarrollo en Claude Desktop, reemplaza los args por `["--from", "git+https://github.com/alcastaro/datos.gob.do-MCP-server.git", "datosgobdo-mcp"]`; en Claude Code, `claude mcp add datosgobdo -- uvx --from git+https://github.com/alcastaro/datos.gob.do-MCP-server.git datosgobdo-mcp`.
+
+Para Cursor y otros el principio es idéntico — registra `uvx` como comando. La ubicación del archivo de configuración de cada cliente está en su propia documentación; el [directorio de clientes MCP](https://modelcontextprotocol.io/clients) es el índice.
+
+### Modo hosted (experimental)
+
+`DATOSGOBDO_TRANSPORT=streamable-http` sirve MCP sobre HTTP (sin estado, para escalado horizontal) en vez de stdio. En ese modo `save_query_to_csv` y `clear_cache` quedan deshabilitadas — tocan el filesystem del servidor y la caché compartida — y las estadísticas de caché omiten rutas del servidor.
+
+| Variable | Por defecto | Significado |
+|---|---|---|
+| `DATOSGOBDO_TRANSPORT` | `stdio` | `streamable-http` para despliegues hospedados. |
+| `DATOSGOBDO_HOST` / `DATOSGOBDO_PORT` | `127.0.0.1` / `8000` | Dirección de escucha HTTP. |
+| `DATOSGOBDO_DUCKDB_MEMORY` | `2GB` | Techo de memoria de DuckDB por conexión. |
+| `DATOSGOBDO_DUCKDB_THREADS` | `4` | Tope de hilos de DuckDB. |
+| `DATOSGOBDO_QUERY_TIMEOUT` | `0` (apagado) | Segundos de reloj antes de interrumpir una corrida de DuckDB. Cubre tanto el SQL de `query_resource` como la conversión a Parquet de un archivo recién descargado. |
+
+<a id="s14"></a>
+
+## 14. Lo que las respuestas dicen sobre sí mismas
+
+Tres campos aparecen en las respuestas cuando el servidor tuvo que hacer algo que quien llamó no pidió. Cada uno existe porque una herramienta usada para auditar no debe tapar en silencio un defecto del dato.
+
+**`numeric_coercion`** — una columna guardada como texto se leyó como números.
+
+El defecto más común de este catálogo: **93 de 540 recursos legibles** guardan columnas numéricas como texto, porque un puñado de celdas dice `N/A` o `#REF!` y eso basta para volver no numérica una columna entera de nómina. `aggregate_resource`, `quantiles_resource` y `detect_outliers_resource` leen esa columna como números donde cada valor lo permite, y reportan lo que costó:
+
+```json
+"numeric_coercion": [{
+  "column": "SUELDO BRUTO (RD$)", "coerced": true,
+  "values_used": 21469, "values_excluded": 37,
+  "excluded_values": [{"value": "N/A", "count": 21}, {"value": "#REF!", "count": 16}]
+}]
+```
+
+**Lee `values_excluded` antes de citar el total.** Una columna con menos del 90 % parseable se deja como texto y la respuesta dice por qué, en vez de contestar una pregunta sobre una medida a partir de un subconjunto arbitrario de filas. `count` y `count_distinct` nunca se coercionan.
+
+**`linked_files`** — la URL sirvió una página, y la página enlazaba archivos de datos.
+
+37 recursos del catálogo responden con una página web en vez de un archivo. Cuando un archivo enlazado coincide claramente con lo pedido, se descarga y `cache.resolved_from` registra `{page, followed}` — pediste una URL y recibiste datos de otra, y la respuesta lo dice en vez de esconderlo. Cuando varios candidatos son indistinguibles, vuelven como `linked_files` con nombres y puntajes, para que elijas y llames de nuevo. En este catálogo existen archivos llamados `clss.csv` y `xls.csv`; adivinar entre ellos sería inventar.
+
+**`cache.provenance`** — la respuesta salió de una copia archivada, no del portal.
+
+Los enlaces del gobierno se podren: el censo del 2026-08-08 encontró 15 URLs de recursos ya muertas y 98 instituciones cuyos sitios rechazan el acceso programático, así que una cifra que cites hoy puede ser incomprobable el año que viene. Apunta `DATOSGOBDO_ARCHIVE_DIR` a un directorio con un `manifest.json` y sus archivos Parquet, y cuando un portal no se pueda alcanzar el servidor responde desde la copia archivada. Está apagado por defecto, el portal se intenta siempre primero, y **la respuesta siempre lo dice** — `cache.provenance` lleva la fecha de captura, el `sha256`, la licencia y por qué no se usó el origen. Una herramienta que devolviera en silencio la copia de ayer como si fuera la de hoy dejaría de servir para auditar.
+
+Un archivo solo guarda lo que se pudo descargar, así que no contiene los recursos que un portal rechaza. Esa es la suposición natural y es equivocada.
+
+| Variable | Por defecto | Significado |
+|---|---|---|
+| `DATOSGOBDO_ARCHIVE_DIR` | sin definir (apagado) | Directorio con `manifest.json` + copias Parquet a las que recurrir. |
+
+<a id="s15"></a>
+
+## 15. Seguridad y variables de entorno
+
+Política completa, modelo de amenazas y proceso de reporte: **[SECURITY.md](SECURITY.md)**. En resumen:
+
+- **Solo lectura hacia el portal.** Sin autenticación, sin `package_create`, sin `resource_create`. La única herramienta que muta es `clear_cache`, sobre la caché local.
+- **Dos superficies de inyección, ambas cerradas.** Los valores de usuario que entran a filtros `fq` de CKAN pasan por escapado Solr; cada identificador de columna que llega a DuckDB pasa una regex de lista blanca más una lista negra de subcadenas de comentario y terminador, y luego se entrecomilla doble.
+- **`query_resource` está en sandbox.** Además de validar que la sentencia sea un único SELECT/WITH de solo lectura, el recurso se materializa en una tabla en memoria y entonces se fijan `enable_external_access=false` + `lock_configuration=true` antes de correr el SQL del usuario — de modo que las funciones de tabla de DuckDB (`read_text`, `read_csv`, `glob`, …) no pueden alcanzar el filesystem ni la red.
+- **Guardia SSRF en cada descarga**, URL inicial **y** cada salto de redirección: solo http/https, y cada dirección a la que resuelva el host debe ser globalmente ruteable. Metadatos de nube (`169.254.169.254`), loopback, RFC-1918, link-local y ULA de IPv6 quedan bloqueados. La ruta guardada cubre también el HEAD de metadatos, no solo la descarga.
+- **Topes de bytes** en las descargas remotas (5 MB preview, 100 MB analytics), en streaming — acotando memoria y exposición a bombas de descompresión.
+- **`save_query_to_csv`** exige destino `.csv`/`.tsv`, rechaza `..` y rutas de sistema, y escribe con `O_NOFOLLOW`.
+
+| Variable | Valores | Significado |
+|---|---|---|
+| `DATOSGOBDO_NETGUARD` | `public-only` (por defecto) / `strict` / `off` | `strict` restringe los hosts a `datos.gob.do` y subdominios; `off` desactiva la guardia. |
+| `DATOSGOBDO_ALLOW_HOSTS` | separados por coma, comodines `*.` | Hosts de confianza del operador — el escape hatch para forks apuntando a otro portal CKAN. |
+
+El valor por defecto deliberadamente **no** es una lista blanca de hosts: como muestra [§7](#s7), los recursos legítimos viven en 273 sitios ministeriales, buckets y CDNs.
+
+**Sobre las primitivas nuevas:** los prompts de aquí son plantillas estáticas con argumentos interpolados en texto — no hacen I/O. Los resources son lecturas de solo lectura de metadatos del portal. Ninguno agrega una ruta de escritura.
+
+<a id="s16"></a>
+
+## 16. Arquitectura
 
 ```
 src/datosgobdo_mcp/
-  server.py        FastMCP server + definiciones de tools (Pydantic typed)
-  ckan.py          Cliente CKAN: requests, Solr escaping, formatters
-  preview.py       Descarga capada de archivos + parsers CSV/XLSX/JSON
+  server.py        Servidor FastMCP: 24 tools, 3 resources, 1 plantilla, 6 prompts
+  ckan.py          Cliente CKAN: peticiones, escapado Solr, formateadores, procedencia
+  analytics.py     Capa DuckDB: constructores de consulta tipados, coerción, validación SQL
+  download.py      Descarga en streaming con tope, cabeceras de fetch, detección de codificación
+  cache.py         Caché Parquet + índice, con llave por origen y build del parser
+  preview.py       Parsers de vista por filas (CSV/TSV/XLSX/XLS/ODS/JSON)
+  pagelink.py      Resuelve la URL de una página al archivo de datos que enlaza
+  archive.py       Fallback a copia archivada con procedencia declarada
+  reachability.py  check_resources: clasifica por qué una URL no se puede leer
+  netguard.py      Guardia SSRF para URLs y cada salto de redirección
+  models.py        Modelos de salida Pydantic (outputSchema tipado)
+  gcp.py           Herramientas opcionales del pipeline BigQuery/GCS
 ```
 
 ### Decisiones de diseño
 
-- **FastMCP en lugar del SDK low-level**: tools como funciones decoradas con `@mcp.tool()` + tipos Pydantic. Menos boilerplate, validación automática de argumentos.
-- **`httpx.AsyncClient` reutilizado**: una sola conexión persistente, sin overhead de TCP handshake en cada request.
-- **Solr escape**: los filtros `fq` de CKAN usan sintaxis Solr/Lucene. Valores user-supplied pasan por `_escape_solr()` que escapa los 13 caracteres reservados (`+ - & | ! ( ) { } [ ] ^ " ~ * ? : \ /`). Sin esto, un tag con comilla rompería la query.
-- **Truncado defensivo**: descripciones largas (algunas instituciones publican 5+ KB de texto por org) se truncan a 300 chars en respuestas de listado. Sin esto, una sola consulta podría quemar miles de tokens del contexto del modelo.
-- **`list_recent_datasets` reorientado**: la API CKAN expone `recently_changed_packages_activity_list` pero devuelve "actividades" con metadatos crudos sin hidratar — el modelo recibiría `{object_id: "uuid", activity_type: "changed package"}` sin saber qué dataset es. Usamos `package_search?sort=metadata_modified+desc` para devolver datasets ya formateados en una sola llamada.
-- **DataStore no disponible**: el portal datos.gob.do no tiene la extensión DataStore instalada, así que no hay endpoint `datastore_search` ni queries SQL sobre el contenido de los recursos. La solución es `download_resource_preview`: bajamos el archivo (tope 5 MB) y lo parseamos del lado cliente con `csv` (stdlib) u `openpyxl`. Suficiente para que el modelo entienda la estructura.
-- **Fallback de encoding**: muchos archivos publicados están en CP1252 o Latin-1 (no UTF-8). El parser intenta UTF-8 → UTF-8-sig → Latin-1 → CP1252 → UTF-8 con `errors=replace`.
-- **Logging a stderr**: per [MCP debugging guide](https://modelcontextprotocol.io/docs/tools/debugging), los servidores stdio nunca deben escribir a stdout (rompe el protocolo). Todo log va a stderr y es capturado por el cliente en `~/Library/Logs/Claude/mcp-server-datosgobdo.log` (macOS).
+- **FastMCP en vez del SDK de bajo nivel.** Las tools son funciones decoradas con `@mcp.tool()` y tipadas con Pydantic: menos boilerplate, validación automática de argumentos.
+- **DuckDB + Parquet en vez de pandas.** Caché columnar, motor SQL, streaming desde disco. Una nómina de 94 MB responde agregaciones agrupadas en menos de un segundo en caliente, y la memoria queda acotada.
+- **La llave de caché incluye la build del parser** — versión del paquete más la de DuckDB, porque el sniffer de DuckDB decide los tipos de columna. Una actualización del parser no debe servir tipos inferidos por el anterior.
+- **DataStore no está, así que los archivos se parsean del lado del cliente.** Ver [§12](#s12). Es la única decisión de la que se desprende el resto de la arquitectura.
+- **La codificación se puntúa, no se adivina.** Las decodificaciones candidatas se ordenan por el español que recuperan, en vez de confiar en un número de confianza — el arreglo para mojibake real como `A¤o` por `Año`.
+- **ODS se parsea haciendo streaming de `content.xml`.** Cargar el DOM completo convertía un archivo de 0,70 MB en 0,41 GB de RSS; ODS es cerca de un tercio de este catálogo, así que la ruta ingenua era insostenible.
+- **El trabajo bloqueante corre en `asyncio.to_thread`** (transcodificación ODS, detección de codificación, COPY a Parquet) para que un parseo largo nunca detenga el event loop.
+- **Truncado defensivo.** Las descripciones largas — algunas instituciones publican 5+ KB por organización — se cortan a 300 caracteres en las respuestas de listado, para que una llamada no queme miles de tokens de contexto.
+- **`list_recent_datasets` está reorientada.** CKAN expone `recently_changed_packages_activity_list`, pero devuelve actividades sin hidratar (`{object_id: "uuid", activity_type: "changed package"}`) que el modelo no puede interpretar. Usamos `package_search?sort=metadata_modified+desc` y devolvemos datasets ya formateados en una sola llamada.
+- **Todo el logging a stderr.** Según la [guía de depuración de MCP](https://modelcontextprotocol.io/docs/tools/debugging), un servidor stdio nunca debe escribir a stdout — corrompe el flujo del protocolo.
 
-### Stack técnico
+### Stack
 
-- [`mcp`](https://pypi.org/project/mcp/) — Python SDK oficial de Anthropic (FastMCP)
-- [`httpx`](https://www.python-httpx.org/) — cliente HTTP asíncrono
-- [`openpyxl`](https://openpyxl.readthedocs.io/) — lectura de XLSX en streaming read-only
-- `csv`, `json` — stdlib para los otros formatos
+[`mcp`](https://pypi.org/project/mcp/) (SDK oficial de Python, FastMCP) · [`duckdb`](https://duckdb.org/) · [`httpx`](https://www.python-httpx.org/) · [`openpyxl`](https://openpyxl.readthedocs.io/) (XLSX en streaming de solo lectura) · [`pydantic`](https://docs.pydantic.dev/) · stdlib `csv`, `json`, `xml.etree` (ODS en streaming).
+
+<a id="s17"></a>
+
+## 17. Limitaciones medidas
+
+Medidas contra el catálogo completo el 2026-08-08 — 1.056 recursos, uno por dataset, sobre sesiones MCP reales — no estimadas.
+
+**No todo lo publicado es alcanzable.** 540 de 1.056 recursos se pudieron leer. La causa mayor no es este servidor: **360 recursos de 98 instituciones** están detrás de una configuración de sitio que rechaza descargas programáticas. Desde una misma dirección, 21 otros hosts gubernamentales detrás del mismo CDN nos sirven con normalidad, así que es configuración por sitio y no nuestra red. Ninguna versión de este servidor puede cambiarlo. Otros 85 fallaron a nivel de transporte (causa no atribuible), 37 sirven una página web, 15 enlaces están muertos, 8 archivos son ilegibles, 6 tienen un CDN cuyo origen no responde y 5 dieron errores del portal.
+
+Lo que queda **establecido**: esos sitios rechazan el acceso *programático* a sus propios datos abiertos desde la dirección medida. Lo que **no** queda establecido: que una persona con navegador en Santo Domingo sea rechazada. Esa prueba necesita un punto de salida residencial dominicano y no se ha corrido.
+
+**Formatos.** CSV, XLSX y ODS leen alrededor del 93 % de lo que se descarga. Dos son más débiles: `.xls` heredado, y JSON — el `read_json_auto` de DuckDB rechaza varios archivos del catálogo como malformados, lo que hace de JSON el formato menos fiable aquí. **El PDF no se parsea**; solo se expone su URL de descarga.
+
+**Tamaño.** `download_resource_preview` tope 5 MB; las herramientas de analytics, 100 MB. Un solo valor mayor de 16 MB excede el límite de DuckDB y el archivo no se puede parsear.
+
+**Forma.** 41 recursos ponen un título o un logo encima de la fila de encabezado real, lo que estropea el esquema autodetectado — inspecciona con `download_resource_preview` y proyecta columnas explícitamente. 25 vuelven con nombres de columna genéricos (`column00`, sin nombre). 93 guardan números como texto, manejado y declarado según [§14](#s14).
+
+**Los formatos pueden contradecirse entre sí.** 176 de 528 datasets multiformato comparables difieren en número de filas o columnas, y en 11 casos un formato está vacío mientras otro trae la tabla completa. Leer un solo formato no es evidencia de lo que contiene el dataset.
+
+**La codificación está prácticamente resuelta:** un archivo de 540 aún muestra acentos dañados, y ese archivo está codificado en dos codepages a la vez, así que ninguna lectura única es correcta para él.
+
+**La frescura no se puede leer de los metadatos.** `periodicidad` está vacío en los 1.056 datasets.
+
+**Sin probar, y por tanto sin afirmar:** el transporte hosted `streamable-http` bajo carga real, las tres herramientas GCP contra un proyecto real, Windows, y el uso concurrente.
 
 ---
-
-## Limitaciones conocidas
-
-Medidas contra el catálogo completo el 2026-08-08 —1,056 recursos, uno por
-dataset— en vez de estimadas.
-
-**No todo lo publicado es alcanzable.** Se pudieron leer 540 de 1,056 recursos.
-La causa mayor no es este servidor: **360 recursos de 99 instituciones** están
-tras una configuración del sitio que rechaza la descarga programática de
-archivos que esas mismas instituciones publican como datos abiertos. Desde una
-misma dirección, otros 21 portales del Estado tras el mismo CDN sí nos sirven,
-así que es configuración de cada sitio y no nuestra red. Ninguna versión de este
-servidor lo puede cambiar. Además hay 15 enlaces muertos, 37 que sirven una
-página web y 8 archivos corruptos.
-
-**Formatos.** CSV, XLSX y ODS se leen al ~93 %. Dos son más débiles: el `.xls`
-antiguo, y JSON — el `read_json_auto` de DuckDB rechaza varios archivos del
-catálogo por malformados, así que JSON es el formato menos fiable aquí.
-
-**Tamaño.** `download_resource_preview` corta en 5 MB; las tools de analítica
-suben el tope a 100 MB. Un valor individual mayor de 16 MB excede el límite de
-DuckDB y el archivo no se puede parsear.
-
-**Forma.** 41 recursos ponen títulos o logos encima del encabezado real, lo que
-descuadra el esquema detectado; inspecciona con `download_resource_preview` y
-proyecta columnas explícitamente con `query_resource`. 93 guardan números como
-texto — resuelto, ver *Lo que las respuestas dicen sobre sí mismas*.
-
-**La codificación** está resuelta en la práctica: un archivo de 540 sigue
-mostrando acentos rotos, y ese archivo está codificado en dos codepages a la
-vez, así que ninguna lectura única es correcta para él.
-
-**Solo lectura, por diseño.** Sin autenticación, sin `package_create` ni
-`resource_create`. **El PDF no se parsea**; solo se expone su URL de descarga.
-
-**Sin probar, y por tanto sin prometer**: el transporte hosted
-`streamable-http`, las tres tools de GCP contra un proyecto real, Windows, y el
-uso concurrente.
 ---
 
-## Desarrollo
+# Parte 6 — Desarrollo
+
+<a id="s18"></a>
+
+## 18. Desarrollo, pruebas y el MCP Inspector
 
 ### Setup local
 
@@ -429,56 +615,59 @@ uso concurrente.
 git clone https://github.com/alcastaro/datos.gob.do-MCP-server.git
 cd datos.gob.do-MCP-server
 uv sync
+uv run pytest          # herméticos por defecto: no requieren red
 ```
 
-### Probar con el MCP Inspector
+### El MCP Inspector
 
-El [MCP Inspector](https://modelcontextprotocol.io/docs/2026-07-28/tools/inspector) es la herramienta de desarrollo del propio protocolo. Habla MCP directamente, así que muestra lo que el servidor expone de verdad, sin un modelo en medio. Necesita Node 22.19+ y no instala nada:
+El [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) es la herramienta de desarrollo del propio protocolo. Habla MCP directamente, así que muestra lo que el servidor expone de verdad sin un modelo en medio — la mejor forma de ver tools, resources, plantillas y prompts como los ve el protocolo. Requiere Node 22.19+ y no instala nada permanente:
 
 ```bash
 # El paquete publicado — sin clonar el repo
 npx -y @modelcontextprotocol/inspector uvx dominican-open-data-mcp
 ```
 
-Imprime una URL con un token de un solo uso. Al abrirla hay cuatro paneles: **Tools** (las 24 con sus esquemas — llama una y lee el `structuredContent` crudo, con `numeric_coercion`, `source_sha256` y `computation`), **Resources**, **Prompts** y **Monitoring** con el tráfico JSON-RPC en vivo.
+Imprime una URL con un token de un solo uso. Ábrela para cuatro paneles:
 
-Desde un clon, `scripts/inspector.sh` cubre los dos casos:
+- **Tools** — las 24 con sus esquemas. Llama una y lee el `structuredContent` crudo, incluidos `numeric_coercion`, `source_sha256` y `computation`.
+- **Resources** — las tres URIs y la plantilla `datosgobdo://dataset/{dataset_id}`, con payloads crudos.
+- **Prompts** — los seis, con sus argumentos, renderizados a su texto expandido antes de que algo llegue a un modelo.
+- **Monitoring** — tráfico JSON-RPC en vivo en ambas direcciones.
+
+Desde un clone, `scripts/inspector.sh` envuelve los dos casos:
 
 ```bash
 ./scripts/inspector.sh                                        # paquete publicado
-./scripts/inspector.sh dist/dominican_open_data_mcp-*.whl     # compilación local
+./scripts/inspector.sh dist/dominican_open_data_mcp-*.whl     # una build local
 ./scripts/inspector.sh --cli --method tools/list --format json
 ```
 
-La ruta local necesita ese envoltorio: el Inspector lee todo lo que va después del comando del servidor como flags suyos, así que `uvx --from ./dist/….whl …` falla con `Connection closed` porque el `--from` nunca llega a `uvx`.
+La ruta de build local necesita ese wrapper: el Inspector lee todo lo que sigue al comando del servidor como sus propios flags, así que `uvx --from ./dist/….whl …` falla con `Connection closed` porque `--from` nunca llega a `uvx`.
 
-El modo CLI sale con códigos que significan algo — `0` éxito, `3` requiere autenticación, `4` inalcanzable, `5` la herramienta devolvió error — así que entra directo en CI:
+El modo CLI sale con códigos significativos — `0` éxito, `3` requiere auth, `4` inalcanzable, `5` la herramienta devolvió error — así que entra directo en CI:
 
 ```bash
 npx -y @modelcontextprotocol/inspector --cli uvx dominican-open-data-mcp \
-  --method tools/list --format json | jq -r '.result.tools[].name'
+  --method tools/list  --format json | jq -r '.result.tools[].name'
+npx -y @modelcontextprotocol/inspector --cli uvx dominican-open-data-mcp \
+  --method prompts/list --format json | jq -r '.result.prompts[].name'
+npx -y @modelcontextprotocol/inspector --cli uvx dominican-open-data-mcp \
+  --method resources/templates/list --format json
 ```
 
 ### Logs
 
-En Claude Desktop (macOS): `tail -f ~/Library/Logs/Claude/mcp-server-datosgobdo.log`
-
-El servidor loguea a stderr:
-- Startup (endpoint, número de tools registradas)
-- Errores fatales con traceback completo
-- Shutdown
+Claude Desktop en macOS: `tail -f ~/Library/Logs/Claude/mcp-server-datosgobdo.log`. El servidor registra el arranque (endpoint, transporte, tools registradas), errores fatales con traceback, y el apagado — todo a stderr.
 
 ### Iteración
 
-Cuando edites código:
+1. Commit y push a `main`.
+2. Limpia la caché de `uvx` para forzar refresco: `uv cache clean dominican-open-data-mcp` (la llave es el nombre de la distribución, no el del binario).
+3. Reinicia el cliente MCP.
 
-1. Commit + push a `main` en GitHub.
-2. Limpiar cache de `uvx` para forzar refresh: `uv cache clean dominican-open-data-mcp` (la cache se indexa por el nombre de la distribución, no el del binario).
-3. Reiniciar el cliente MCP.
+Para ciclos más rápidos, apunta el cliente a tu clone: `command: /ruta/al/clone/.venv/bin/datosgobdo-mcp`.
 
-O para iteración rápida, configurar el cliente para apuntar a tu clone local en vez del repo de GitHub: `command: /ruta/al/clone/.venv/bin/datosgobdo-mcp`.
-
-### Tests manuales contra API real
+### Prueba manual contra la API real
 
 ```bash
 uv run python -c "
@@ -489,51 +678,42 @@ asyncio.run(ckan.close_client())
 "
 ```
 
----
+<a id="s19"></a>
 
-## Contribuir
+## 19. Contribuir, créditos, cómo citar, licencia
 
-Pull requests bienvenidos. Áreas de mejora obvias:
+### Contribuir
 
-- Tests automatizados con `pytest-httpx` (mockear CKAN).
-- Tool `summarize_csv` con estadísticas agregadas (count, min, max, distinct values por columna).
-- Soporte de preview para ODS y Parquet.
-- Cache local de respuestas frecuentes (organizaciones, grupos, tags cambian poco).
-- Tool `find_dataset_about` que combine `autocomplete` + `search_datasets` con ranking semántico.
+Los pull requests son bienvenidos. Áreas donde la ayuda rendiría bien:
 
----
+- **Detección de encabezado.** 41 recursos ponen un banner encima de la fila de encabezado real. En XLSX eso puede costar el archivo entero: `precios_productos_primera_necesidad` (PROCONSUMIDOR) trae 890 filas en una hoja que declara `dimension A1:K890`, y se lee como 1 columna y 0 filas porque la celda A1 es un título. El CSV hermano recupera las 890 filas pero las nombra `column00`…`column10`. Detectar y saltar el banner recuperaría datos reales.
+- **Reconciliación entre formatos.** Dado un dataset con varios formatos, elegir el fiable en vez del primero listado.
+- **Parseo de JSON**, el formato más débil aquí.
+- **Generalizar `ckan_endpoint`** para que la misma tubería de lectura de archivos sirva a otros portales sin DataStore de la región.
+- **Pruebas en Windows**, hoy sin cubrir.
 
-## Créditos
+### Créditos
 
 Desarrollado por **Alberto Castillo Aroca** ([@alcastaro](https://github.com/alcastaro)) con contribuciones de **Juana Casique** ([@juanacasique](https://github.com/juanacasique)).
 
-Datos publicados por las instituciones del Estado dominicano vía [datos.gob.do](https://datos.gob.do), portal administrado por OGTIC.
+Datos publicados por las instituciones del Estado dominicano vía [datos.gob.do](https://datos.gob.do), portal operado por OGTIC.
 
-Inspirado en [`datagouv-mcp`](https://github.com/datagouv/datagouv-mcp) (Etalab, Gobierno de Francia).
+Inspirado en [`datagouv-mcp`](https://github.com/datagouv/datagouv-mcp) (Etalab, Gobierno de Francia). Para portales CKAN que sí tienen DataStore habilitado, [`ondata/ckan-mcp-server`](https://github.com/ondata/ckan-mcp-server) es la implementación de referencia y conviene usarla en su lugar — ver [§12](#s12).
 
-## Cómo citar
+### Cómo citar
 
-Si usas este servidor —o una cifra obtenida con él— en un artículo, un informe,
-un conjunto de datos o una charla, cítalo. El botón **«Cite this repository»** de
-GitHub lee [`CITATION.cff`](CITATION.cff) y ofrece APA y BibTeX listos para
-copiar.
+Si usas este servidor — o una cifra obtenida a través de él — en un artículo, informe, dataset o charla, cítalo. El botón **«Cite this repository»** de GitHub lee [`CITATION.cff`](CITATION.cff) y ofrece APA y BibTeX directamente.
 
 > Castillo Aroca, A. (2026). *dominican-open-data-mcp: an MCP server for
-> datos.gob.do* [Software]. OLDS — Observatorio Latinoamericano de Desarrollo
-> Sostenible. https://github.com/alcastaro/datos.gob.do-MCP-server
+> datos.gob.do* [Computer software]. OLDS — Observatorio Latinoamericano de
+> Desarrollo Sostenible. https://github.com/alcastaro/datos.gob.do-MCP-server
 
-Es una petición, no una condición de la licencia: los términos MIT de abajo están
-sin modificar, así que nada de esto restringe tu uso. La citación importa por
-otra razón — las cifras de este catálogo llevan reservas (qué excluyó una
-coerción numérica, qué archivos no se pudieron descargar), y la cita es cómo un
-lector vuelve a ellas.
+Es una petición, no una condición de licencia: los términos MIT están sin modificar, así que nada de aquí restringe tu uso. La cita importa por otra razón — las cifras de este catálogo cargan advertencias (qué excluyó una coerción numérica, qué archivos no se pudieron descargar), y una cita es cómo un lector llega de vuelta a ellas.
 
-**Cita también a la institución.** Este servidor lee datos, no los produce. Cada
-cifra pertenece al organismo del gobierno dominicano que la publicó, y
-`get_dataset` devuelve ese nombre precisamente para esto.
+**Cita también a la institución.** Este servidor lee datos; no los produce. Cada cifra pertenece al organismo del Estado dominicano que la publicó, y `get_dataset` devuelve el nombre de esa institución precisamente para eso.
 
-## Licencia
+### Licencia
 
 MIT. Ver [LICENSE](LICENSE).
 
-Los datos accedidos a través de este MCP están sujetos a la licencia con la que cada institución dominicana los publica en datos.gob.do (típicamente **Open Data Commons Open Database License — ODbL**).
+Los datos accedidos por este MCP están sujetos a la licencia con la que cada institución dominicana los publica en datos.gob.do. Verificado en todo el catálogo: **1.020 datasets son ODbL**, 15 CC-BY, 6 PDDL, 3 con otros términos de dominio público, y **12 no declaran licencia alguna** — esos doce deberían quedar fuera de cualquier redistribución.

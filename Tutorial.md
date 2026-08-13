@@ -48,14 +48,16 @@ Claude Desktop config (`claude_desktop_config.json`):
 }
 ```
 
-Restart the client. The 23 tools appear automatically.
+Restart the client. Everything the server offers appears automatically: **24 tools, 3 resources with 1 URI template, and 6 prompts**. This part of the tutorial walks the tools first because they do the work; §1.7 covers the other two, which is where most people should actually start.
 
 ### 1.2 The five tool categories
+
+Note the naming collision, since it trips people up: MCP has a primitive called *resources* (§1.7), and this catalog calls its downloadable files *resources* too. The category below is the second meaning — CKAN's files.
 
 | Category | Tools | What they're for |
 |---|---|---|
 | **Discovery** | `search_datasets`, `get_dataset`, `list_recent_datasets`, `get_site_stats` | Find datasets |
-| **Resources** | `get_resource`, `search_resources`, `download_resource_preview` | Inspect individual files |
+| **Resource files** | `get_resource`, `search_resources`, `download_resource_preview`, `check_resources` | Inspect individual files, and ask whether they can be downloaded at all |
 | **Analytics** | `get_resource_schema`, `summarize_resource`, `filter_resource`, `aggregate_resource`, `query_resource`, `quantiles_resource`, `find_duplicates_resource`, `detect_outliers_resource`, `save_query_to_csv`, `get_cache_stats`, `clear_cache` | Query the actual data |
 | **Catalog** | `list_organizations`, `get_organization`, `list_groups`, `list_tags` | Browse the institution/topic catalog |
 | **Autocomplete** | `autocomplete` | Resolve partial names → exact slugs |
@@ -129,7 +131,7 @@ exploring, one per protocol primitive:
   the `numeric_coercion` block naming what was excluded, `source_sha256`, and the SQL
   in `computation`. This is the same payload a model receives, unedited.
 - **Resources** — the catalog as read-only context.
-- **Prompts** — the four templates, which double as a guide to what to ask.
+- **Prompts** — the six templates, which double as a guide to what to ask; see §1.7.
 - **Monitoring** — the JSON-RPC traffic, live. Useful when something looks wrong and
   you want to know whether the server or the client caused it.
 
@@ -163,6 +165,140 @@ npx -y @modelcontextprotocol/inspector ~/bin/datosgobdo-server.sh
 
 The repository ships `scripts/inspector.sh`, which does both: the published package by
 default, or a local wheel when you pass one.
+
+### 1.7 Prompts, resources and templates — the other two-thirds of MCP
+
+Almost every MCP tutorial covers tools and stops. That leaves out the two primitives
+that decide *who is in control*, which is the part worth understanding:
+
+| Primitive | Who decides when it is used | Spec |
+|---|---|---|
+| **Tools** | the **model**, mid-conversation | [server/tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools) |
+| **Resources** | the **application**, by attaching a URI | [server/resources](https://modelcontextprotocol.io/specification/2026-07-28/server/resources) |
+| **Prompts** | the **user**, deliberately | [server/prompts](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts) |
+
+#### Prompts: the user-controlled entry point
+
+A prompt is a template you invoke on purpose — normally a slash command. It is not a
+tool the model may choose, and that is exactly the point: it lets the *server author*
+ship a method, not just capabilities.
+
+This server has six. Start here:
+
+```
+/empezar_aqui
+```
+
+The other five take one argument each — `/serie_temporal` (a topic), `/auditar_nomina`
+(an institution), `/verificar_fuente` (a URL), `/explorar_institucion` (an institution),
+`/cruzar_fuentes` (a topic). In a client that presents prompts as a menu rather than
+slash commands, you pick from that menu instead; support is optional per client, so
+check the [clients directory](https://modelcontextprotocol.io/clients).
+
+**Why these six exist is the lesson.** Each encodes a mistake this catalog invites. A
+dataset titled `2020-2025` may hold only 2022, so `serie_temporal` declares the real
+period before plotting anything. A payroll column stops being numeric because 37 cells
+say `#REF!`, so `auditar_nomina` reports excluded rows next to any total. Half the
+catalog cannot be downloaded, so `empezar_aqui` says so before you get attached to a
+question. Twenty-four tools cannot teach that; a prompt can.
+
+In code it is one decorator returning a string:
+
+```python
+@mcp.prompt(
+    name="serie_temporal",
+    title="Serie temporal — declarando el periodo real",
+    description="Serie por año declarando el periodo real y sin tratar el año como medida.",
+)
+def serie_temporal(tema: str) -> str:
+    return f"Arma una serie anual sobre {tema}. …"
+```
+
+The parameter name becomes the prompt's argument, and its presence makes it required.
+No I/O happens here — a prompt returns text, and the model does the work.
+
+#### Resources: application-controlled context
+
+A resource is data the *host application* can attach, addressed by URI. Nothing is
+called; nothing has side effects. Reach for one when a fact is small, stable, and
+wasteful to spend a tool call rediscovering:
+
+```
+datosgobdo://catalog/overview       application/json   portal totals
+datosgobdo://catalog/institutions   application/json   who publishes, with counts
+datosgobdo://guide/verification     text/markdown      how to make a figure checkable
+```
+
+The third is the interesting design call. It could have been a prompt, and it should
+not be: it is not a request to act, it is reference text worth having in context while
+you work. **Prompt = "do this". Resource = "know this".**
+
+```python
+@mcp.resource(
+    "datosgobdo://catalog/overview",
+    name="Resumen del catálogo",
+    description="Totales del portal: datasets, instituciones, grupos y etiquetas.",
+    mime_type="application/json",
+)
+async def catalog_overview() -> dict[str, Any]:
+    return ckan.with_provenance(await ckan.get_site_stats())
+```
+
+#### Resource templates: one definition, every dataset
+
+A [resource template](https://modelcontextprotocol.io/specification/2026-07-28/server/resources#resource-templates)
+is a URI with a parameter, so you do not have to enumerate 1,061 static resources — one
+per dataset in the catalog — to make each one addressable:
+
+```
+datosgobdo://dataset/{dataset_id}       →  datosgobdo://dataset/nomina-poder-judicial
+```
+
+In FastMCP the placeholder in the URI and the function parameter simply have to match:
+
+```python
+@mcp.resource("datosgobdo://dataset/{dataset_id}", ...)
+async def dataset_resource(dataset_id: str) -> dict[str, Any]: ...
+```
+
+Templates are listed by `resources/templates/list`, **not** `resources/list` — a common
+source of "my template isn't showing up".
+
+#### Seeing all three for real
+
+The Inspector is the honest view, because it shows the protocol rather than a client's
+interpretation of it:
+
+```bash
+npx -y @modelcontextprotocol/inspector --cli uvx dominican-open-data-mcp \
+  --method prompts/list --format json
+npx -y @modelcontextprotocol/inspector --cli uvx dominican-open-data-mcp \
+  --method resources/list --format json
+npx -y @modelcontextprotocol/inspector --cli uvx dominican-open-data-mcp \
+  --method resources/templates/list --format json
+```
+
+In the UI, the **Prompts** panel renders a prompt's expanded text before anything
+reaches a model — the fastest way to see what a slash command will actually ask for.
+
+#### What this server does not implement
+
+MCP also defines client-side primitives — [sampling](https://modelcontextprotocol.io/specification/2026-07-28/client/sampling)
+(the server asks the client for a model completion), [elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation)
+(the server asks the user for input mid-call), and [roots](https://modelcontextprotocol.io/specification/2026-07-28/client/roots)
+(the client tells the server which directories are in scope). None are used here, and
+the capability declaration says so rather than claiming them:
+
+```json
+"capabilities": {
+  "tools":     {"listChanged": false},
+  "resources": {"subscribe": false, "listChanged": false},
+  "prompts":   {"listChanged": false}
+}
+```
+
+`listChanged: false` is a promise, not a gap: the lists are fixed at startup, so a
+client can cache them.
 
 ---
 
@@ -333,6 +469,20 @@ Read the tool-design rules baked into this project:
 4. **Read/write split.** A tool is either read-only or it mutates — never both.
 5. **≤ ~30 tools.** Each schema costs context tokens every turn. Past ~30, switch to a
    `search_actions` + `execute_action` pair.
+
+### Step 3b — Ship a method, not only capabilities
+
+Tools are what your server *can* do; prompts are what you think someone *should* do
+first. If your domain has traps — a title that lies about its date range, a total that
+is wrong unless you check what was excluded — a tool description cannot carry that
+reliably, because the model only reads it once it has already chosen the tool.
+
+So: after the tools work, write two or three prompts (§1.7). One with no arguments that
+orients a newcomer, and one per workflow you would be annoyed to see done wrong. Then add
+resources for the standing facts a conversation should not spend a tool call on, and a
+resource template if your domain has one obvious addressable entity (a dataset, a repo, a
+ticket). This is the cheapest quality lever in the whole server: ~30 lines that stop the
+most common misuse of the other 3,000.
 
 ### Step 4 — Don't dump raw data into context
 
