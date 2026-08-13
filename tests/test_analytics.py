@@ -748,6 +748,68 @@ def test_forbidden_dest_windows_folds_case_posix_does_not():
     assert not analytics._is_forbidden_dest("C:/Users/maria/Downloads/salida.csv")
 
 
+@pytest.mark.parametrize(
+    "dest",
+    [
+        # The extended-length prefix. Python writes through it and
+        # Path.resolve() keeps it, so checking the raw and resolved spellings —
+        # which is what catches /etc → /private/etc on macOS — did not help.
+        "\\\\?\\C:\\Windows\\Temp\\evil.csv",
+        "//?/C:/Windows/Temp/evil.csv",
+        "\\\\.\\C:\\Windows\\evil.csv",
+        # Administrative shares reach the same directory over UNC.
+        "\\\\localhost\\C$\\Windows\\Temp\\evil.csv",
+        "\\\\127.0.0.1\\ADMIN$\\Temp\\evil.csv",
+        "\\\\?\\UNC\\localhost\\C$\\Windows\\evil.csv",
+        # Any drive, not only C: the first list hard-coded the letter, so a
+        # machine with Windows installed elsewhere had no protection at all.
+        "D:\\Windows\\System32\\evil.csv",
+        "e:/programdata/evil.csv",
+    ],
+)
+def test_forbidden_dest_covers_the_spellings_windows_testing_found(dest):
+    """Four ways past this guard, found on real Windows and not by reasoning
+    about it. The check is pure string work, so it is testable anywhere."""
+    assert analytics._is_forbidden_dest(dest), dest
+
+
+@pytest.mark.parametrize(
+    "dest",
+    [
+        "C:\\Users\\maria\\Downloads\\salida.csv",
+        "D:\\Datos\\salida.csv",
+        "/Users/maria/Downloads/salida.csv",
+        # A Linux directory literally named /windows is not a system path: the
+        # Windows list only applies behind a drive letter.
+        "/windows/mi-carpeta/salida.csv",
+    ],
+)
+def test_forbidden_dest_leaves_legitimate_destinations_alone(dest):
+    assert not analytics._is_forbidden_dest(dest), dest
+
+
+async def test_save_query_to_csv_refuses_a_unc_destination(tmp_cache_dir):
+    """Refused wholesale, and reported as such: an admin share is not the only
+    way to reach a system directory on another host, and a CSV a person will
+    open does not need a remote destination."""
+    out = await analytics.save_query_to_csv(
+        "https://example.test/any.csv", "csv", dest="\\\\fileserver\\equipo\\salida.csv"
+    )
+    assert "error" in out
+    assert "system path" in out["error"].lower()
+
+
+def test_the_temp_exception_does_not_apply_to_a_windows_system_temp():
+    """TEMP is C:\\Windows\\Temp for the SYSTEM account and some services. The
+    scratch-space exception exists for macOS, whose per-user temp dir sits under
+    /private/var/folders — it must not switch the denylist off on Windows."""
+    assert analytics._forbidden_windows("C:\\Windows\\Temp")
+    assert not analytics._forbidden_windows("C:\\Users\\maria\\AppData\\Local\\Temp")
+    # macOS: covered by the POSIX list, and deliberately still allowed as scratch.
+    assert not analytics._forbidden_windows("/private/var/folders/xy/T/")
+    assert analytics._forbidden_posix("/private/var/folders/xy/T/")
+
+
 async def test_quantiles_resource_duplicate_percentile_error(sample_csv_url, tmp_cache_dir):
     out = await analytics.quantiles_resource(sample_csv_url, "csv", percentiles=[0.5, 0.5])
     assert "error" in out

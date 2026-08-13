@@ -32,6 +32,23 @@ Defender active and a non-administrator account.
 - **A test would have expanded `~` to the real profile on Windows.** It patched
   `HOME`, which `ntpath.expanduser` never reads — it reads `USERPROFILE`. Found
   before it shipped, by that Windows report arriving the same night.
+- **Four ways past the Windows path denylist, all closed.** Testing on Windows
+  found what reasoning about it had not. `\\?\C:\Windows\…` and
+  `//?/C:/Windows/…` — the extended-length prefix — passed, and the usual defence
+  of checking the raw path alongside the resolved one does not help there:
+  `Path.resolve()` keeps the prefix, unlike the /etc → /private/etc case on macOS
+  that trick was written for. The administrative shares
+  (`\\localhost\C$\Windows`, `\\127.0.0.1\ADMIN$`) reached the
+  same directory over UNC. And the list hard-coded the drive letter `c:`, so on a
+  machine with Windows installed on another drive there was no protection at all.
+  UNC destinations are now refused wholesale — a CSV a person will open does not
+  need to be written to a host they did not name — and the system directories are
+  matched behind any drive letter.
+- **The temp-directory exception can no longer switch that denylist off.** The
+  exception exists because macOS puts the per-user temp dir under
+  /private/var/folders, which the POSIX list covers. It applied to any temp dir,
+  and `TEMP` is `C:\Windows\Temp` for the SYSTEM account and some services —
+  disabling the guard precisely where it matters most.
 - **A relative `dest` in `save_query_to_csv` is now refused with an explanation.**
   It used to be resolved against a working directory nobody chose — `/` under a
   client on macOS — so `dest="export.csv"` became `/export.csv` and the write

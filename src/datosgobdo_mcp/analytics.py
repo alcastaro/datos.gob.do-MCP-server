@@ -145,28 +145,65 @@ _FORBIDDEN_DEST_POSIX = (
     "/private/var",
 )
 
-# Windows system paths, compared case-folded with slashes normalised, because
-# that filesystem is case-insensitive and paths arrive in both spellings. The
-# POSIX list protected macOS and Linux while C:\Windows\Temp\x.csv passed
-# every check — the protection existed on the platforms the developers use
-# and not on the platform most of this server's audience uses.
+# Windows system directories, matched case-folded with slashes normalised,
+# because that filesystem is case-insensitive and paths arrive in both
+# spellings. Stored without a drive letter: the first version of this list
+# hard-coded `c:`, and on a machine with Windows installed on another drive the
+# protection did not exist at all.
 _FORBIDDEN_DEST_WINDOWS = (
-    "c:/windows",
-    "c:/program files",
-    "c:/program files (x86)",
-    "c:/programdata",
+    "/windows",
+    "/program files",
+    "/program files (x86)",
+    "/programdata",
 )
+
+# `C:/…` — a drive letter followed by a separator, which is what makes the
+# Windows list applicable. A Linux directory literally named /windows is not a
+# system path, so the list is never applied without a drive.
+_DRIVE_PREFIX = re.compile(r"^[a-z]:(?=/)")
+
+
+def _forbidden_posix(raw: str) -> bool:
+    # Exact case: /Etc is legitimately a different directory from /etc.
+    return raw.replace("\\", "/").startswith(_FORBIDDEN_DEST_POSIX)
+
+
+def _forbidden_windows(raw: str) -> bool:
+    """True if this spelling names a Windows system directory.
+
+    Four spellings reached `C:\\Windows` past the first version of this check,
+    found by testing on Windows rather than reasoning about it:
+
+    * `\\\\?\\C:\\Windows\\…` and `//?/C:/Windows/…` — the extended-length
+      prefix. Python writes through it, and `Path.resolve()` *keeps* it, so the
+      "check the raw path and the resolved path" strategy that catches
+      /etc → /private/etc on macOS does not help here: both candidates carry
+      the prefix.
+    * `\\\\localhost\\C$\\Windows\\…` and `\\\\127.0.0.1\\ADMIN$\\…` — the
+      administrative shares, which reach the same directory over UNC.
+    * `D:\\Windows\\…` — any drive that is not C.
+    """
+    lowered = raw.replace("\\", "/").lower()
+    # Extended-length and device namespaces: \\?\ and \\.\ are prefixes, not
+    # locations, so strip them before deciding anything about what follows.
+    if lowered.startswith(("//?/", "//./")):
+        lowered = lowered[4:]
+    # UNC, including the \\?\UNC\server\share form. Refused wholesale rather
+    # than by share name: an admin share is not the only way to reach a system
+    # directory on another host, and this tool exports a CSV for a person to
+    # read — a remote share is not a destination it needs to support. A Windows
+    # user whose home really is a network share gets a clear refusal here
+    # instead of a silent write to a machine they did not name.
+    if lowered.startswith("//") or lowered.startswith("unc/"):
+        return True
+    if _DRIVE_PREFIX.match(lowered):
+        return lowered[2:].startswith(_FORBIDDEN_DEST_WINDOWS)
+    return False
 
 
 def _is_forbidden_dest(*candidates: str) -> bool:
     """True if any spelling of the destination sits under a system path."""
-    for raw in candidates:
-        folded = raw.replace("\\", "/")
-        if folded.startswith(_FORBIDDEN_DEST_POSIX):
-            return True
-        if folded.lower().startswith(_FORBIDDEN_DEST_WINDOWS):
-            return True
-    return False
+    return any(_forbidden_posix(raw) or _forbidden_windows(raw) for raw in candidates)
 
 
 class AnalyticsError(RuntimeError):
@@ -2126,9 +2163,13 @@ async def save_query_to_csv(
             return {"error": "Destination must end in .csv or .tsv"}
         # The OS per-user temp dir is writable scratch space. On macOS it lives under
         # /private/var/folders/…, which would otherwise trip the /private/var denylist
-        # entry below. Allow it explicitly before running the system-path check.
+        # entry below, so that exception is deliberate. It is not extended to a temp
+        # dir that is itself a Windows system path: TEMP is C:\Windows\Temp for the
+        # SYSTEM account and some services, and honouring the exception there would
+        # switch the denylist off exactly where it matters most.
         tmp_root = Path(tempfile.gettempdir()).resolve()
-        if tmp_root not in dest_path.parents:
+        in_scratch = tmp_root in dest_path.parents and not _forbidden_windows(str(tmp_root))
+        if not in_scratch:
             # Check both the raw path and the resolved path (macOS resolves /etc → /private/etc).
             if _is_forbidden_dest(dest, str(dest_path)):
                 return {"error": f"Cannot write to system path: {dest}"}
