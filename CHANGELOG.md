@@ -49,6 +49,26 @@ Defender active and a non-administrator account.
   /private/var/folders, which the POSIX list covers. It applied to any temp dir,
   and `TEMP` is `C:\Windows\Temp` for the SYSTEM account and some services —
   disabling the guard precisely where it matters most.
+- **The Windows cache lock waits properly instead of dying.** `msvcrt.locking`'s
+  blocking mode retries once a second, ten times, and does not queue, so a waiter
+  can watch the holder reacquire on every retry. Measured on real hardware: two
+  writers doing 200 entries each produced one 6.2 s wait against that ~10 s
+  ceiling, and at four writers two processes died with
+  `OSError: [Errno 36] Resource deadlock avoided`. It now uses the non-blocking
+  mode with exponential backoff and jitter — millisecond retries instead of
+  whole seconds, and no lockstep to starve on. The ten-second give-up is kept
+  deliberately, but raises `CacheLockError` naming the index and the way out
+  (`DATOSGOBDO_CACHE_DIR`) rather than an errno from inside the standard library.
+- **A lock timeout no longer discards work already done.** `finalize` and `touch`
+  are bookkeeping: by the time they run the Parquet is written and correct, so a
+  lock they cannot get is logged and skipped rather than turned into a failed
+  tool call. The cost is one re-download later. `evict_to_fit` still raises,
+  because silently not enforcing a size ceiling is how a cache eats a disk.
+- **The cache index is written as UTF-8 explicitly.** `read_text()`/`write_text()`
+  with no encoding means the ANSI codepage on Windows (cp1252 on a Spanish
+  install). It happens to be harmless today because `json.dumps` defaults to
+  `ensure_ascii=True` — one flag away from an index that corrupts on one platform
+  and nowhere else.
 - **A relative `dest` in `save_query_to_csv` is now refused with an explanation.**
   It used to be resolved against a working directory nobody chose — `/` under a
   client on macOS — so `dest="export.csv"` became `/export.csv` and the write
