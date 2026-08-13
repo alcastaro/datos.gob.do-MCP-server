@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+title: "dominican-open-data-mcp: an MCP server for datos.gob.do"
+message: >-
+  If you use this software, or figures obtained through it, please cite it.
+type: software
+authors:
+  - given-names: Alberto
+    family-names: Castillo Aroca
+    alias: alcastaro
+    affiliation: >-
+      OLDS — Observatorio Latinoamericano de Desarrollo Sostenible
+    orcid: ""
+repository-code: "https://github.com/alcastaro/datos.gob.do-MCP-server"
+url: "https://github.com/alcastaro/datos.gob.do-MCP-server"
+abstract: >-
+  A Model Context Protocol server that turns the Dominican Republic's official
+  open data portal, datos.gob.do, into a native integration for any MCP client.
+  It exposes 1,061 datasets from 266 government institutions as typed tools,
+  read-only resources and reusable prompts, and answers with the provenance a
+  figure needs to be checked by a third party: the digest of the bytes it read,
+  the query it ran, and what any numeric coercion excluded. Reachability is
+  reported rather than assumed, because roughly half the catalog's files are
+  refused by the publishing institutions' own sites.
+keywords:
+  - model context protocol
+  - mcp
+  - open data
+  - open government data
+  - Dominican Republic
+  - CKAN
+  - civic technology
+  - data provenance
+license: MIT

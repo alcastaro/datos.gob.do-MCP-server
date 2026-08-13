@@ -511,8 +511,29 @@ Datos publicados por las instituciones del Estado dominicano vía [datos.gob.do]
 
 Inspirado en [`datagouv-mcp`](https://github.com/datagouv/datagouv-mcp) (Etalab, Gobierno de Francia).
 
+## Cómo citar
+
+Si usas este servidor —o una cifra obtenida con él— en un artículo, un informe,
+un conjunto de datos o una charla, cítalo. El botón **«Cite this repository»** de
+GitHub lee [`CITATION.cff`](CITATION.cff) y ofrece APA y BibTeX listos para
+copiar.
+
+> Castillo Aroca, A. (2026). *dominican-open-data-mcp: an MCP server for
+> datos.gob.do* [Software]. OLDS — Observatorio Latinoamericano de Desarrollo
+> Sostenible. https://github.com/alcastaro/datos.gob.do-MCP-server
+
+Es una petición, no una condición de la licencia: los términos MIT de abajo están
+sin modificar, así que nada de esto restringe tu uso. La citación importa por
+otra razón — las cifras de este catálogo llevan reservas (qué excluyó una
+coerción numérica, qué archivos no se pudieron descargar), y la cita es cómo un
+lector vuelve a ellas.
+
+**Cita también a la institución.** Este servidor lee datos, no los produce. Cada
+cifra pertenece al organismo del gobierno dominicano que la publicó, y
+`get_dataset` devuelve ese nombre precisamente para esto.
+
 ## Licencia
 
-MIT. Ver [LICENSE](LICENSE) si existe, o asumir términos estándar MIT.
+MIT. Ver [LICENSE](LICENSE).
 
 Los datos accedidos a través de este MCP están sujetos a la licencia con la que cada institución dominicana los publica en datos.gob.do (típicamente **Open Data Commons Open Database License — ODbL**).
