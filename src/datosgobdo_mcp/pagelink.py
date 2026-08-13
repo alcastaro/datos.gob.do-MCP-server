@@ -80,6 +80,23 @@ _LOGIN_MARKERS = (
 )
 
 
+# A URL a page navigates to from JavaScript instead of linking. The Tribunal
+# Constitucional publishes all three of its formats this way —
+# `<div class="file-block" onclick="window.location.assign('https://…​.csv')">` —
+# so a page offering CSV, ODS and XLSX side by side had, as far as this module
+# could see, no data file on it at all. The pattern is the navigation call, not
+# the site: no institution, host or CSS class appears in it.
+_JS_NAVIGATION = re.compile(
+    r"""(?:window\.location\.assign|window\.location\.replace|window\.open|
+         (?:window\.)?location(?:\.href)?\s*=)\s*\(?\s*['"]([^'"]+)['"]""",
+    re.VERBOSE | re.IGNORECASE,
+)
+
+# Attributes that carry a URL for a script to use. Any element can have them,
+# which is why they are read from every tag rather than only from anchors.
+_URL_ATTRS = ("onclick", "data-href", "data-url", "data-file", "data-download")
+
+
 class _LinkCollector(HTMLParser):
     """Collect anchors with their visible text.
 
@@ -96,17 +113,30 @@ class _LinkCollector(HTMLParser):
         self._text: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        # Read the scripted URLs off every element, before the tag-specific
+        # branches below return. The link text is not available here — these are
+        # not anchors and the visible label sits in nested markup — so scoring
+        # falls back to the URL, which for these pages carries the filename.
+        for attr in _URL_ATTRS:
+            value = attributes.get(attr)
+            if not value:
+                continue
+            if attr == "onclick":
+                self.links.extend((m.group(1), "") for m in _JS_NAVIGATION.finditer(value))
+            else:
+                self.links.append((value, ""))
         if tag in ("iframe", "embed"):
             # A page that embeds the file instead of linking it is still a page
             # that names the file. One resource in this catalog is a Drive
             # document in an iframe, and the src is a perfectly good address.
-            src = dict(attrs).get("src")
+            src = attributes.get("src")
             if src:
                 self.links.append((src, ""))
             return
         if tag != "a":
             return
-        href = dict(attrs).get("href")
+        href = attributes.get("href")
         if href:
             self._href = href
             self._text = []

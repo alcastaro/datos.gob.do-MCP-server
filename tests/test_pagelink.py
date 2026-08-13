@@ -259,3 +259,73 @@ def test_an_embed_with_no_file_id_is_not_a_candidate():
     target, found = pagelink.resolve(html, "https://portal.test/datos/actos-2024", "ods")
     assert target is None
     assert not [c for c in found if "/file/d//" in c["url"]]
+
+
+# ─── URLs a page navigates to instead of linking ──────────────────────────────
+
+# Shape taken verbatim from tribunalconstitucional.gob.do, which publishes its
+# three formats this way and so appeared to link no data file at all.
+_TC_PAGE = """
+<html><body>
+  <div class="file-block" onclick="window.location.assign('https://store.test/media/69475/nomina-ogtic-datos-abiertos-ene-2022-jun-2026.csv')">
+    <table><tbody><tr><td><ul><li>Formato: csv</li><li>Tamaño: 3.54 MB</li></ul></td></tr></tbody></table>
+    <p>DESCARGAR</p>
+  </div>
+  <div class="file-block" onclick="window.location.assign('https://store.test/media/69476/nomina-ogtic-datos-abiertos-ene-2022-jun-2026.ods')">
+    <p>DESCARGAR</p>
+  </div>
+  <div class="file-block" onclick="window.location.assign('https://store.test/media/69477/nomina-ogtic-datos-abiertos-ene-2022-jun-2026.xlsx')">
+    <p>DESCARGAR</p>
+  </div>
+</body></html>
+"""
+
+_PAGE_URL = "https://portal.test/transparencia/datos-abiertos/nómina/2022-2026/"
+
+
+@pytest.mark.parametrize("fmt,expected", [("csv", "csv"), ("ods", "ods"), ("xlsx", "xlsx")])
+def test_a_file_opened_from_onclick_is_a_candidate(fmt, expected):
+    """Three formats of the same table, told apart only by the declared format —
+    the same tie-break the `href` case already relied on."""
+    target, found = pagelink.resolve(_TC_PAGE, _PAGE_URL, fmt)
+    assert target is not None, found
+    assert target.endswith("." + expected)
+    assert len(found) == 3
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [
+        "window.location.assign('https://store.test/a/nomina.csv')",
+        "window.location.replace(&quot;https://store.test/a/nomina.csv&quot;)",
+        "window.open('https://store.test/a/nomina.csv')",
+        "location.href='https://store.test/a/nomina.csv'",
+        "window.location = 'https://store.test/a/nomina.csv'",
+    ],
+)
+def test_every_spelling_of_the_navigation_call(handler):
+    """Including the escaped double quotes a page must use inside a double-quoted
+    attribute — the parser resolves the entity before the pattern ever sees it."""
+    html = f'<html><body><div onclick="{handler}">DESCARGAR</div></body></html>'
+    target, _ = pagelink.resolve(html, "https://portal.test/datos/nomina/", "csv")
+    assert target == "https://store.test/a/nomina.csv"
+
+
+def test_a_data_attribute_holding_the_url_counts_too():
+    html = '<html><body><button data-href="/files/nomina-2026.csv">Bajar</button></body></html>'
+    target, _ = pagelink.resolve(html, "https://portal.test/datos/nomina-2026/", "csv")
+    assert target == "https://portal.test/files/nomina-2026.csv"
+
+
+def test_an_onclick_that_navigates_nowhere_useful_is_not_a_candidate():
+    """The extraction is not a licence to accept anything in a handler: the same
+    filter applies as to an `href`, so a script that toggles a menu adds nothing."""
+    html = (
+        "<html><body>"
+        "<div onclick=\"window.location.assign('/transparencia/index.php?view=category')\">Ver</div>"
+        "<div onclick=\"toggleMenu('open')\">Menú</div>"
+        "</body></html>"
+    )
+    target, found = pagelink.resolve(html, "https://portal.test/datos/nomina/", "csv")
+    assert target is None
+    assert found == []

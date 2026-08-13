@@ -26,6 +26,18 @@ Defender active and a non-administrator account.
 
 ### Fixed
 
+- **A page that opens its files from JavaScript looked like a page with no files.**
+  `pagelink` read anchors only, and the Tribunal Constitucional publishes all
+  three of its formats as
+  `<div class="file-block" onclick="window.location.assign('…​.csv')">` — no `href`
+  anywhere. So a page offering CSV, ODS and XLSX side by side was answered with
+  "no data file linked on it", which was our defect reported as the publisher's.
+  The navigation calls (`window.location.assign` / `.replace` / `window.open` /
+  `location.href =`) and the `data-href` family of attributes are now read, scored
+  by the same function as any `href`, and the declared format still breaks the tie
+  between three spellings of one table. Verified live: that page now answers
+  **27,759 rows × 7 columns**. Nine resources across three pages of the 209 that
+  answer with a page.
 - **One ragged line could silently reduce a CSV to a single column.** The worst
   shape of failure there is, because nothing fails. With `IGNORE_ERRORS` and no
   padding, a single row whose field count surprises DuckDB's sniffer makes it fall
