@@ -293,7 +293,7 @@ DuckDB over a persistent Parquet cache. The first call per resource downloads an
 | `find_duplicates_resource` | Rows duplicated on given columns (or all). Essential for payroll and census quality checks. |
 | `detect_outliers_resource` | Rows outside the IQR fence on a numeric column, sorted by distance from the median. |
 | `query_resource` | Power-user escape hatch: read-only SQL against table `data`. SELECT/WITH only; DDL/DML/COPY/PRAGMA/ATTACH/LOAD rejected, and sandboxed (see [§15](#15-security-and-environment-variables)). |
-| `save_query_to_csv` | Write a filter or SQL result to a local CSV. Default destination `~/Downloads/datosgobdo-exports/`. Disabled in hosted mode. |
+| `save_query_to_csv` | Write a filter or SQL result to a local CSV. Absolute destination, or the default `~/Downloads/datosgobdo-exports/`. Disabled in hosted mode. |
 | `get_cache_stats` | On-disk Parquet cache statistics. |
 | `clear_cache` | Wipe the local Parquet cache. The only non-read-only tool in the server (`destructiveHint: true`). Disabled in hosted mode. |
 
@@ -515,6 +515,8 @@ The most common defect in this catalog: **93 of 540 readable resources** hold nu
 
 37 catalog resources answer with a web page instead of a file. When one linked file clearly matches the request it is fetched, and `cache.resolved_from` records `{page, followed}` — you asked for one URL and received data from another, which the reply says rather than hides. When several candidates are indistinguishable they come back as `linked_files` with names and scores, for you to choose and call again. Files named `clss.csv` and `xls.csv` both exist in this catalog; guessing between them would be inventing.
 
+**A note on the CSV `save_query_to_csv` writes.** It is UTF-8 with CRLF line endings and **no BOM**. That is a correct CSV, and Excel on a Spanish-language Windows will still open it as cp1252 and show `AÃ±o` for `Año`, because without a BOM that is what Excel assumes. The file is fine; the tool most of this audience will open it with is the problem. Two ways around it: open it through Excel's `Data → From Text/CSV`, which asks for the encoding, or use LibreOffice, which detects UTF-8. Measured on Windows 11: `4E 6F 6D 62 72 65 2C 41 C3 B1 6F 0D` — `Nombre,Año\r`, valid UTF-8, no `EF BB BF`.
+
 **`cache.provenance`** — the answer came from an archived copy rather than the portal.
 
 Government links rot: the 2026-08-08 census found 15 resource URLs already dead and 98 institutions whose sites refuse programmatic access, so a figure you cite today may be uncheckable next year. Point `DATOSGOBDO_ARCHIVE_DIR` at a directory holding a `manifest.json` and its Parquet files, and when a portal cannot be reached the server answers from the archived copy. It is off by default, the portal is always tried first, and **the reply always says so** — `cache.provenance` carries the capture date, the `sha256`, the licence and why the origin was not used. A tool that quietly returned yesterday's copy as today's would stop being useful for an audit.
@@ -604,7 +606,11 @@ What is **established**: those sites refuse *programmatic* access to their own o
 
 **Freshness cannot be read from metadata.** `periodicidad` is empty for all 1,056 datasets.
 
-**Untested, and therefore not claimed:** the hosted `streamable-http` transport under real load, the three GCP tools against a live project, Windows, and concurrent use.
+**Windows: tested on 2026-08-13, and here is exactly how far.** Windows 11 (build 26200), Python 3.13, Defender's real-time protection on, a non-administrator account. The suite runs green — 518 passed, 5 skipped, the one skip being a POSIX-only `O_NOFOLLOW` test. Encoding holds end to end: a cp1252 payroll comes back with `Año` and `UREÑA` intact, 135 of 200 institution names carry non-ASCII and none arrive mangled, and paths with accents and spaces work. An aggregation over a 108,038-row payroll matched an independent `Decimal` recomputation to the cent. Defender cost nothing measurable — the 40 MB cold read is dominated by the publisher's ~1 MB/s, and repeated raw downloads varied more between themselves than Windows differed from macOS.
+
+What is **still not tested on Windows**, and therefore not claimed: a user profile that is itself accented (`C:\Users\José Pérez\`, common in the Dominican Republic — only accented sub-folders were exercised), a Downloads folder redirected into OneDrive, Claude Desktop as the client (the transport was driven by a different MCP client), Windows installed on a drive other than `C:`, and a Defender exclusion measured before-and-after, which needs administrator rights. The Windows-only branch of the cache lock is likewise still awaiting a run on Windows: its retry policy is tested, its four-line `msvcrt` shim is not.
+
+**Untested, and therefore not claimed:** the hosted `streamable-http` transport under real load, the three GCP tools against a live project, and concurrent use beyond four processes.
 
 ---
 ---

@@ -69,6 +69,14 @@ Defender active and a non-administrator account.
   install). It happens to be harmless today because `json.dumps` defaults to
   `ensure_ascii=True` — one flag away from an index that corrupts on one platform
   and nowhere else.
+- **The pydantic_settings start-up warning is actually filtered now.** The filter
+  also required the warning to be attributed to `pydantic_settings.*`, and
+  `module` matches the module a warning is attributed to, which follows the
+  stacklevel the emitting library passes — here the `mcp` module defining the
+  settings class. So a Windows tester saw `IncompleteFieldDefinitionWarning` as
+  their first impression of the server while a test asserted it was suppressed:
+  the test attributed its synthetic warning by hand, so code and test agreed with
+  each other and neither agreed with a real start-up.
 - **A relative `dest` in `save_query_to_csv` is now refused with an explanation.**
   It used to be resolved against a working directory nobody chose — `/` under a
   client on macOS — so `dest="export.csv"` became `/export.csv` and the write
@@ -130,6 +138,20 @@ Defender active and a non-administrator account.
   `server.netguard_mode`.
 
 ### Documentation
+
+- **Windows is now a tested platform with its limits written down.** README §17
+  says what a real Windows 11 session established — green suite, encoding intact
+  end to end, an aggregation matching an independent `Decimal` recomputation to the
+  cent, no measurable Defender penalty — and what it did not reach: an accented
+  user profile (`C:\Users\José Pérez\`, common in the Dominican Republic), a
+  Downloads folder redirected into OneDrive, Claude Desktop as the client, Windows
+  on a drive other than `C:`, and a before-and-after Defender exclusion, which
+  needs administrator rights.
+- **The exported CSV has no BOM, and Excel on Spanish Windows cares.** The file is
+  valid UTF-8 with CRLF, and Excel will still read it as cp1252 and show `AÃ±o`.
+  Documented with the two ways around it rather than changed: `Data → From
+  Text/CSV`, or LibreOffice.
+
 
 - **The `env` block, which the READMEs listed variables without ever showing.**
   `export DATOSGOBDO_NETGUARD=strict` does not reach a client-launched server —

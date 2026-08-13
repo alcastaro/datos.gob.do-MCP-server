@@ -309,7 +309,7 @@ DuckDB sobre una caché Parquet persistente. La primera llamada por recurso desc
 | `find_duplicates_resource` | Filas duplicadas según columnas dadas (o todas). Imprescindible para chequeos de calidad en nóminas y censos. |
 | `detect_outliers_resource` | Filas fuera del cerco IQR de una columna numérica, ordenadas por distancia a la mediana. |
 | `query_resource` | Escape hatch para usuarios avanzados: SQL de solo lectura contra la tabla `data`. Solo SELECT/WITH; DDL/DML/COPY/PRAGMA/ATTACH/LOAD rechazados, y en sandbox (ver [§15](#s15)). |
-| `save_query_to_csv` | Escribe el resultado de un filtro o SQL a un CSV local. Destino por defecto `~/Downloads/datosgobdo-exports/`. Deshabilitado en modo hosted. |
+| `save_query_to_csv` | Escribe el resultado de un filtro o SQL a un CSV local. Destino absoluto, o el de por defecto `~/Downloads/datosgobdo-exports/`. Deshabilitado en modo hosted. |
 | `get_cache_stats` | Estadísticas de la caché Parquet en disco. |
 | `clear_cache` | Borra la caché Parquet local. La única herramienta no de solo lectura del servidor (`destructiveHint: true`). Deshabilitada en modo hosted. |
 
@@ -543,6 +543,8 @@ El defecto más común de este catálogo: **93 de 540 recursos legibles** guarda
 
 37 recursos del catálogo responden con una página web en vez de un archivo. Cuando un archivo enlazado coincide claramente con lo pedido, se descarga y `cache.resolved_from` registra `{page, followed}` — pediste una URL y recibiste datos de otra, y la respuesta lo dice en vez de esconderlo. Cuando varios candidatos son indistinguibles, vuelven como `linked_files` con nombres y puntajes, para que elijas y llames de nuevo. En este catálogo existen archivos llamados `clss.csv` y `xls.csv`; adivinar entre ellos sería inventar.
 
+**Sobre el CSV que escribe `save_query_to_csv`.** Es UTF-8, con saltos CRLF y **sin BOM**. Ese CSV es correcto, y Excel en un Windows en español lo va a abrir como cp1252 y mostrar `AÃ±o` donde dice `Año`, porque sin BOM es lo que Excel asume. El archivo está bien; el problema es la herramienta con la que este público lo va a abrir. Dos salidas: ábrelo con `Datos → Desde texto/CSV`, que pregunta la codificación, o usa LibreOffice, que detecta UTF-8. Medido en Windows 11: `4E 6F 6D 62 72 65 2C 41 C3 B1 6F 0D` — `Nombre,Año\r`, UTF-8 válido, sin `EF BB BF`.
+
 **`cache.provenance`** — la respuesta salió de una copia archivada, no del portal.
 
 Los enlaces del gobierno se podren: el censo del 2026-08-08 encontró 15 URLs de recursos ya muertas y 98 instituciones cuyos sitios rechazan el acceso programático, así que una cifra que cites hoy puede ser incomprobable el año que viene. Apunta `DATOSGOBDO_ARCHIVE_DIR` a un directorio con un `manifest.json` y sus archivos Parquet, y cuando un portal no se pueda alcanzar el servidor responde desde la copia archivada. Está apagado por defecto, el portal se intenta siempre primero, y **la respuesta siempre lo dice** — `cache.provenance` lleva la fecha de captura, el `sha256`, la licencia y por qué no se usó el origen. Una herramienta que devolviera en silencio la copia de ayer como si fuera la de hoy dejaría de servir para auditar.
@@ -638,7 +640,11 @@ Lo que queda **establecido**: esos sitios rechazan el acceso *programático* a s
 
 **La frescura no se puede leer de los metadatos.** `periodicidad` está vacío en los 1.056 datasets.
 
-**Sin probar, y por tanto sin afirmar:** el transporte hosted `streamable-http` bajo carga real, las tres herramientas GCP contra un proyecto real, Windows, y el uso concurrente.
+**Windows: probado el 2026-08-13, y hasta aquí llega.** Windows 11 (build 26200), Python 3.13, protección en tiempo real de Defender activa, cuenta sin privilegios de administrador. La suite corre en verde — 518 pasadas, 5 saltadas, y la que se salta es una prueba de `O_NOFOLLOW`, que solo existe en POSIX. La codificación aguanta de punta a punta: una nómina en cp1252 vuelve con `Año` y `UREÑA` intactos, 135 de 200 nombres de institución traen caracteres no-ASCII y ninguno llega roto, y las rutas con acentos y espacios funcionan. Una agregación sobre una nómina de 108.038 filas coincidió al céntimo con un recálculo independiente en `Decimal`. Defender no costó nada medible — la lectura en frío de 40 MB la domina el ~1 MB/s del publicador, y dos descargas crudas seguidas variaron más entre sí que Windows respecto de macOS.
+
+Lo que **sigue sin probarse en Windows**, y por tanto no se afirma: un perfil de usuario acentuado (`C:\Users\José Pérez\`, común en República Dominicana — solo se ejercitaron subcarpetas con acentos), una carpeta Descargas redirigida a OneDrive, Claude Desktop como cliente (el transporte se condujo con otro cliente MCP), Windows instalado en una unidad distinta de `C:`, y una exclusión de Defender medida antes y después, que requiere privilegios de administrador. La rama del candado de caché específica de Windows también espera una corrida allí: su política de reintento está probada, su envoltura de cuatro líneas sobre `msvcrt` no.
+
+**Sin probar, y por tanto sin afirmar:** el transporte hosted `streamable-http` bajo carga real, las tres herramientas GCP contra un proyecto real, y el uso concurrente más allá de cuatro procesos.
 
 ---
 ---
