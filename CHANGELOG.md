@@ -38,7 +38,27 @@ are about how the server looks from outside a language model.
   "showcase how to best use the MCP server", and 24 tools is a lot of surface
   for someone who has never seen this catalog.
 
+- **The server says what it is and how this catalog behaves.** `serverInfo`
+  carried a name and a version and nothing else — no link back to the project,
+  and no word to an agent about a catalog where half the files cannot be
+  downloaded. It now carries `websiteUrl`, and the connection carries
+  `instructions`: check reachability before recommending a source, never
+  answer with a different file, separate what the catalog claims from what was
+  read, and pass on the coercion, digest and SQL that make a figure checkable.
+  Clients deliver instructions once at connect, so this reaches every agent —
+  including the ones that never open the prompts panel — at no per-call cost.
+
 ### Fixed
+
+- **A resource search now names who published the file.** CKAN's
+  `resource_search` answers with the file and nothing around it: a name, a
+  format and a URL, with no dataset and no institution. In this catalog that
+  is close to useless — files are registered under names like `clss.csv`, and
+  "who publishes this?" is the first question anyone asks of a government
+  file. Each result now carries its dataset and its institution, resolved in
+  one additional request for the whole page rather than one per row; if that
+  lookup fails the search still returns, without the parent fields, since a
+  list without institutions beats an error.
 
 - **A failed call now says it failed.** This server answers a handled failure
   with a normal result whose body is `{"error": ..., "hint": ...}`, which

@@ -79,10 +79,46 @@ logging.basicConfig(
 )
 logger = logging.getLogger("datosgobdo-mcp")
 
-mcp = FastMCP("datosgobdo-mcp")
+REPOSITORY_URL = "https://github.com/alcastaro/datos.gob.do-MCP-server"
+
+# Server-level guidance. Clients pass this to the model once, at connect, so it
+# costs nothing per call and reaches every agent — which is the point: the same
+# habits had to be taught prompt by prompt in three separate client sessions,
+# and an assistant that never reads the prompts still reads this.
+INSTRUCTIONS = """\
+Open data from the Dominican Republic's official portal, datos.gob.do: 1,061 \
+datasets from 266 government institutions.
+
+Three habits this catalog demands:
+
+1. Roughly half of the catalog's files cannot be downloaded — the publishing \
+institution's own site refuses programmatic access. Use check_resources before \
+recommending a source. If a file cannot be read, say so; never answer with a \
+different file, from a different institution or period, as if it were the one \
+requested.
+
+2. Distinguish what the catalog claims from what you read. Catalog replies \
+carry source: catalog_metadata, analytics replies source: file_contents. A \
+dataset's description is not evidence about its contents.
+
+3. Report what the numbers cost. Government spreadsheets store numbers as text \
+and leave headers inside the data, so results carry numeric_coercion naming \
+what was excluded, source_sha256 for the bytes read, and computation with the \
+SQL that ran. Pass those on: they are what make a figure checkable.
+
+Start with search_datasets, then get_resource_schema before analysing.\
+"""
+
+mcp = FastMCP(
+    "datosgobdo-mcp",
+    instructions=INSTRUCTIONS,
+    website_url=REPOSITORY_URL,
+)
 # FastMCP has no `version` constructor arg; the low-level server falls back to
 # the installed mcp SDK version, so clients saw the SDK version in serverInfo.
 mcp._mcp_server.version = __version__
+# `Implementation.title` exists in the schema but this SDK version never fills
+# it in, so setting it here would be dead code that reads like a feature.
 
 
 # ─── Tool annotations ─────────────────────────────────────────────────────────

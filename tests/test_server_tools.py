@@ -20,7 +20,7 @@ from typing import Any
 
 from mcp import types
 
-from datosgobdo_mcp import server
+from datosgobdo_mcp import __version__, server
 from datosgobdo_mcp.models import (
     AggregateResult,
     CacheStatsResult,
@@ -776,3 +776,21 @@ async def test_successful_call_is_not_flagged(tmp_cache_dir):
     call = result.root
     assert call.isError is False
     assert call.structuredContent["server"]["name"] == "datosgobdo-mcp"
+
+
+# ─── Server identity and guidance (v0.13.0) ──────────────────────────────────
+
+
+def test_server_declares_its_repository_and_guidance():
+    """serverInfo carried a name and a version and nothing else — no link back
+    to the project, and no word to an agent about how this catalog behaves.
+    instructions reach every client at connect and cost nothing per call."""
+    server = mcp._mcp_server
+    assert server.website_url == "https://github.com/alcastaro/datos.gob.do-MCP-server"
+    assert server.version == __version__
+    text = server.instructions or ""
+    # The three habits three separate client sessions had to learn the hard way.
+    assert "check_resources" in text
+    assert "never answer with a different file" in text
+    assert "catalog_metadata" in text
+    assert "source_sha256" in text
