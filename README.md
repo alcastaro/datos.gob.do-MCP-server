@@ -170,7 +170,7 @@ That last one is worth pausing on, because it is the kind of question the whole 
 
 This catalog has real defects, and they were measured — a census of the whole thing on **2026-08-08**, one resource per dataset, 1,056 resources over real MCP sessions. Four findings change how you should read any figure you get from here:
 
-**About half the catalog cannot be downloaded by a program.** **572 of 1,056** resources can be read (54.2 %), up from 540 in the census: 0.14.0's format work recovered 32 that had been unreadable, re-measured against the live portal on 2026-08-13. The largest single cause of the rest is not this server and no version of it can fix it: **360 resources across 98 institutions** sit behind a site configuration that refuses programmatic downloads of the files those same institutions publish as open data. From the same address, 21 other government hosts behind the same CDN answer normally — so it is per-site configuration, not our network. A further 15 links are dead and 8 files are unreadable at any encoding.
+**About half the catalog cannot be downloaded by a program.** **561 of 1,056** resources can be read (53.1 %), up from 540 in the census: 0.14.0's format work recovered 21 of them, re-measured against the live portal on 2026-08-13. The largest single cause of the rest is not this server and no version of it can fix it: **360 resources across 98 institutions** sit behind a site configuration that refuses programmatic downloads of the files those same institutions publish as open data. From the same address, 21 other government hosts behind the same CDN answer normally — so it is per-site configuration, not our network. A further 15 links are dead and 6 files are unreadable at any encoding.
 
 **One in three multi-format datasets contradicts itself.** Of 528 datasets whose formats could be compared, **176 disagree** on row count or column count. One example: the Treasury's `recaudaciones-sirite-2021-2025` has 971,818 rows as CSV and 197,338 as ODS. A citizen downloading the ODS and a journalist downloading the CSV would quote different numbers from the same official dataset. **Practical rule: check more than one format before you publish a total.**
 
@@ -240,8 +240,8 @@ The Dominican government's official open-data portal, operated by OGTIC. It runs
 | Resources (files) in the catalog | **3,826** |
 | Organizations that actually own a dataset | **261** of the 266 registered |
 | Resources tested (one per dataset) | **1,056** |
-| Machine-readable | **572** (54.2 %) — 540 in the 2026-08-08 census, plus 32 recovered by 0.14.0 |
-| Rows downloaded and cached | **13,371,601** in the census, plus **928,878** in the recovered resources |
+| Machine-readable | **561** (53.1 %) — 540 in the 2026-08-08 census, plus 21 recovered by 0.14.0 |
+| Rows downloaded and cached | **13,371,601** in the census, plus **82,490** recovered — and **846,388** more in sibling files outside it |
 | Resources hosted on `datos.gob.do` itself | **66** — the rest live on **273 other domains** |
 
 That last row is the structural fact behind most of this project. **The portal is a catalogue of links, not a repository.** Each institution keeps its own files on its own web server, so availability, format hygiene and access rules are decided in 273 places the portal does not control.
@@ -596,11 +596,23 @@ src/datosgobdo_mcp/
 
 ## 17. Measured limitations
 
-Measured against the whole catalog on 2026-08-08 — 1,056 resources, one per dataset, over real MCP sessions — not estimated. The 129 that had failed for reasons inside this server's control were re-measured against the live portal on **2026-08-13**, after 0.14.0's format work.
+Measured against the whole catalog on 2026-08-08 — 1,056 resources, one per dataset, over real MCP sessions — not estimated. Every resource that had failed for a reason inside this server's control was re-measured against the live portal on **2026-08-13**, after 0.14.0's format work; site refusals and 4xx were not retried, because nothing changed on our side that could affect them.
 
-**Not everything published is reachable.** **572 of 1,056** resources can be read — 540 in the census, plus **32 recovered** by 0.14.0, worth 928,878 rows that no version before it could read. The largest of them: 11 SeNaSa resources in ODS (622,630 rows), payroll and housing files published as JSON by MAP, MIVHED and MESCyT (213,465 rows between them), and 7 Tribunal Constitucional resources that had been reported as "a page with no data file" because the link is opened by JavaScript rather than an `<a href>`.
+**Not everything published is reachable.** **561 of 1,056** resources can be read — 540 in the census, plus **21 recovered** by 0.14.0, worth 82,490 rows. The recovery is exact rather than estimated, so the breakdown moves with it: of the 37 that served a web page, **19** now resolve to the file the page links, leaving 18; of the 8 unreadable files, **2** now parse, leaving 6.
 
-The breakdown below is the 2026-08-08 census and has not been re-swept as a whole, so read it as the state before that recovery: **360 resources across 98 institutions** sit behind a site configuration that refuses programmatic downloads — the largest cause, not this server's, and no version of it can change that. From one address, 21 other government hosts behind the same CDN serve us normally, so it is per-site configuration rather than our network. A further 85 failed at transport level (cause not attributable), 37 served a web page, 15 links are dead, 8 files are unreadable, 6 have a CDN whose origin does not answer, and 5 hit portal errors. The 32 recovered came out of the page and unreadable-format buckets; the 360 refusals are untouched by any of it.
+| cause | resources | can this server fix it? |
+|---|---:|---|
+| Site configuration refuses programmatic downloads | **360** across 98 institutions | No. From one address, 21 other government hosts behind the same CDN serve us normally, so it is per-site configuration rather than our network. |
+| Failed at transport level (cause not attributable) | 85 | Not established |
+| Serves a web page with no data file on it | 18 | No — catalogue entries pointing at a landing page |
+| Dead link | 15 | No |
+| Unreadable file | 6 | Two are pre-2007 `.xls`, which needs a new reader |
+| CDN whose origin does not answer | 6 | No |
+| Portal error | 5 | No |
+
+561 + 495 = 1,056. The 360 refusals are untouched by any of this and no version of this server can change them.
+
+**A second recovery does not appear in that count, and is larger.** 0.14.0 also reads **11 sibling files** — a second or third format of a dataset whose one-per-dataset representative was already counted — worth **846,388 rows**, among them 622,630 in SeNaSa's ODS and the payroll and housing files MAP, MIVHED and MESCyT publish as JSON. They are excluded from the 561 on purpose: the census measures one resource per dataset, and counting siblings would compare against a denominator that never included them. What it means in practice is that a dataset whose CSV is unreadable may now be readable in another format — [§14](#14-what-the-answers-tell-you-about-themselves) explains how `cache.format_corrected` says so when it happens.
 
 What is **established**: those sites refuse *programmatic* access to their own open data from the address measured. What is **not established**: that a person with a browser in Santo Domingo is refused. That test needs a Dominican residential vantage point and has not been run.
 

@@ -218,6 +218,20 @@ Defender active and a non-administrator account.
 
 ### Documentation
 
+- **Readability is 561 of 1,056, not 540 — and the breakdown moves with it.** The
+  2026-08-13 re-measurement of everything that had failed for a reason inside this
+  server's control recovered 21 census resources: 19 of the 37 that served a web
+  page now resolve to the file the page links, and 2 of the 8 unreadable files now
+  parse. The per-cause table is recomputed rather than labelled stale, and the
+  arithmetic closes: 561 + 495 = 1,056.
+
+  The first version of this entry said 572 and 928,878 rows, which counted the
+  whole recovery against a denominator that never contained it. 11 of the 32
+  recovered resources are *siblings* — a second or third format of a dataset whose
+  one-per-dataset representative was already in the census — and they hold 846,388
+  of those rows, including SeNaSa's ODS. They are now reported separately, because
+  a dataset becoming readable in another format is a real gain and still not a
+  change in how many of the 1,056 can be read.
 - **Windows is now a tested platform with its limits written down.** README §17
   says what a real Windows 11 session established — green suite, encoding intact
   end to end, an aggregation matching an independent `Decimal` recomputation to the

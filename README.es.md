@@ -180,7 +180,7 @@ Vale la pena detenerse en la última, porque es el tipo de pregunta para la que 
 
 Este catálogo tiene defectos reales, y se midieron — un censo del catálogo completo el **2026-08-08**, un recurso por dataset, 1.056 recursos sobre sesiones MCP reales. Cuatro hallazgos cambian cómo debes leer cualquier cifra que salga de aquí:
 
-**Cerca de la mitad del catálogo no se puede descargar por programa.** **572 de 1.056** recursos se pueden leer (54,2 %), frente a 540 en el censo: el trabajo de formatos de 0.14.0 recuperó 32 que eran ilegibles, remedidos contra el portal vivo el 2026-08-13. La causa individual mayor del resto no es este servidor y ninguna versión suya puede arreglarla: **360 recursos de 98 instituciones** están detrás de una configuración de sitio que rechaza la descarga programática de los archivos que esas mismas instituciones publican como datos abiertos. Desde la misma dirección, 21 otros hosts gubernamentales detrás del mismo CDN responden con normalidad — así que es configuración por sitio, no nuestra red. Otros 15 enlaces están muertos y 8 archivos son ilegibles en cualquier codificación.
+**Cerca de la mitad del catálogo no se puede descargar por programa.** **561 de 1.056** recursos se pueden leer (53,1 %), frente a 540 en el censo: el trabajo de formatos de 0.14.0 recuperó 21 de ellos, remedidos contra el portal vivo el 2026-08-13. La causa individual mayor del resto no es este servidor y ninguna versión suya puede arreglarla: **360 recursos de 98 instituciones** están detrás de una configuración de sitio que rechaza la descarga programática de los archivos que esas mismas instituciones publican como datos abiertos. Desde la misma dirección, 21 otros hosts gubernamentales detrás del mismo CDN responden con normalidad — así que es configuración por sitio, no nuestra red. Otros 15 enlaces están muertos y 6 archivos son ilegibles en cualquier codificación.
 
 **Uno de cada tres datasets multiformato se contradice a sí mismo.** De 528 datasets cuyos formatos se pudieron comparar, **176 no coinciden** en número de filas o de columnas. Un ejemplo: `recaudaciones-sirite-2021-2025` de la Tesorería Nacional trae 971.818 filas como CSV y 197.338 como ODS. Un ciudadano que baja el ODS y un periodista que baja el CSV citarían cifras distintas del mismo dataset oficial. **Regla práctica: revisa más de un formato antes de publicar un total.**
 
@@ -254,8 +254,8 @@ El portal oficial de datos abiertos del Estado dominicano, operado por OGTIC. Co
 | Recursos (archivos) en el catálogo | **3.826** |
 | Organizaciones que realmente tienen un dataset | **261** de las 266 registradas |
 | Recursos probados (uno por dataset) | **1.056** |
-| Legibles por máquina | **572** (54,2 %) — 540 en el censo del 2026-08-08, más 32 recuperados por 0.14.0 |
-| Filas descargadas y cacheadas | **13.371.601** en el censo, más **928.878** en los recursos recuperados |
+| Legibles por máquina | **561** (53,1 %) — 540 en el censo del 2026-08-08, más 21 recuperados por 0.14.0 |
+| Filas descargadas y cacheadas | **13.371.601** en el censo, más **82.490** recuperadas — y **846.388** más en archivos hermanos fuera de él |
 | Recursos alojados en `datos.gob.do` mismo | **66** — el resto vive en **273 dominios distintos** |
 
 Esa última fila es el hecho estructural detrás de casi todo este proyecto. **El portal es un catálogo de enlaces, no un repositorio.** Cada institución guarda sus archivos en su propio servidor web, así que la disponibilidad, la higiene de formato y las reglas de acceso se deciden en 273 lugares que el portal no controla.
@@ -630,11 +630,23 @@ src/datosgobdo_mcp/
 
 ## 17. Limitaciones medidas
 
-Medidas contra el catálogo completo el 2026-08-08 — 1.056 recursos, uno por dataset, sobre sesiones MCP reales — no estimadas. Los 129 que habían fallado por causas dentro del control de este servidor se remidieron contra el portal vivo el **2026-08-13**, tras el trabajo de formatos de 0.14.0.
+Medidas contra el catálogo completo el 2026-08-08 — 1.056 recursos, uno por dataset, sobre sesiones MCP reales — no estimadas. Cada recurso que había fallado por una causa dentro del control de este servidor se remidió contra el portal vivo el **2026-08-13**, tras el trabajo de formatos de 0.14.0; los rechazos de sitio y los 4xx no se reintentaron, porque nada cambió de nuestro lado que pudiera afectarlos.
 
-**No todo lo publicado es alcanzable.** **572 de 1.056** recursos se pueden leer — 540 en el censo, más **32 recuperados** por 0.14.0, que valen 928.878 filas que ninguna versión anterior podía leer. Los mayores: 11 recursos de SeNaSa en ODS (622.630 filas), archivos de nómina y vivienda publicados como JSON por MAP, MIVHED y MESCyT (213.465 filas entre los tres), y 7 recursos del Tribunal Constitucional que se reportaban como «una página sin archivo de datos» porque el enlace lo abre JavaScript y no un `<a href>`.
+**No todo lo publicado es alcanzable.** **561 de 1.056** recursos se pueden leer — 540 en el censo, más **21 recuperados** por 0.14.0, que valen 82.490 filas. La recuperación es exacta y no estimada, así que el desglose se mueve con ella: de los 37 que servían una página web, **19** ahora resuelven al archivo que la página enlaza, y quedan 18; de los 8 archivos ilegibles, **2** ahora se parsean, y quedan 6.
 
-El desglose que sigue es el del censo del 2026-08-08 y no se ha rebarrido completo, así que léelo como el estado anterior a esa recuperación: **360 recursos de 98 instituciones** están detrás de una configuración de sitio que rechaza descargas programáticas — la causa mayor, que no es de este servidor, y ninguna versión suya puede cambiarla. Desde una misma dirección, 21 otros hosts gubernamentales detrás del mismo CDN nos sirven con normalidad, así que es configuración por sitio y no nuestra red. Otros 85 fallaron a nivel de transporte (causa no atribuible), 37 servían una página web, 15 enlaces están muertos, 8 archivos son ilegibles, 6 tienen un CDN cuyo origen no responde y 5 dieron errores del portal. Los 32 recuperados salieron de los grupos de página y de formato ilegible; los 360 rechazos no los toca nada de esto.
+| causa | recursos | ¿puede arreglarlo este servidor? |
+|---|---:|---|
+| Configuración de sitio que rechaza descargas programáticas | **360** en 98 instituciones | No. Desde una misma dirección, 21 otros hosts gubernamentales detrás del mismo CDN nos sirven con normalidad, así que es configuración por sitio y no nuestra red. |
+| Fallo a nivel de transporte (causa no atribuible) | 85 | No establecido |
+| Sirve una página web sin ningún archivo de datos | 18 | No — fichas del catálogo que apuntan a una página de aterrizaje |
+| Enlace muerto | 15 | No |
+| Archivo ilegible | 6 | Dos son `.xls` anteriores a 2007, que necesitan un lector nuevo |
+| CDN cuyo origen no responde | 6 | No |
+| Error del portal | 5 | No |
+
+561 + 495 = 1.056. Los 360 rechazos no los toca nada de esto y ninguna versión de este servidor puede cambiarlos.
+
+**Hay una segunda recuperación que no entra en esa cuenta, y es mayor.** 0.14.0 lee además **11 archivos hermanos** — un segundo o tercer formato de un dataset cuyo representante en el censo ya estaba contado — que valen **846.388 filas**, entre ellas 622.630 del ODS de SeNaSa y los archivos de nómina y vivienda que MAP, MIVHED y MESCyT publican como JSON. Quedan fuera de los 561 a propósito: el censo mide un recurso por dataset, y contar hermanos sería compararlos contra un denominador que nunca los incluyó. Lo que significa en la práctica es que un dataset cuyo CSV es ilegible puede ahora leerse en otro formato — la [§14](#s14) explica cómo `cache.format_corrected` lo dice cuando pasa.
 
 Lo que queda **establecido**: esos sitios rechazan el acceso *programático* a sus propios datos abiertos desde la dirección medida. Lo que **no** queda establecido: que una persona con navegador en Santo Domingo sea rechazada. Esa prueba necesita un punto de salida residencial dominicano y no se ha corrido.
 
