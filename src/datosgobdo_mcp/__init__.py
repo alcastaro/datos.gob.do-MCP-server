@@ -2,7 +2,7 @@
 
 import warnings
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 USER_AGENT = f"datosgobdo-mcp/{__version__} (MCP Server)"
 
 # The mcp SDK's settings model trips a pydantic_settings warning at import
