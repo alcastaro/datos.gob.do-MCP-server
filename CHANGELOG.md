@@ -29,7 +29,20 @@ are about how the server looks from outside a language model.
   about a file is not what the file contains, and a resource attached silently
   into a prompt is exactly where that distinction gets lost.
 
-  Four prompts encode the habits the live sessions had to learn the hard way:
+  A fourth resource, `datosgobdo://guia/verificacion`, is the checking
+  protocol itself — the four fields that make a figure citable and what to do
+  when one is missing. A resource rather than a prompt because it is not a
+  request: it is the half-page a journalist keeps open beside the
+  conversation.
+
+  Six prompts encode the habits the live sessions had to learn the hard way.
+  `empezar_aqui` takes no arguments and is the one to open first: twenty-four
+  tools is not an invitation, and someone who has never seen this catalog does
+  not know that payrolls, budget execution and provincial investment are what
+  it covers best. `serie_temporal` carries the rules a time series needs here —
+  the year is a dimension and not a measure, the real coverage rarely matches
+  the title, and ordering periods as text put `MAYO` above `JUNIO` in a
+  measured session. The other four:
   `auditar_nomina` (report what the coercion excluded, the digest and the
   SQL), `verificar_fuente` (check reachability first, and never answer with a
   different file), `explorar_institucion` (separate what the catalog claims

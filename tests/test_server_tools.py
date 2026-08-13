@@ -719,6 +719,8 @@ async def test_prompts_are_served_not_just_advertised():
     prompts = await mcp.list_prompts()
     names = {p.name for p in prompts}
     assert {
+        "empezar_aqui",
+        "serie_temporal",
         "auditar_nomina",
         "verificar_fuente",
         "explorar_institucion",
@@ -794,3 +796,38 @@ def test_server_declares_its_repository_and_guidance():
     assert "never answer with a different file" in text
     assert "catalog_metadata" in text
     assert "source_sha256" in text
+
+
+async def test_empezar_aqui_takes_no_arguments():
+    """The one prompt someone with no context can open. Requiring an argument
+    would defeat it: twenty-four tools is not an invitation, and a person who
+    has never seen this catalog does not know what to type."""
+    prompts = {p.name: p for p in await mcp.list_prompts()}
+    assert not (prompts["empezar_aqui"].arguments or [])
+    rendered = await mcp.get_prompt("empezar_aqui", {})
+    text = " ".join(
+        m.content.text for m in rendered.messages if isinstance(m.content, types.TextContent)
+    )
+    assert "check_resources" in text
+
+
+async def test_serie_temporal_warns_against_summing_the_year():
+    """Treating the year as a measure is the classic failure on this catalog,
+    and string-ordering months put MAYO above JUNIO in a real session."""
+    rendered = await mcp.get_prompt("serie_temporal", {"tema": "inversión pública"})
+    text = " ".join(
+        m.content.text for m in rendered.messages if isinstance(m.content, types.TextContent)
+    )
+    assert "nunca lo sumes" in text
+    assert "MAYO" in text
+    assert "inversión pública" in text
+
+
+async def test_verification_guide_is_readable_and_names_the_four_fields():
+    resources = {str(r.uri) for r in await mcp.list_resources()}
+    assert "datosgobdo://guia/verificacion" in resources
+    contents = await mcp.read_resource("datosgobdo://guia/verificacion")
+    text = "".join(c.content for c in contents if isinstance(c.content, str))
+    for field in ("source", "source_sha256", "computation", "numeric_coercion"):
+        assert field in text
+    assert "sustitución de fuente" in text

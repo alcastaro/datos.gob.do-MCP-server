@@ -888,6 +888,68 @@ async def catalog_institutions() -> dict[str, Any]:
 
 
 @mcp.resource(
+    "datosgobdo://guia/verificacion",
+    name="Cómo verificar una cifra",
+    description="Los cuatro campos que hacen comprobable un número, y qué hacer si faltan.",
+    mime_type="text/markdown",
+)
+def verification_guide() -> str:
+    """The checking protocol, as attachable context.
+
+    A resource rather than a prompt because it is not a request: it is the
+    half-page a journalist keeps open beside the conversation. It exists
+    because the measured failure was never a fabricated number — it was a
+    correct number nobody could check, and a substituted source named once in
+    passing.
+    """
+    return """\
+# Cómo verificar una cifra de este servidor
+
+Cuatro campos. Si los cuatro cuadran, la cifra es citable; si falta alguno, no
+salió de aquí.
+
+## 1. `source` — ¿de dónde sale esto?
+
+- `file_contents` → se leyó el archivo. La cifra es del dato.
+- `catalog_metadata` → viene de la ficha del portal. Es lo que **el catálogo
+  dice** del archivo, no lo que el archivo contiene. Sirve para describir, no
+  para citar cifras.
+
+## 2. `source_sha256` — ¿es el mismo archivo?
+
+Huella de los bytes exactos que se leyeron. Dos lecturas con la misma huella
+vieron el mismo archivo, aunque estén separadas por meses o por personas
+distintas. Si el ministerio republica el archivo, la huella cambia — y así te
+enteras de que tu cifra envejeció.
+
+Una descarga truncada **no trae huella**: media huella presentada como entera
+sería peor que ninguna.
+
+## 3. `computation` — ¿cómo se calculó?
+
+El SQL que se ejecutó y cuántas filas leyó. Con esto y la huella, cualquiera
+reproduce el número. Si alguien discute la cifra, esto es lo que se le enseña.
+
+## 4. `numeric_coercion` — ¿qué quedó fuera?
+
+Las hojas de cálculo del gobierno guardan números como texto y dejan
+encabezados metidos entre los datos. Este bloque dice cuántos valores entraron,
+cuántos no, y cuáles fueron. **Una suma sin este bloque declarado no es una
+suma verificada.**
+
+## Señales de alarma
+
+- Una cifra **sin** estos campos: la escribió el modelo, no el servidor.
+- Una respuesta sobre un archivo que **no se pudo descargar**: cerca de la
+  mitad del catálogo no se descarga. Si la fuente que pediste falló y aun así
+  te dan un número, pregunta de qué archivo salió.
+- Un archivo **de otra institución o de otro periodo** que el pedido: es
+  sustitución de fuente, y ya pasó en pruebas reales — con un millón de
+  personas de diferencia.
+"""
+
+
+@mcp.resource(
     "datosgobdo://dataset/{dataset_id}",
     name="Dataset del catálogo",
     description="Metadatos de un dataset por id o slug, incluidos sus recursos.",
@@ -911,6 +973,57 @@ async def dataset_resource(dataset_id: str) -> dict[str, Any]:
 # recommending sources they never checked and citing figures without saying
 # what was excluded. Each prompt below encodes a habit that was learned the
 # hard way.
+
+
+@mcp.prompt(
+    name="empezar_aqui",
+    title="Empezar aquí — qué hay y qué puedo preguntar",
+    description="Panorama del portal y tres preguntas concretas para arrancar.",
+)
+def empezar_aqui() -> str:
+    """The first thing someone should open, and the only prompt with no
+    arguments. Twenty-four tools is not an invitation — a person who has
+    never seen this catalog does not know that payrolls, budget execution and
+    public investment are the three things it covers best."""
+    return (
+        "Preséntame el portal de datos abiertos de República Dominicana como si "
+        "no supiera nada de él.\n\n"
+        "1. Usa get_site_stats y list_organizations para decirme cuántos "
+        "datasets hay, de cuántas instituciones, y cuáles publican más.\n"
+        "2. Explícame en dos frases qué tipo de preguntas puedo responder con "
+        "esto — nóminas públicas, ejecución presupuestaria e inversión pública "
+        "por provincia son lo más completo del catálogo.\n"
+        "3. Propón tres preguntas concretas que podría hacerte a continuación, "
+        "y dime qué me daría cada una.\n\n"
+        "Advertencia que debes darme desde el principio: cerca de la mitad de "
+        "los archivos del catálogo no se pueden descargar porque el sitio de la "
+        "propia institución rechaza el acceso automático. Comprueba con "
+        "check_resources antes de recomendarme una fuente."
+    )
+
+
+@mcp.prompt(
+    name="serie_temporal",
+    title="Cómo cambió algo en el tiempo",
+    description="Serie por año declarando el periodo real y sin tratar el año como medida.",
+)
+def serie_temporal(tema: str) -> str:
+    return (
+        f"Muéstrame cómo ha cambiado {tema} en el tiempo, según los datos del "
+        "portal dominicano.\n\n"
+        "Reglas para que la serie sirva:\n"
+        "- El año es una **dimensión, no una medida**: agrupa por año, nunca lo "
+        "sumes ni lo promedies.\n"
+        "- Dime el periodo que el archivo cubre de verdad, no el que sugiere su "
+        "título; suelen no coincidir.\n"
+        "- Si el último periodo está incompleto (un año en curso, un mes a "
+        "medias), dilo antes de comparar: una caída al final casi siempre es "
+        "eso y no una tendencia.\n"
+        "- Ordena por año de forma numérica. Ordenar meses o años como texto "
+        "pone MAYO por encima de JUNIO, y ya produjo una conclusión equivocada "
+        "en una prueba real.\n\n"
+        "Cierra con la cifra por periodo y el sha256 del archivo."
+    )
 
 
 @mcp.prompt(
