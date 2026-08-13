@@ -209,6 +209,31 @@ Un servidor puede ofrecer tres tipos de cosa. La distinción importa, porque det
 | **[Resources](https://modelcontextprotocol.io/specification/2026-07-28/server/resources)** | la **aplicación** | Datos que la app puede adjuntar como contexto, direccionados por URI. Sin efectos secundarios. | 3 documentos + 1 plantilla de URI |
 | **[Prompts](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts)** | el **usuario** | Plantillas que el usuario invoca deliberadamente, normalmente como comandos de barra. | 6 flujos guiados |
 
+```mermaid
+flowchart LR
+    subgraph HOST["Tu aplicación — el host"]
+        U["Tú"] --> M["El modelo"]
+        M <--> C["Cliente MCP"]
+    end
+    subgraph SRV["datosgobdo-mcp — el servidor"]
+        T["24 tools<br/><i>las llama el modelo</i>"]
+        R["3 resources + 1 plantilla<br/><i>los adjunta la aplicación</i>"]
+        P["6 prompts<br/><i>los invocas tú</i>"]
+    end
+    C -- "JSON-RPC 2.0 sobre stdio" --> T
+    C --> R
+    C --> P
+    T --> CK["datos.gob.do<br/>API CKAN"]
+    T --> FS["273 servidores<br/>institucionales"]
+    U -. "/empezar_aqui" .-> P
+    style T fill:#E6F4EA,stroke:#34A853
+    style R fill:#FEF7E0,stroke:#FBBC04
+    style P fill:#E8F0FE,stroke:#4285F4
+```
+
+La línea punteada es lo importante: un prompt es lo único que **empiezas tú**. El
+modelo nunca invoca un prompt, y la aplicación nunca llama una tool.
+
 El protocolo define también primitivas del lado del cliente — [sampling](https://modelcontextprotocol.io/specification/2026-07-28/client/sampling), [elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation), [roots](https://modelcontextprotocol.io/specification/2026-07-28/client/roots) — que este servidor no usa.
 
 Guías de concepto: [tools](https://modelcontextprotocol.io/docs/concepts/tools), [resources](https://modelcontextprotocol.io/docs/concepts/resources), [prompts](https://modelcontextprotocol.io/docs/concepts/prompts). Si quieres construir uno, empieza por [Build a server](https://modelcontextprotocol.io/docs/develop/build-server), y lee la [Parte 3 de nuestro Tutorial](Tutorial_es.md#parte-3--construye-tu-propio-servidor-mcp-receta) para lo que este proyecto aprendió haciéndolo.
@@ -607,6 +632,54 @@ src/datosgobdo_mcp/
   netguard.py      Guardia SSRF para URLs y cada salto de redirección
   models.py        Modelos de salida Pydantic (outputSchema tipado)
   gcp.py           Herramientas opcionales del pipeline BigQuery/GCS
+```
+
+### La vida de una pregunta
+
+Qué pasa entre «¿cuántos vehículos se inscribieron en 2024?» y la respuesta.
+
+```mermaid
+flowchart TD
+    Q["Tu pregunta"] --> M["El modelo elige las tools"]
+    M --> S["search_datasets<br/><small>ckan.py</small>"]
+    S --> G["get_dataset<br/><small>ckan.py</small>"]
+    G --> SC["get_resource_schema<br/><small>analytics.py</small>"]
+    SC --> QR["query_resource<br/><small>analytics.py</small>"]
+    QR --> A["Respuesta + source_sha256 + el SQL"]
+    S -.-> CK["API CKAN<br/><i>sólo metadatos</i>"]
+    SC -.-> DL["El servidor de la institución<br/><i>el archivo de verdad</i>"]
+    style A fill:#E6F4EA,stroke:#34A853
+```
+
+Los tres primeros pasos leen el catálogo. Sólo el cuarto toca un archivo — y ése
+es el paso que ningún envoltorio de la API de CKAN puede dar aquí, porque este
+portal no tiene DataStore ([§12](#s12)).
+
+### La vida de un archivo
+
+El camino de un recurso desde la URL hasta la respuesta. **Cada rombo es un
+defecto encontrado auditando el catálogo real**, no una hipótesis.
+
+```mermaid
+flowchart TD
+    URL["URL del recurso"] --> NG{"netguard<br/>¿es una dirección segura?"}
+    NG -- no --> STOP["Rechazado"]
+    NG -- sí --> CACHE{"¿Está en la<br/>caché Parquet?"}
+    CACHE -- sí --> SQL
+    CACHE -- no --> DL["Descarga, tope de 100 MB<br/><small>download.py</small>"]
+    DL --> HTML{"¿Es una página web?"}
+    HTML -- sí --> PL["pagelink: busca el archivo<br/>que la página enlaza o abre"]
+    PL --> SNIFF
+    HTML -- no --> SNIFF{"¿Los bytes coinciden con<br/>el formato declarado?"}
+    SNIFF -- no --> FIX["Lo corrige y lo declara<br/><small>format_corrected</small>"]
+    SNIFF -- sí --> ENC["Puntúa la codificación<br/><small>A¤o → Año</small>"]
+    FIX --> ENC
+    ENC --> PQ["Parsea a Parquet<br/>+ sha256 del origen"]
+    PQ --> SQL["DuckDB ejecuta el SQL"]
+    SQL --> OUT["Respuesta + procedencia"]
+    style STOP fill:#FCE8E6,stroke:#EA4335
+    style OUT fill:#E6F4EA,stroke:#34A853
+    style FIX fill:#FEF7E0,stroke:#FBBC04
 ```
 
 ### Decisiones de diseño

@@ -197,6 +197,31 @@ A server can offer three kinds of thing. The distinction matters, because it det
 | **[Resources](https://modelcontextprotocol.io/specification/2026-07-28/server/resources)** | the **application** | Data the app can attach as context, addressed by URI. No side effects, no cost to reason about. | 3 documents + 1 URI template |
 | **[Prompts](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts)** | the **user** | Templates the user invokes deliberately, usually as slash commands. | 6 guided workflows |
 
+```mermaid
+flowchart LR
+    subgraph HOST["Your app — the host"]
+        U["You"] --> M["The model"]
+        M <--> C["MCP client"]
+    end
+    subgraph SRV["datosgobdo-mcp — the server"]
+        T["24 tools<br/><i>the model calls these</i>"]
+        R["3 resources + 1 template<br/><i>the app attaches these</i>"]
+        P["6 prompts<br/><i>you invoke these</i>"]
+    end
+    C -- "JSON-RPC 2.0 over stdio" --> T
+    C --> R
+    C --> P
+    T --> CK["datos.gob.do<br/>CKAN API"]
+    T --> FS["273 institutional<br/>web servers"]
+    U -. "/empezar_aqui" .-> P
+    style T fill:#E6F4EA,stroke:#34A853
+    style R fill:#FEF7E0,stroke:#FBBC04
+    style P fill:#E8F0FE,stroke:#4285F4
+```
+
+The dotted line is the whole point: a prompt is the one thing here **you** start.
+The model never invokes a prompt, and the application never calls a tool.
+
 The protocol also defines client-side primitives — [sampling](https://modelcontextprotocol.io/specification/2026-07-28/client/sampling), [elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation), [roots](https://modelcontextprotocol.io/specification/2026-07-28/client/roots) — which this server does not use.
 
 Concept guides: [tools](https://modelcontextprotocol.io/docs/concepts/tools), [resources](https://modelcontextprotocol.io/docs/concepts/resources), [prompts](https://modelcontextprotocol.io/docs/concepts/prompts). If you want to build one, start with [Build a server](https://modelcontextprotocol.io/docs/develop/build-server), and read [Part 3 of our Tutorial](Tutorial.md#part-3--build-your-own-mcp-server-recipe) for what this project learned doing it.
@@ -575,6 +600,54 @@ src/datosgobdo_mcp/
   netguard.py      SSRF guard for URLs and every redirect hop
   models.py        Pydantic output models (typed outputSchema)
   gcp.py           Optional BigQuery/GCS pipeline tools
+```
+
+### The life of a question
+
+What happens between "how many vehicles were registered in 2024?" and the answer.
+
+```mermaid
+flowchart TD
+    Q["Your question"] --> M["The model picks tools"]
+    M --> S["search_datasets<br/><small>ckan.py</small>"]
+    S --> G["get_dataset<br/><small>ckan.py</small>"]
+    G --> SC["get_resource_schema<br/><small>analytics.py</small>"]
+    SC --> QR["query_resource<br/><small>analytics.py</small>"]
+    QR --> A["Answer + source_sha256 + the SQL"]
+    S -.-> CK["CKAN API<br/><i>metadata only</i>"]
+    SC -.-> DL["The institution's server<br/><i>the actual file</i>"]
+    style A fill:#E6F4EA,stroke:#34A853
+```
+
+The first three steps read the catalog. Only the fourth touches a file — and
+that is the step no CKAN wrapper can do here, because this portal has no
+DataStore ([§12](#12-how-it-compares-with-other-ckan-mcp-servers)).
+
+### The life of a file
+
+The path a resource takes from URL to answer. **Every diamond is a defect found
+by auditing the real catalog**, not a hypothetical.
+
+```mermaid
+flowchart TD
+    URL["Resource URL"] --> NG{"netguard<br/>is this address safe?"}
+    NG -- no --> STOP["Refused"]
+    NG -- yes --> CACHE{"Is it in the<br/>Parquet cache?"}
+    CACHE -- yes --> SQL
+    CACHE -- no --> DL["Download, capped at 100 MB<br/><small>download.py</small>"]
+    DL --> HTML{"Is it a web page?"}
+    HTML -- yes --> PL["pagelink: find the file<br/>the page links or opens"]
+    PL --> SNIFF
+    HTML -- no --> SNIFF{"Do the bytes match<br/>the declared format?"}
+    SNIFF -- no --> FIX["Correct it and say so<br/><small>format_corrected</small>"]
+    SNIFF -- yes --> ENC["Score the encoding<br/><small>A¤o → Año</small>"]
+    FIX --> ENC
+    ENC --> PQ["Parse to Parquet<br/>+ sha256 of the source"]
+    PQ --> SQL["DuckDB runs the SQL"]
+    SQL --> OUT["Answer + provenance"]
+    style STOP fill:#FCE8E6,stroke:#EA4335
+    style OUT fill:#E6F4EA,stroke:#34A853
+    style FIX fill:#FEF7E0,stroke:#FBBC04
 ```
 
 ### Design decisions
