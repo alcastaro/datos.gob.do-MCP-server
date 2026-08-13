@@ -77,3 +77,18 @@ def test_mcp_dependency_has_upper_bound(repo_files):
     assert re.search(r'"mcp>=[\d.]+,<2"', pyproject_text), (
         "mcp dependency must keep an upper bound until the SDK v2 migration lands"
     )
+
+
+def test_security_policy_supports_the_shipping_minor():
+    """SECURITY.md's table is a claim about which code gets security fixes, and
+    nothing was checking it: the 0.14.0 bump touched pyproject, server.json and
+    __init__ — all three guarded above — and left the policy saying 0.13.x, which
+    reads as "the version you are running is unsupported".
+    """
+    policy = ROOT / "SECURITY.md"
+    if not policy.exists():
+        pytest.skip("SECURITY.md not present (installed-package run)")
+    text = policy.read_text(encoding="utf-8")
+    minor = ".".join(__version__.split(".")[:2])
+    assert f"| {minor}.x" in text, f"SECURITY.md does not list {minor}.x as supported"
+    assert f"| < {minor}" in text, f"SECURITY.md does not mark < {minor} unsupported"
