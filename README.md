@@ -59,6 +59,7 @@ This README is written to be read in order. **Part 1 needs no technical knowledg
 
 18. [Development, testing and the MCP Inspector](#18-development-testing-and-the-mcp-inspector)
 19. [Contributing, credits, how to cite, licence](#19-contributing-credits-how-to-cite-licence)
+20. [Privacy Policy](#20-privacy-policy)
 
 ---
 ---
@@ -835,3 +836,19 @@ This is a request, not a licence condition: the MIT terms are unmodified, so not
 MIT. See [LICENSE](LICENSE).
 
 Data accessed through this MCP is subject to the licence under which each Dominican institution publishes it on datos.gob.do. Verified across the catalog: **1,020 datasets are ODbL**, 15 CC-BY, 6 PDDL, 3 other public-domain terms, and **12 declare no licence at all** — those twelve should stay out of any redistribution.
+
+## 20. Privacy Policy
+
+Full text: [`docs/PRIVACY.md`](docs/PRIVACY.md) · Spanish: [`docs/PRIVACIDAD.md`](docs/PRIVACIDAD.md) · Contact: **ai@olds2030.org**
+
+**No accounts, no credentials, no telemetry.** The server has no user registry and sends nothing to its authors. Everything it reads is public government data.
+
+**Your search terms do leave your machine.** They travel to `https://datos.gob.do/api/3/action`, because that is where the search runs — the portal is operated by OGTIC under its own terms.
+
+**What it connects to.** One catalog API (`datos.gob.do`) and **273 distinct file hosts**, because institutions publish files on their own sites. Measured over the August 2026 census (1,056 resources, 258 institutions): **1,033 (97.8 %) sit on Dominican domains**; **23 do not** — 9 on `drive.google.com`, 10 across Microsoft SharePoint/Azure Blob/Office Online, 2 on Firebase. Reading one of those means Google or Microsoft sees the request. [Full inventory](docs/PRIVACY.md#3-which-systems-this-server-connects-to).
+
+**What is stored.** Downloaded public files are cached as Parquet (`~/.cache/datosgobdo-mcp`, evicted by size limit, removable with `clear_cache`). Prompts, questions and results are never stored. `save_query_to_csv` writes only where you point it.
+
+**Hosted mode.** No accounts and no prompt logging, but the cache is ephemeral container disk, operational logs include the URLs fetched, and the infrastructure provider processes connection metadata under its own policy. Filesystem tools are disabled there.
+
+**Public datasets can contain personal data** — payrolls, staff registers. The server neither enriches nor cross-references them; the responsible party is the publishing institution.

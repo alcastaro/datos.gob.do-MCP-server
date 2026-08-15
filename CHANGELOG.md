@@ -4,6 +4,37 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **A privacy policy, in both languages** — [`docs/PRIVACY.md`](docs/PRIVACY.md)
+  and [`docs/PRIVACIDAD.md`](docs/PRIVACIDAD.md), summarised as §20 of both
+  READMEs. Written because distributing this server anywhere beyond PyPI
+  requires one: an MCP Bundle is rejected outright without it, and the
+  connector directories ask for the URL up front.
+
+  Two things in it are worth knowing even if the policy itself never concerns
+  you. First, **search terms leave the machine** — `search_datasets` sends the
+  query to the CKAN API at datos.gob.do, because that is where the search runs.
+  A privacy policy claiming "nothing leaves your machine" would have been
+  false, and it is the first claim a reviewer checks.
+
+  Second, the policy answers *which systems this server touches* with a
+  measured inventory rather than a category. Over the August 2026 census —
+  1,056 resources, one per dataset, 258 institutions — resource files live on
+  **273 distinct hosts**, of which 1,033 (97.8 %) are Dominican domains and
+  **23 are not**: 9 on `drive.google.com`, 10 across Microsoft SharePoint,
+  Azure Blob Storage and Office Online, 2 on Firebase. Reading one of those
+  files means a foreign cloud provider sees the request. Neither we nor the
+  reader chose those hosts — they are where the publishing institution put the
+  file — but nobody can weigh that without being told.
+
+### Changed
+
+- `CLAUDE.md` and `.claude/` are now ignored from `.gitignore` rather than from
+  one clone's `.git/info/exclude`, which protected this machine and no other.
+
 ## [0.14.0] — 2026-08-13
 
 The version in `pyproject.toml` and `__init__.py` reads **0.14.0**, not 0.13.1,

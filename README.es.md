@@ -59,6 +59,7 @@ Este README está escrito para leerse en orden. **La Parte 1 no requiere conocim
 
 18. [Desarrollo, pruebas y el MCP Inspector](#s18)
 19. [Contribuir, créditos, cómo citar, licencia](#s19)
+20. [Política de privacidad](#s20)
 
 ---
 ---
@@ -873,3 +874,21 @@ Es una petición, no una condición de licencia: los términos MIT están sin mo
 MIT. Ver [LICENSE](LICENSE).
 
 Los datos accedidos por este MCP están sujetos a la licencia con la que cada institución dominicana los publica en datos.gob.do. Verificado en todo el catálogo: **1.020 datasets son ODbL**, 15 CC-BY, 6 PDDL, 3 con otros términos de dominio público, y **12 no declaran licencia alguna** — esos doce deberían quedar fuera de cualquier redistribución.
+
+<a id="s20"></a>
+
+## 20. Política de privacidad
+
+Texto completo: [`docs/PRIVACIDAD.md`](docs/PRIVACIDAD.md) · Inglés: [`docs/PRIVACY.md`](docs/PRIVACY.md) · Contacto: **ai@olds2030.org**
+
+**Sin cuentas, sin credenciales, sin telemetría.** El servidor no tiene registro de usuarios y no envía nada a sus autores. Todo lo que lee es dato público de gobierno.
+
+**Tus términos de búsqueda sí salen de tu máquina.** Viajan a `https://datos.gob.do/api/3/action`, porque ahí corre la búsqueda — el portal lo opera OGTIC bajo sus propios términos.
+
+**A qué se conecta.** Una API de catálogo (`datos.gob.do`) y **273 hosts de archivo distintos**, porque las instituciones publican los archivos en sus propios sitios. Medido sobre el censo de agosto de 2026 (1.056 recursos, 258 instituciones): **1.033 (97.8 %) están en dominios dominicanos**; **23 no** — 9 en `drive.google.com`, 10 repartidos entre SharePoint / Azure Blob / Office Online de Microsoft, 2 en Firebase. Leer uno de esos implica que Google o Microsoft ve la petición. [Inventario completo](docs/PRIVACIDAD.md#3-a-qué-sistemas-se-conecta-este-servidor).
+
+**Qué se guarda.** Los archivos públicos descargados se cachean como Parquet (`~/.cache/datosgobdo-mcp`, desalojado por límite de tamaño, borrable con `clear_cache`). Los prompts, preguntas y resultados nunca se guardan. `save_query_to_csv` escribe solo donde tú le indiques.
+
+**Modo hosteado.** Sin cuentas y sin registro de prompts, pero la caché es disco efímero del contenedor, los registros operativos incluyen las URLs consultadas, y el proveedor de infraestructura procesa metadatos de conexión bajo su propia política. Ahí las herramientas de sistema de archivos están desactivadas.
+
+**Los datasets públicos pueden contener datos personales** — nóminas, registros de personal. El servidor no los enriquece ni los cruza; el responsable es la institución publicadora.
