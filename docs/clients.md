@@ -71,6 +71,21 @@ Settings → MCP servers, or the JSON config:
 Antigravity does not load tool schemas into the prompt up front (it reads
 them on demand), so the server costs it almost no context.
 
+For the CLI (`agy`) there is a plugin that carries the same config:
+
+```bash
+git clone https://github.com/alcastaro/datos.gob.do-MCP-server.git
+agy plugin install datos.gob.do-MCP-server/packaging/antigravity
+```
+
+`agy plugin install` takes a **directory** — there is no install-from-URL form,
+so the clone is part of the recipe rather than a suggestion. See
+[`../packaging/antigravity/README.md`](../packaging/antigravity/README.md).
+
+The config paths, if you prefer writing them yourself, are
+`~/.gemini/config/mcp_config.json` (global) or `.agents/mcp_config.json`
+(workspace).
+
 ## Codex CLI
 
 `~/.codex/config.toml`:

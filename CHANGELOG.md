@@ -30,6 +30,29 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   reader chose those hosts — they are where the publishing institution put the
   file — but nobody can weigh that without being told.
 
+- **An Antigravity plugin** — [`packaging/antigravity/`](packaging/antigravity/),
+  validated with `agy plugin validate` (`mcpServers: 1 processed`). Running the
+  CLI rather than reading its documentation settled two things: `agy plugin
+  install` accepts a **directory only**, so the install recipe is a clone
+  followed by an install and not the one-liner the docs imply; and plugins land
+  in `~/.gemini/config/plugins/`, not the path the docs give. `docs/clients.md`
+  now says what the binary does.
+
+- **A container image and its Cloudflare wiring** —
+  [`Dockerfile`](Dockerfile) at the root, deliberately not Cloudflare-specific,
+  plus [`deploy/cloudflare/`](deploy/cloudflare/) for a Worker front door in
+  front of it. **Nothing is deployed**; these are written, reviewed and
+  unexecuted.
+
+  A Worker alone cannot host this server, and the reason is worth recording
+  because it looks like it should work: DuckDB publishes no Emscripten wheel,
+  so on Pyodide the entire analytics half of the server — seven tools — simply
+  would not exist. The Worker still earns its place as the front door, since
+  OpenAI's domain verification must be served from the same host as the MCP
+  endpoint. The image installs the base package only: with the `[gcp]` extra a
+  connector directory would sync 27 tools instead of the 24 this catalog work
+  was verified against.
+
 ### Changed
 
 - `CLAUDE.md` and `.claude/` are now ignored from `.gitignore` rather than from

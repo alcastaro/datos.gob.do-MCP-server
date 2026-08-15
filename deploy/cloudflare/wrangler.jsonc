@@ -1,0 +1,39 @@
+{
+  // Cloudflare wiring for the hosted endpoint. NOT DEPLOYED — see README.md in
+  // this directory for what has and has not been verified.
+  //
+  // The Worker is a thin front door: TLS, the domain, /.well-known/. All MCP
+  // traffic is forwarded to the container, because the analytics half of this
+  // server needs DuckDB, which has no Pyodide wheel and therefore cannot run in
+  // a Worker at all.
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "datosgobdo-mcp",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-01",
+
+  "containers": [
+    {
+      "class_name": "DatosgobdoContainer",
+      // The Dockerfile lives at the repository root so the same image can go to
+      // Cloud Run or Fly without moving. image_build_context defaults to the
+      // Dockerfile's own directory, which here must be the repo root: the build
+      // copies pyproject.toml, README.md and src/.
+      "image": "../../Dockerfile",
+      "image_build_context": "../..",
+      // `lite` is 256 MiB. DuckDB plus one government XLSX in the cache does not
+      // fit in that, so `basic` (1 GiB) is the floor, not a comfort choice.
+      "instance_type": "basic",
+      "max_instances": 5
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [{ "name": "DATOSGOBDO", "class_name": "DatosgobdoContainer" }]
+  },
+
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["DatosgobdoContainer"] }
+  ],
+
+  "observability": { "enabled": true }
+}

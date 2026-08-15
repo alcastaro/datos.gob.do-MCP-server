@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "datosgobdo": {
+      "command": "uvx",
+      "args": ["dominican-open-data-mcp"]
+    }
+  }
+}

@@ -1,0 +1,10 @@
+# The build context is the repository root, which is not a small directory: the
+# Parquet mirror alone is hundreds of files. Everything the image needs is
+# pyproject.toml, README.md and src/ — the rest only slows the build and would
+# ship internal material into an image that gets pushed to a registry.
+*
+!pyproject.toml
+!README.md
+!src/
+**/__pycache__/
+**/*.py[cod]

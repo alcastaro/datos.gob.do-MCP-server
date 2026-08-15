@@ -1,0 +1,6 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "datosgobdo",
+  "description": "Datos abiertos oficiales de República Dominicana — datos.gob.do (CKAN 2.11): 1,061 datasets de 266 instituciones, con lectura y análisis de los archivos publicados.",
+  "version": "0.14.0"
+}
