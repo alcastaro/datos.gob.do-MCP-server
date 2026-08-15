@@ -55,6 +55,12 @@ package-lock.json
 #   internal/archivo/    superseded versions
 internal/
 
+# Assistant configuration and memory. These lived only in `.git/info/exclude`,
+# which is per-clone: correct on this machine, absent on every other one and on
+# every fresh clone. A rule that protects one working copy is not a rule.
+CLAUDE.md
+.claude/
+
 # Dev harness and the data it produces. Not moved under internal/ only because
 # hundreds of relative paths inside the scripts point at these exact locations.
 sweep/
