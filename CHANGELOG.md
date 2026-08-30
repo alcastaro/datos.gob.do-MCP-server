@@ -125,6 +125,23 @@ same three resources and six prompts.
   was replaced by one that imports the package in a subprocess and asserts the
   import is quiet, whatever the cause.
 
+### Security
+
+- **Twenty-two published advisories in four transitive dependencies.**
+  `cryptography` 48.0.0, `pyjwt` 2.12.1, `python-multipart` 0.0.29 and
+  `starlette` 1.0.0 all arrive through the MCP SDK's HTTP and auth stack, not
+  through code written here. They move to 50.0.1, 2.13.0, 0.0.32 and 1.6.0;
+  `pip-audit` over the resolved tree goes from 22 findings to none, and no
+  other package in the lock moves.
+
+  Worth stating plainly where the exposure was, because the honest answer is
+  "it depends which server you are running". Under stdio — the default, and
+  what every published install uses — `starlette` and `python-multipart` never
+  execute and no JWT is ever verified. Under `streamable-http`, `starlette`
+  *is* the server answering every request. The upgrade matters most for a
+  hosted deployment and is cheap insurance for everyone else.
+
+
 ## [0.14.0] — 2026-08-13
 
 The version in `pyproject.toml` and `__init__.py` reads **0.14.0**, not 0.13.1,
