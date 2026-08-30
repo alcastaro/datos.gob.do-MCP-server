@@ -261,7 +261,7 @@ cada dataset del catálogo — y que cada uno sea direccionable:
 datosgobdo://dataset/{dataset_id}       →  datosgobdo://dataset/nomina-poder-judicial
 ```
 
-En FastMCP el placeholder del URI y el parámetro de la función solo tienen que coincidir:
+En el SDK el placeholder del URI y el parámetro de la función solo tienen que coincidir:
 
 ```python
 @mcp.resource("datosgobdo://dataset/{dataset_id}", ...)
@@ -329,7 +329,7 @@ El cliente captura ese stderr y lo escribe en un archivo — `~/Library/Logs/Cla
 
 ```
 src/datosgobdo_mcp/
-├── server.py     Entrada FastMCP — 24 decoradores @mcp.tool (la superficie pública)
+├── server.py     Entrada MCPServer — 24 decoradores @mcp.tool (la superficie pública)
 ├── ckan.py       Cliente HTTP CKAN async + escape de Solr + formateadores JSON
 ├── download.py   Descarga con tope + detección de encoding
 ├── preview.py    Parsers CSV/TSV/XLSX/JSON para la tool de preview
@@ -343,13 +343,13 @@ src/datosgobdo_mcp/
 Cada archivo tiene **una responsabilidad**. `server.py` es una capa fina de decoradores que
 delegan a la lógica real — así las tools quedan legibles y la lógica testeable.
 
-### 2.3 El patrón del decorador de tool (FastMCP)
+### 2.3 El patrón del decorador de tool
 
 Una tool es una función decorada y anotada con tipos. Las anotaciones *son* el schema que
 ve el modelo:
 
 ```python
-@mcp.tool(annotations=_ro("Search datasets"))   # title + readOnlyHint + openWorldHint
+@mcp.tool(annotations=_ro("Search datasets"))   # title + read_only_hint + open_world_hint
 async def search_datasets(
     query: Annotated[str | None, Field(description="Término de búsqueda libre…")] = None,
     limit: Annotated[int, Field(description="Resultados (1-50)", ge=1, le=50)] = 10,
@@ -359,8 +359,8 @@ async def search_datasets(
 ```
 
 Tres cosas que lee el modelo: el **docstring** (qué hace), el **`Field(description=…)`** de
-cada parámetro con sus restricciones (`ge`/`le`/enum), y las **annotations** (`readOnlyHint`
-deja que un host auto-apruebe; `destructiveHint` dispara un diálogo de confirmación).
+cada parámetro con sus restricciones (`ge`/`le`/enum), y las **annotations** (`read_only_hint`
+deja que un host auto-apruebe; `destructive_hint` dispara un diálogo de confirmación).
 
 ### 2.4 Por qué DuckDB + Parquet (el motor de analytics)
 
@@ -417,7 +417,7 @@ de headers.
 ### 2.7 Salida tipada (la capa `models.py`)
 
 Devolver un `dict` pelado no le da schema al host. Devolver un **modelo Pydantic** hace que
-FastMCP emita un `outputSchema` + `structuredContent` real, para que los hosts validen. El
+el SDK emita un `outputSchema` + `structuredContent` real, para que los hosts validen. El
 truco para datos variables: `model_config = ConfigDict(extra="allow")` mantiene las claves
 dinámicas (como percentiles `p25`/`p50`) fluyendo mientras tipa el sobre conocido.
 
@@ -450,13 +450,16 @@ Acá está el camino que tomó este proyecto, generalizado.
 
 Empieza local; la capa de analytics se porta directo a remoto después.
 
-### Paso 2 — Scaffold con FastMCP
+### Paso 2 — Scaffold del servidor
 
 ```python
-from mcp.server.fastmcp import FastMCP
-mcp = FastMCP("my-server")
+from mcp.server import MCPServer
 
-@mcp.tool(annotations={"title": "Search", "readOnlyHint": True, "openWorldHint": True})
+# Se llamaba FastMCP, en mcp.server.fastmcp, antes del SDK 2.0. El módulo
+# anterior se eliminó en vez de marcarse obsoleto: fija el major que uses.
+mcp = MCPServer("my-server", version="0.1.0")
+
+@mcp.tool(annotations={"title": "Search", "read_only_hint": True, "open_world_hint": True})
 async def search(query: str) -> dict:
     """Busca en el catálogo. Devuelve hasta 10 resultados."""
     return await my_client.search(query)
@@ -478,7 +481,7 @@ Lee las reglas de diseño de tools horneadas en este proyecto:
 
 1. **Schemas ajustados.** `Field(ge=1, le=50)`, `Literal["head","tail","random"]` — cada restricción es una llamada mala menos.
 2. **Las descripciones son el contrato.** Di qué hace, qué devuelve, y *qué no hace* (para que el modelo elija la tool hermana correcta).
-3. **Annotations obligatorias.** `readOnlyHint`, `destructiveHint`, `title` — son pass/fail para el Anthropic Directory y manejan la UX de auto-aprobación.
+3. **Annotations obligatorias.** `read_only_hint`, `destructive_hint`, `title` — son pass/fail para el Anthropic Directory y manejan la UX de auto-aprobación.
 4. **Separación read/write.** Una tool o es read-only o muta — nunca ambas.
 5. **≤ ~30 tools.** Cada schema cuesta tokens de contexto en cada turno. Pasando ~30, cambia a un par `search_actions` + `execute_action`.
 

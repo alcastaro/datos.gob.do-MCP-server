@@ -82,29 +82,29 @@ def hosted_server(tmp_path_factory):
 async def test_hosted_transport_completes_a_session(hosted_server):
     """Connect, negotiate, and list tools over HTTP — the thing no test did."""
     async with (
-        streamable_http_client(hosted_server) as (read, write, _),
+        streamable_http_client(hosted_server) as (read, write),
         ClientSession(read, write) as session,
     ):
         init = await session.initialize()
-        assert init.serverInfo.name == "datosgobdo-mcp"
+        assert init.server_info.name == "datosgobdo-mcp"
         tools = await session.list_tools()
         assert len(tools.tools) == 24
-        assert all(t.outputSchema for t in tools.tools)
+        assert all(t.output_schema for t in tools.tools)
 
 
 async def test_hosted_reports_its_own_transport(hosted_server):
     async with (
-        streamable_http_client(hosted_server) as (read, write, _),
+        streamable_http_client(hosted_server) as (read, write),
         ClientSession(read, write) as session,
     ):
         await session.initialize()
         result = await session.call_tool("get_cache_stats", {})
-        info = (result.structuredContent or {})["server"]
+        info = (result.structured_content or {})["server"]
         assert info["transport"] == "streamable-http"
         # A remote caller must not learn where the server keeps its files. The
         # key survives because the response model declares it; what matters is
         # that it carries no path.
-        assert (result.structuredContent or {})["cache_dir"] is None
+        assert (result.structured_content or {})["cache_dir"] is None
 
 
 async def test_local_filesystem_tools_are_refused_over_http(hosted_server):
@@ -113,7 +113,7 @@ async def test_local_filesystem_tools_are_refused_over_http(hosted_server):
     is the first test to confirm it through the transport rather than by
     calling the function with an env var set."""
     async with (
-        streamable_http_client(hosted_server) as (read, write, _),
+        streamable_http_client(hosted_server) as (read, write),
         ClientSession(read, write) as session,
     ):
         await session.initialize()
@@ -122,21 +122,21 @@ async def test_local_filesystem_tools_are_refused_over_http(hosted_server):
             ("clear_cache", {}),
         ):
             result = await session.call_tool(name, args)
-            body = result.structuredContent or {}
+            body = result.structured_content or {}
             assert body.get("error") == "This tool is disabled in hosted mode", name
             # And it is flagged, so a caller that is not a model can tell.
-            assert result.isError is True, name
+            assert result.is_error is True, name
 
 
 async def test_hosted_serves_resources_and_prompts_too(hosted_server):
     async with (
-        streamable_http_client(hosted_server) as (read, write, _),
+        streamable_http_client(hosted_server) as (read, write),
         ClientSession(read, write) as session,
     ):
         await session.initialize()
         assert len((await session.list_prompts()).prompts) == 6
         assert len((await session.list_resources()).resources) == 3
-        assert len((await session.list_resource_templates()).resourceTemplates) == 1
+        assert len((await session.list_resource_templates()).resource_templates) == 1
 
 
 async def test_stateless_mode_serves_independent_sessions(hosted_server):
@@ -144,11 +144,11 @@ async def test_stateless_mode_serves_independent_sessions(hosted_server):
     session must not depend on anything the first one left behind."""
     for _ in range(2):
         async with (
-            streamable_http_client(hosted_server) as (read, write, _),
+            streamable_http_client(hosted_server) as (read, write),
             ClientSession(read, write) as session,
         ):
             init = await session.initialize()
-            assert init.serverInfo.version
+            assert init.server_info.version
 
 
 async def test_unknown_path_is_not_the_mcp_endpoint(hosted_server):

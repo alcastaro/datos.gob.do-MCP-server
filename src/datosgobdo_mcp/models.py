@@ -1,6 +1,6 @@
 """Pydantic response models for typed MCP output (outputSchema / structuredContent).
 
-These wrap the dict returns of the data-producing tools so FastMCP can emit a
+These wrap the dict returns of the data-producing tools so the SDK can emit a
 real `outputSchema` and `structuredContent`, letting hosts validate results.
 
 Design:

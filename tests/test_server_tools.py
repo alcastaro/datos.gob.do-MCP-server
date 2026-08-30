@@ -1,6 +1,6 @@
 """Hermetic tests for the @mcp.tool wrapper functions in server.py.
 
-FastMCP's @mcp.tool() registers the function and returns the original, so the
+The SDK's @mcp.tool() registers the function and returns the original, so the
 wrappers are directly awaitable. Each test monkeypatches the underlying
 implementation (ckan.* / analytics underscore aliases / preview) with a
 recording stub, then asserts:
@@ -516,7 +516,7 @@ def test_clear_cache_wraps_model(monkeypatch):
 
 # ─── Organizations / groups / tags / autocomplete (named listings) ────────────
 #
-# These four used to return bare lists, which FastMCP serialises as one content
+# These four used to return bare lists, which the SDK serialises as one content
 # block per element: two hundred blocks for two hundred tags, and a payload the
 # schema calls `result`. A client that assumed the shape of search_datasets — one
 # object — read content[0] and saw a single institution. Each now answers as one
@@ -613,16 +613,16 @@ async def test_autocomplete_echoes_what_was_asked_for(monkeypatch):
 
 
 async def test_every_tool_declares_an_output_schema():
-    """An unparameterised `-> dict` return annotation makes FastMCP skip the
-    outputSchema, and the tool then answers with text and `structuredContent`
+    """An unparameterised `-> dict` return annotation makes the SDK skip the
+    output schema, and the tool then answers with text and `structuredContent`
     null. Eleven tools — the whole discovery and catalog surface, which is the
     entry point of every conversation — were in that state, so a client on the
     structured path got nothing back from them."""
     from datosgobdo_mcp.server import mcp
 
     tools = await mcp.list_tools()
-    missing = [t.name for t in tools if not t.outputSchema]
-    assert not missing, f"tools without outputSchema: {missing}"
+    missing = [t.name for t in tools if not t.output_schema]
+    assert not missing, f"tools without output_schema: {missing}"
 
 
 async def test_the_schemas_carry_no_generated_boilerplate():
@@ -639,10 +639,10 @@ async def test_the_schemas_carry_no_generated_boilerplate():
 
     tools = await mcp.list_tools()
     for tool in tools:
-        schema = dict(getattr(tool, "outputSchema", None) or {})
+        schema = dict(getattr(tool, "output_schema", None) or {})
         if not schema:
             continue
-        # FastMCP names the wrapper it synthesises for tools returning a plain
+        # The SDK names the wrapper it synthesises for tools returning a plain
         # dict ("get_datasetDictOutput"). That one is the framework's and costs
         # ~40 bytes; what this test guards is the per-field boilerplate inside
         # our own result models.
@@ -678,47 +678,40 @@ async def test_the_tool_list_stays_under_its_context_budget():
     assert total < 42_000, f"the tool list grew to {total:,} bytes"
 
 
-def test_sdk_settings_warning_is_filtered_whoever_it_is_attributed_to():
-    """The mcp SDK's settings model trips a pydantic_settings warning at import
-    on some versions ("Field 'lifespan' has an incomplete definition…"). Our
-    __init__ installs a filter before anything imports mcp.
+def test_importing_the_package_emits_no_warnings():
+    """A warning on import is the first thing a new user sees, and they read it
+    as the cause of whatever brought them to support.
 
-    This test used to pin the attributed module to `pydantic_settings.*`, and so
-    did the filter — and a Windows tester still saw the warning on their first
-    run. `module` is matched against the module a warning is *attributed* to,
-    which follows the stacklevel the emitting library passes; here that is the mcp
-    module defining the settings class. The synthetic warning was attributed by
-    hand, so code and test agreed with each other rather than with a real start-up.
-    Both attributions are now exercised.
+    Until v2 this was a filter, not a test: the mcp v1 settings model tripped a
+    pydantic_settings warning ("Field 'lifespan' has an incomplete definition…")
+    that `__init__` suppressed by message. Two rounds were spent on *how* to
+    match it — a Windows tester saw it anyway, because the earlier filter also
+    pinned `module=pydantic_settings.*` and `module` matches where a warning is
+    attributed, which follows the emitting library's stacklevel. mcp 2.x no
+    longer emits it, so the filter went with the SDK that needed it rather than
+    staying on as a suppression nobody could evaluate. What replaces it is this:
+    an import in a clean interpreter, asserted quiet, whatever the cause.
     """
-    import warnings
+    import subprocess
+    import sys
 
-    import datosgobdo_mcp  # noqa: F401 — installs the filter
-
-    lifespan_message = (
-        "Field 'lifespan' has an incomplete definition: its annotation contains "
-        "an unresolved forward reference, so settings sources may fail."
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-W",
+            "always",
+            "-c",
+            "import warnings\n"
+            "with warnings.catch_warnings(record=True) as seen:\n"
+            "    warnings.simplefilter('always')\n"
+            "    import datosgobdo_mcp.server  # noqa: F401\n"
+            "print([str(w.message) for w in seen])",
+        ],
+        capture_output=True,
+        text=True,
     )
-    for attributed_to, filename in (
-        ("pydantic_settings.sources.utils", "pydantic_settings/sources/utils.py"),
-        ("mcp.server.fastmcp.server", "mcp/server/fastmcp/server.py"),
-    ):
-        with warnings.catch_warnings(record=True) as seen:
-            # catch_warnings(record=True) resets filters; re-apply the package's.
-            warnings.filterwarnings(
-                "ignore",
-                message=r".*'lifespan' has an incomplete definition.*",
-            )
-            warnings.warn_explicit(
-                lifespan_message, UserWarning, filename, 47, module=attributed_to
-            )
-            # An unrelated warning from the same place must NOT be hidden with it.
-            warnings.warn_explicit(
-                "some other future warning", UserWarning, filename, 48, module=attributed_to
-            )
-        messages = [str(w.message) for w in seen]
-        assert not any("lifespan" in m for m in messages), attributed_to
-        assert any("other future warning" in m for m in messages), attributed_to
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip().endswith("[]"), f"import emitted warnings: {proc.stdout}"
 
 
 def test_cache_stats_carries_server_identity(monkeypatch, tmp_cache_dir):
@@ -763,7 +756,7 @@ async def test_resources_are_served_not_just_advertised():
 
 async def test_dataset_resource_template_is_registered():
     templates = await mcp.list_resource_templates()
-    assert any("datosgobdo://dataset/{dataset_id}" == t.uriTemplate for t in templates)
+    assert any("datosgobdo://dataset/{dataset_id}" == t.uri_template for t in templates)
 
 
 async def test_prompts_are_served_not_just_advertised():
@@ -804,31 +797,50 @@ async def test_verificar_fuente_prompt_forbids_source_substitution():
 async def test_domain_error_sets_is_error_and_keeps_payload():
     """A reply carrying {"error": ...} must arrive flagged, so anything that is
     not a language model can tell a failure from a success — while keeping the
-    structured hint the SDK's own error path would have thrown away."""
-    result = await mcp._mcp_server.request_handlers[types.CallToolRequest](
-        types.CallToolRequest(
-            method="tools/call",
-            params=types.CallToolRequestParams(
-                name="get_resource_schema",
-                arguments={"url": "https://example.test/x.csv", "format": "parquet"},
-            ),
-        )
+    structured hint the SDK's own error path would have thrown away.
+
+    Reaches the handler the way the dispatcher does. In v1 that meant looking
+    up a whole `CallToolRequest` in `request_handlers` and unwrapping a
+    `ServerResult`; v2 hands the registered handler already-validated params
+    and gets a `CallToolResult` straight back. `ctx` is the per-request context
+    the SDK builds for tools that ask for one — none of ours do, so None is
+    what the tools under test actually see.
+    """
+    entry = mcp._lowlevel_server.get_request_handler("tools/call")
+    result = await entry.handler(
+        None,
+        types.CallToolRequestParams(
+            name="get_resource_schema",
+            arguments={"url": "https://example.test/x.csv", "format": "parquet"},
+        ),
     )
-    call = result.root
-    assert call.isError is True
-    assert call.structuredContent["error"]
+    assert result.is_error is True
+    assert result.structured_content["error"]
 
 
 async def test_successful_call_is_not_flagged(tmp_cache_dir):
-    result = await mcp._mcp_server.request_handlers[types.CallToolRequest](
-        types.CallToolRequest(
-            method="tools/call",
-            params=types.CallToolRequestParams(name="get_cache_stats", arguments={}),
-        )
+    entry = mcp._lowlevel_server.get_request_handler("tools/call")
+    result = await entry.handler(
+        None,
+        types.CallToolRequestParams(name="get_cache_stats", arguments={}),
     )
-    call = result.root
-    assert call.isError is False
-    assert call.structuredContent["server"]["name"] == "datosgobdo-mcp"
+    assert result.is_error is False
+    assert result.structured_content["server"]["name"] == "datosgobdo-mcp"
+
+
+async def test_a_null_error_field_is_not_a_failure(tmp_cache_dir):
+    """Every result model carries an `error` field, so a success serialises as
+    `{"error": null, ...}`. Testing truthiness rather than key presence is what
+    keeps the patch from flagging every successful call as failed — which is
+    the one way this could be worse than not having it at all."""
+    entry = mcp._lowlevel_server.get_request_handler("tools/call")
+    result = await entry.handler(
+        None,
+        types.CallToolRequestParams(name="get_cache_stats", arguments={}),
+    )
+    assert "error" in result.structured_content
+    assert result.structured_content["error"] is None
+    assert result.is_error is False
 
 
 # ─── Server identity and guidance (v0.13.0) ──────────────────────────────────
@@ -838,7 +850,7 @@ def test_server_declares_its_repository_and_guidance():
     """serverInfo carried a name and a version and nothing else — no link back
     to the project, and no word to an agent about how this catalog behaves.
     instructions reach every client at connect and cost nothing per call."""
-    server = mcp._mcp_server
+    server = mcp._lowlevel_server
     assert server.website_url == "https://github.com/alcastaro/datos.gob.do-MCP-server"
     assert server.version == __version__
     text = server.instructions or ""

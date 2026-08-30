@@ -48,12 +48,14 @@ def test_user_agent_carries_package_version():
 def test_serverinfo_reports_package_version_not_sdk_version():
     """serverInfo.version must be the package version.
 
-    FastMCP takes no `version` argument, so the low-level server defaulted to
-    the installed mcp SDK version and clients saw e.g. "1.27.1" as our version.
+    The v1 SDK's server class took no `version` argument, so the low-level
+    server defaulted to the installed mcp SDK version and clients saw e.g.
+    "1.27.1" as our version. v2 takes it in the constructor; this test is what
+    says the constructor is actually being given it.
     """
     from datosgobdo_mcp.server import mcp
 
-    opts = mcp._mcp_server.create_initialization_options()
+    opts = mcp._lowlevel_server.create_initialization_options()
     assert opts.server_version == __version__
 
 
@@ -71,11 +73,20 @@ def test_console_scripts_include_pypi_named_alias(repo_files):
         ), f"missing console script: {name}"
 
 
-def test_mcp_dependency_has_upper_bound(repo_files):
-    """mcp 2.x removed `mcp.server.fastmcp`; an unbounded pin breaks installs."""
+def test_mcp_dependency_is_pinned_to_the_major_this_code_targets(repo_files):
+    """Both ends of the mcp pin are load-bearing, and each has already broken
+    an install once.
+
+    The upper bound came first: v2 renamed the server class and deleted the
+    old module outright, so an unbounded pin silently upgraded fresh installs
+    into an ImportError. This code is now written against v2, which makes the
+    lower bound just as sharp in the other direction — on 1.x the import fails
+    on the first line of server.py. A pin naming one major is the only honest
+    description of a package that works on exactly one.
+    """
     pyproject_text, _ = repo_files
-    assert re.search(r'"mcp>=[\d.]+,<2"', pyproject_text), (
-        "mcp dependency must keep an upper bound until the SDK v2 migration lands"
+    assert re.search(r'"mcp>=2\.\d+(\.\d+)?,<3"', pyproject_text), (
+        "mcp dependency must pin to the 2.x major this code is written against"
     )
 
 

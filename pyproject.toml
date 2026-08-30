@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dominican-open-data-mcp"
-version = "0.14.0"
+version = "0.15.0"
 description = "MCP server for datos.gob.do — Dominican Republic open government data portal (CKAN 2.11)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,11 +27,12 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    # Upper bound is deliberate: mcp 2.0 (2026-07-28 spec) renamed FastMCP to
-    # MCPServer and removed mcp.server.fastmcp with no shim. Migrating to the
-    # v2 SDK is tracked separately; until then an unbounded pin breaks every
-    # fresh install. Do NOT relax without running the suite against 2.x.
-    "mcp>=1.9.0,<2",
+    # This server is written against the v2 SDK (2026-07-28 spec), where the
+    # class is MCPServer and mcp.server.fastmcp no longer exists. There is no
+    # shim in either direction, so the lower bound is as load-bearing as the
+    # upper one: on mcp 1.x the import fails outright. Do NOT widen either end
+    # without running the suite against the version you are widening to.
+    "mcp>=2.1,<3",
     "httpx>=0.27",
     "openpyxl>=3.1",
     "duckdb>=1.0",

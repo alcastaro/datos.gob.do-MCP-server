@@ -243,7 +243,7 @@ What this server declares on connection, verified over a live session on 2026-08
 
 `listChanged: false` and `subscribe: false` are honest declarations, not omissions: the tool list is fixed at startup, and no resource here changes often enough to be worth a subscription.
 
-> **On the two version numbers.** The spec links above point to `2026-07-28`, the current specification, because that is what you should read. The server negotiates **`2025-11-25`** because it pins `mcp>=1.9.0,<2` — SDK 2.0 renamed `FastMCP` to `MCPServer` and dropped the old import path with no shim. What 2026-07-28 adds and this server therefore does not implement: [`server/discover`](https://modelcontextprotocol.io/specification/2026-07-28/server/discover), the per-request `_meta` fields, and per-request log levels. Migration is tracked, not accidental.
+> **On the two version numbers.** The spec links above point to `2026-07-28`, the current specification. The server negotiates **`2025-11-25`**, and moving to the v2 SDK in 0.15.0 did not change that — measured on a real handshake, not read off a constant. `2026-07-28` did not mint a new handshake string: `2025-11-25` is the newest version the SDK will negotiate, on v1 and v2 alike. What the v2 SDK changes is the API this server is written against (`FastMCP` became `MCPServer`, and the old import path was deleted rather than deprecated), which is why the pin is now `mcp>=2.1,<3` with both ends load-bearing — on mcp 1.x this code no longer imports at all.
 
 ## 7. What is datos.gob.do?
 
@@ -452,7 +452,7 @@ uvx --from dominican-open-data-mcp datosgobdo-mcp
 
 `uvx` downloads the package, builds an isolated venv and runs it. First run takes seconds; later runs are instant.
 
-> **Upgrading from ≤ 0.7.0?** Those releases pinned `mcp>=1.9.0` with no upper bound, and MCP Python SDK 2.0 (2026-07-28) removed the `mcp.server.fastmcp` import path — a fresh install fails with `ModuleNotFoundError`. Install 0.7.1 or later, or pin it yourself: `uvx --with "mcp<2" --from dominican-open-data-mcp datosgobdo-mcp`.
+> **Upgrading from ≤ 0.7.0?** Those releases pinned `mcp>=1.9.0` with no upper bound, and MCP Python SDK 2.0 (2026-07-28) removed the `mcp.server.fastmcp` import path — a fresh install fails with `ModuleNotFoundError`. Install 0.15.0 or later, which is written against the v2 SDK and pins `mcp>=2.1,<3`. To stay on an older release, pin the SDK yourself: `uvx --with "mcp<2" --from dominican-open-data-mcp datosgobdo-mcp`.
 
 ### Option B — `uvx` from GitHub (development version)
 
@@ -589,7 +589,7 @@ The default is deliberately **not** a host allowlist: as [§7](#7-what-is-datosg
 
 ```
 src/datosgobdo_mcp/
-  server.py        FastMCP server: 24 tools, 3 resources, 1 template, 6 prompts
+  server.py        MCPServer: 24 tools, 3 resources, 1 template, 6 prompts
   ckan.py          CKAN client: requests, Solr escaping, formatters, provenance
   analytics.py     DuckDB layer: typed query builders, coercion, SQL validation
   download.py      Capped streaming download, fetch headers, encoding detection
@@ -653,7 +653,7 @@ flowchart TD
 
 ### Design decisions
 
-- **FastMCP over the low-level SDK.** Tools are functions decorated with `@mcp.tool()` and typed via Pydantic: less boilerplate, automatic argument validation.
+- **`MCPServer` over the low-level SDK.** Tools are functions decorated with `@mcp.tool()` and typed via Pydantic: less boilerplate, automatic argument validation. (This class was called `FastMCP` before SDK 2.0.)
 - **DuckDB + Parquet instead of pandas.** Columnar cache, SQL engine, streaming from disk. A 94 MB payroll answers grouped aggregations in under a second warm, and memory stays bounded.
 - **The cache key includes the parser build** — package version plus DuckDB's, because DuckDB's sniffer decides column types. A parser upgrade must not serve types inferred by the old one.
 - **DataStore is absent, so files are parsed client-side.** See [§12](#12-how-it-compares-with-other-ckan-mcp-servers). This is the single decision the rest of the architecture follows from.
@@ -666,7 +666,7 @@ flowchart TD
 
 ### Stack
 
-[`mcp`](https://pypi.org/project/mcp/) (official Python SDK, FastMCP) · [`duckdb`](https://duckdb.org/) · [`httpx`](https://www.python-httpx.org/) · [`openpyxl`](https://openpyxl.readthedocs.io/) (read-only streaming XLSX) · [`pydantic`](https://docs.pydantic.dev/) · stdlib `csv`, `json`, `xml.etree` (streaming ODS).
+[`mcp`](https://pypi.org/project/mcp/) (official Python SDK v2, `MCPServer`) · [`duckdb`](https://duckdb.org/) · [`httpx`](https://www.python-httpx.org/) · [`openpyxl`](https://openpyxl.readthedocs.io/) (read-only streaming XLSX) · [`pydantic`](https://docs.pydantic.dev/) · stdlib `csv`, `json`, `xml.etree` (streaming ODS).
 
 ## 17. Measured limitations
 

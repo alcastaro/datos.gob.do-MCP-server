@@ -13,9 +13,9 @@ import sys
 from typing import Annotated, Any, Literal
 
 from mcp import types
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer, ServerRequestContext
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from . import __version__, ckan, reachability
 from .analytics import (
@@ -110,32 +110,35 @@ SQL that ran. Pass those on: they are what make a figure checkable.
 Start with search_datasets, then get_resource_schema before analysing.\
 """
 
-mcp = FastMCP(
+mcp = MCPServer(
     "datosgobdo-mcp",
     instructions=INSTRUCTIONS,
     website_url=REPOSITORY_URL,
+    # Without this the low-level server falls back to the installed SDK's own
+    # version, so clients read the SDK version in serverInfo and no version of
+    # this package appears anywhere on the wire. In the v1 SDK the constructor
+    # took no `version`, and it had to be assigned onto the low-level server
+    # after the fact; v2 accepts it here, which is the whole of that fix.
+    version=__version__,
 )
-# FastMCP has no `version` constructor arg; the low-level server falls back to
-# the installed mcp SDK version, so clients saw the SDK version in serverInfo.
-mcp._mcp_server.version = __version__
 # `Implementation.title` exists in the schema but this SDK version never fills
 # it in, so setting it here would be dead code that reads like a feature.
 
 
 # ─── Tool annotations ─────────────────────────────────────────────────────────
-# Anthropic Directory review criteria require title + readOnlyHint, plus
-# destructiveHint for any mutating tool. None of these tools write to the
+# Anthropic Directory review criteria require title + read_only_hint, plus
+# destructive_hint for any mutating tool. None of these tools write to the
 # portal; the only mutation is clearing the local Parquet cache.
 
 
 def _ro(title: str) -> ToolAnnotations:
     """Read-only tool that reaches the network (live datos.gob.do / file URLs)."""
-    return ToolAnnotations(title=title, readOnlyHint=True, openWorldHint=True)
+    return ToolAnnotations(title=title, read_only_hint=True, open_world_hint=True)
 
 
 def _ro_local(title: str) -> ToolAnnotations:
     """Read-only tool that touches only local state (no network)."""
-    return ToolAnnotations(title=title, readOnlyHint=True, openWorldHint=False)
+    return ToolAnnotations(title=title, read_only_hint=True, open_world_hint=False)
 
 
 # ─── Search and discovery ────────────────────────────────────────────────
@@ -608,9 +611,9 @@ async def detect_outliers_resource(
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Save query result to CSV",
-        readOnlyHint=False,
-        destructiveHint=False,
-        openWorldHint=True,
+        read_only_hint=False,
+        destructive_hint=False,
+        open_world_hint=True,
     )
 )
 async def save_query_to_csv(
@@ -761,10 +764,10 @@ def get_cache_stats() -> CacheStatsResult:
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Clear analytics cache",
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     )
 )
 def clear_cache() -> ClearCacheResult:
@@ -780,7 +783,7 @@ def clear_cache() -> ClearCacheResult:
 def _listing(items: list[Any], name: str, **extra: Any) -> dict[str, Any]:
     """Wrap a catalog listing so it answers in one piece.
 
-    Returning a bare list makes FastMCP emit one content block per element —
+    Returning a bare list makes the SDK emit one content block per element —
     two hundred blocks for two hundred tags — and name the payload `result` in
     the output schema, which tells a model nothing about what it is holding. A
     client that reasonably assumed the shape of `search_datasets`, a single
@@ -1145,8 +1148,8 @@ def cruzar_fuentes(tema: str) -> str:
 # ─── Failed calls are marked as failed ───────────────────────────────────────
 
 
-def _mark_domain_errors(server: FastMCP) -> None:
-    """Set `isError` on replies that carry an error, keeping their payload.
+def _mark_domain_errors(server: MCPServer) -> None:
+    """Set `is_error` on replies that carry an error, keeping their payload.
 
     This server answers a failed call with a normal result whose body is
     `{"error": ..., "hint": ...}`. That was deliberate and it serves an
@@ -1156,35 +1159,47 @@ def _mark_domain_errors(server: FastMCP) -> None:
     Inspector, an unknown tool exits 5 while our own "Column not found" exits
     0, so a CI pipeline chaining on `&&` walks straight past a failure.
 
-    The SDK offers no way to have both: its success path hardcodes
-    `isError=False`, and its error path builds a fresh result that drops
-    `structuredContent` entirely. So the reply is amended after the fact —
-    same content, same structured payload, correct flag. The test suite pins
-    the assumption, so an SDK that changes shape fails loudly here rather than
-    silently reverting the behaviour.
-    """
-    handlers = server._mcp_server.request_handlers
-    original = handlers.get(types.CallToolRequest)
-    if original is None:  # pragma: no cover — registered by FastMCP at init
-        return
+    The SDK offers no way to have both, and the v2 rewrite did not change that:
+    verified against mcp 2.1.1, the success path still hardcodes
+    `is_error=False` whatever the body says, and the error path still builds a
+    fresh `CallToolResult` from `str(exc)` that carries no `structured_content`
+    at all. So this stays a patch, ported rather than deleted — same content,
+    same structured payload, correct flag.
 
-    async def handler(req: types.CallToolRequest) -> types.ServerResult:
-        result = await original(req)
-        call = result.root
-        if not isinstance(call, types.CallToolResult) or call.isError:
+    What did change is how it attaches. v1 reached into the low-level server's
+    `request_handlers`, a public dict keyed by request *type*. v2 keys handlers
+    by method string behind a private dict and exposes the pair
+    `get_request_handler` / `add_request_handler`, so the wrapping is done
+    through supported API instead of by mutating someone's attribute. The
+    handler contract changed with it: it now receives the already-validated
+    params and returns a `CallToolResult` directly, rather than taking a whole
+    request and returning a `ServerResult` that must be unwrapped.
+
+    The test suite pins the assumption, so an SDK that changes shape fails
+    loudly here rather than silently reverting the behaviour.
+    """
+    low = server._lowlevel_server
+    entry = low.get_request_handler("tools/call")
+    if entry is None:  # pragma: no cover — registered by MCPServer at init
+        return
+    original = entry.handler
+
+    async def handler(
+        ctx: ServerRequestContext[Any, Any], params: BaseModel
+    ) -> BaseModel | dict[str, Any] | None:
+        result = await original(ctx, params)
+        if not isinstance(result, types.CallToolResult) or result.is_error:
             return result
-        body = call.structuredContent
+        body = result.structured_content
         if isinstance(body, dict) and body.get("error"):
-            return types.ServerResult(
-                types.CallToolResult(
-                    content=call.content,
-                    structuredContent=body,
-                    isError=True,
-                )
+            return types.CallToolResult(
+                content=result.content,
+                structured_content=body,
+                is_error=True,
             )
         return result
 
-    handlers[types.CallToolRequest] = handler
+    low.add_request_handler("tools/call", entry.params_type, handler)
 
 
 _mark_domain_errors(mcp)
@@ -1269,10 +1284,18 @@ def main() -> (
             # Hosted mode: HTTP transport, stateless so instances can scale
             # horizontally. save_query_to_csv / clear_cache are auto-disabled
             # (see _hosted_mode) and cache stats omit server paths.
-            mcp.settings.host = os.environ.get("DATOSGOBDO_HOST", "127.0.0.1")
-            mcp.settings.port = int(os.environ.get("DATOSGOBDO_PORT", "8000"))
-            mcp.settings.stateless_http = True
-            mcp.run(transport="streamable-http")
+            # v1 carried host/port/stateless_http on `mcp.settings`; in v2 the
+            # settings object holds none of them and they are transport keyword
+            # arguments instead. Setting the old attributes still "worked" —
+            # pydantic accepted them and nothing read them — so the server would
+            # have bound 127.0.0.1:8000 statefully whatever the operator asked
+            # for, which is a silent misconfiguration, not a crash.
+            mcp.run(
+                transport="streamable-http",
+                host=os.environ.get("DATOSGOBDO_HOST", "127.0.0.1"),
+                port=int(os.environ.get("DATOSGOBDO_PORT", "8000")),
+                stateless_http=True,
+            )
         elif transport == "stdio":
             mcp.run()
         else:

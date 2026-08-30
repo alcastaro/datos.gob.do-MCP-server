@@ -6,6 +6,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-08-30
+
+Migrated to the **MCP Python SDK v2** (the 2026-07-28 spec). This is why the
+release is a minor bump and not a patch: the dependency pin moves from
+`mcp>=1.9.0,<2` to `mcp>=2.1,<3`, and there is no shim in either direction — on
+mcp 1.x this code no longer imports at all. Nothing about the tool surface
+changes for a client. Twenty-four tools, the same names, the same schemas, the
+same three resources and six prompts.
+
 ### Added
 
 - **A privacy policy, in both languages** — [`docs/PRIVACY.md`](docs/PRIVACY.md)
@@ -55,8 +64,66 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Changed
 
+- **The negotiated protocol version does *not* move, and the README now says
+  so from a measurement.** The note there used to explain that the server
+  negotiated `2025-11-25` "because it pins `mcp>=1.9.0,<2`", which read as a
+  promise that lifting the pin would lift the version. It does not: checked on
+  a real handshake against the v2 SDK, the server still negotiates
+  `2025-11-25`, because `2026-07-28` revised the specification without minting
+  a new handshake identifier and `2025-11-25` remains the newest version the
+  SDK will negotiate either side of the major. The SDK major and the protocol
+  version are independent, and the old wording implied they were not.
+
+- **`FastMCP` is now `MCPServer`** — `mcp.server.fastmcp` was removed outright
+  rather than deprecated, so every import, type annotation and docstring
+  naming it was rewritten. The tool-annotation fields were renamed with it
+  (`readOnlyHint` → `read_only_hint`, and likewise for the destructive and
+  open-world hints), as were the result fields the tests read (`isError` →
+  `is_error`, `structuredContent` → `structured_content`, `outputSchema` →
+  `output_schema`, `uriTemplate` → `uri_template`).
+
+- **The server version is now a constructor argument.** v1 offered no
+  `version` parameter, so it had to be assigned onto the low-level server
+  after construction; v2 takes it directly. Same outcome — `serverInfo` still
+  carries this package's version rather than the SDK's — through supported API
+  instead of an attribute poke.
+
+- **Hosted mode configures the transport, not a settings object.** `host`,
+  `port` and `stateless_http` no longer exist on `mcp.settings`; they are
+  keyword arguments to `run()`. This one was worth catching: pydantic accepted
+  the old assignments without complaint and nothing read them, so a server
+  left on the v1 spelling would have bound `127.0.0.1:8000` statefully no
+  matter what `DATOSGOBDO_HOST`, `DATOSGOBDO_PORT` or the deploy config said —
+  a silent misconfiguration rather than a crash. The end-to-end tests that
+  launch the real server over streamable-http cover it.
+
+- **The `isError` patch was ported, not dropped.** Checked against mcp 2.1.1
+  before deciding: v2 still hardcodes `is_error=False` on the success path
+  whatever the body says, and its error path still builds a fresh result from
+  `str(exc)` carrying no `structured_content`. So a reply of
+  `{"error": ..., "hint": ...}` still arrives unflagged, and a CI pipeline
+  chaining on `&&` still walks past it. What changed is how the patch attaches:
+  v1 mutated the public `request_handlers` dict keyed by request type; v2 keys
+  handlers by method string behind a private dict and exposes
+  `get_request_handler` / `add_request_handler`, so the wrapping now goes
+  through supported API. A third test was added for the case that would make
+  the patch worse than useless — every result model carries an `error` field,
+  so a success serialises as `{"error": null}`, and flagging on key presence
+  rather than truthiness would mark every successful call as failed.
+
 - `CLAUDE.md` and `.claude/` are now ignored from `.gitignore` rather than from
   one clone's `.git/info/exclude`, which protected this machine and no other.
+
+### Removed
+
+- **The `lifespan` warning filter in `__init__.py`.** It existed because the
+  v1 settings model tripped a `pydantic_settings` warning on import, which is
+  the first thing a new user sees and which support reads as the cause of
+  whatever they wrote in about. mcp 2.x does not emit it — verified on a clean
+  import in a fresh interpreter — so the filter went with the SDK that needed
+  it instead of staying on as a suppression nobody could evaluate. Its test
+  was replaced by one that imports the package in a subprocess and asserts the
+  import is quiet, whatever the cause.
 
 ## [0.14.0] — 2026-08-13
 

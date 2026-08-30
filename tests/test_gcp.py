@@ -70,16 +70,16 @@ def test_gcp_not_available_in_this_environment():
 
 
 def test_register_returns_false_without_libs():
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server import MCPServer
 
-    fresh = FastMCP("test-no-gcp")
+    fresh = MCPServer("test-no-gcp")
     assert gcp.register_gcp_tools(fresh) is False
 
 
 async def test_register_adds_three_tools_with_fake_libs(fake_google):
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server import MCPServer
 
-    fresh = FastMCP("test-gcp")
+    fresh = MCPServer("test-gcp")
     assert gcp.register_gcp_tools(fresh) is True
     tools = await fresh.list_tools()
     names = {t.name for t in tools}
@@ -89,8 +89,8 @@ async def test_register_adds_three_tools_with_fake_libs(fake_google):
         "get_bigquery_table_info_tool",
     }
     by_name = {t.name: t for t in tools}
-    assert by_name["load_resource_to_bigquery_tool"].annotations.readOnlyHint is False
-    assert by_name["list_bigquery_exports_tool"].annotations.readOnlyHint is True
+    assert by_name["load_resource_to_bigquery_tool"].annotations.read_only_hint is False
+    assert by_name["list_bigquery_exports_tool"].annotations.read_only_hint is True
 
 
 async def test_server_tool_count_stays_24_without_gcp():

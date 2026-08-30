@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.14.x  | ✅        |
-| < 0.14  | ❌        |
+| 0.15.x  | ✅        |
+| < 0.15  | ❌        |
 
 Always run the latest release. Security fixes land on the newest minor only.
 

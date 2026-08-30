@@ -203,7 +203,7 @@ async def get_bigquery_table_info(project: str, dataset: str, table: str) -> dic
 
 
 def register_gcp_tools(mcp_instance: Any) -> bool:
-    """Register the GCP tools on a FastMCP instance — only when the SDKs are
+    """Register the GCP tools on an MCPServer instance — only when the SDKs are
     installed, so the base install's tool surface is unchanged.
 
     **These tools are preview, and stay outside the stability promise.** They
@@ -227,9 +227,9 @@ def register_gcp_tools(mcp_instance: Any) -> bool:
     @mcp_instance.tool(
         annotations=ToolAnnotations(
             title="Load resource to BigQuery",
-            readOnlyHint=False,
-            destructiveHint=False,
-            openWorldHint=True,
+            read_only_hint=False,
+            destructive_hint=False,
+            open_world_hint=True,
         )
     )
     async def load_resource_to_bigquery_tool(
@@ -275,7 +275,7 @@ def register_gcp_tools(mcp_instance: Any) -> bool:
 
     @mcp_instance.tool(
         annotations=ToolAnnotations(
-            title="List BigQuery exports", readOnlyHint=True, openWorldHint=True
+            title="List BigQuery exports", read_only_hint=True, open_world_hint=True
         )
     )
     async def list_bigquery_exports_tool(
@@ -287,7 +287,7 @@ def register_gcp_tools(mcp_instance: Any) -> bool:
 
     @mcp_instance.tool(
         annotations=ToolAnnotations(
-            title="Get BigQuery table info", readOnlyHint=True, openWorldHint=True
+            title="Get BigQuery table info", read_only_hint=True, open_world_hint=True
         )
     )
     async def get_bigquery_table_info_tool(

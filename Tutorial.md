@@ -256,7 +256,7 @@ per dataset in the catalog — to make each one addressable:
 datosgobdo://dataset/{dataset_id}       →  datosgobdo://dataset/nomina-poder-judicial
 ```
 
-In FastMCP the placeholder in the URI and the function parameter simply have to match:
+In the SDK the placeholder in the URI and the function parameter simply have to match:
 
 ```python
 @mcp.resource("datosgobdo://dataset/{dataset_id}", ...)
@@ -323,7 +323,7 @@ The client captures that stderr and writes it to a file — `~/Library/Logs/Clau
 
 ```
 src/datosgobdo_mcp/
-├── server.py     FastMCP entry — 24 @mcp.tool decorators (the public surface)
+├── server.py     MCPServer entry — 24 @mcp.tool decorators (the public surface)
 ├── ckan.py       Async CKAN HTTP client + Solr-escaping + JSON formatters
 ├── download.py   Capped streaming download + encoding detection
 ├── preview.py    CSV/TSV/XLSX/JSON parsers for the preview tool
@@ -337,13 +337,13 @@ src/datosgobdo_mcp/
 Each file has **one responsibility**. `server.py` is a thin layer of tool decorators
 that delegate to the real logic — so the tools stay readable and the logic stays testable.
 
-### 2.3 The tool decorator pattern (FastMCP)
+### 2.3 The tool decorator pattern
 
 A tool is a decorated, type-annotated function. The annotations *are* the schema the
 model sees:
 
 ```python
-@mcp.tool(annotations=_ro("Search datasets"))   # title + readOnlyHint + openWorldHint
+@mcp.tool(annotations=_ro("Search datasets"))   # title + read_only_hint + open_world_hint
 async def search_datasets(
     query: Annotated[str | None, Field(description="Free-text search term…")] = None,
     limit: Annotated[int, Field(description="Results (1-50)", ge=1, le=50)] = 10,
@@ -354,7 +354,7 @@ async def search_datasets(
 
 Three things the model reads: the **docstring** (what it does), each parameter's
 **`Field(description=…)`** with constraints (`ge`/`le`/enum), and the **annotations**
-(`readOnlyHint` lets a host auto-approve; `destructiveHint` triggers a confirm dialog).
+(`read_only_hint` lets a host auto-approve; `destructive_hint` triggers a confirm dialog).
 
 ### 2.4 Why DuckDB + Parquet (the analytics engine)
 
@@ -409,7 +409,7 @@ budget for encoding, delimiter sniffing, and header-detection edge cases.
 ### 2.7 Typed output (the `models.py` layer)
 
 Returning a bare `dict` gives the host no schema. Returning a **Pydantic model** makes
-FastMCP emit a real `outputSchema` + `structuredContent`, so hosts can validate. The
+the SDK emit a real `outputSchema` + `structuredContent`, so hosts can validate. The
 trick for variable data: `model_config = ConfigDict(extra="allow")` keeps dynamic keys
 (like `p25`/`p50` percentiles) flowing through while still typing the known envelope.
 
@@ -441,13 +441,16 @@ path this project took, generalized.
 
 Start local; the analytics layer ports directly to remote later.
 
-### Step 2 — Scaffold with FastMCP
+### Step 2 — Scaffold the server
 
 ```python
-from mcp.server.fastmcp import FastMCP
-mcp = FastMCP("my-server")
+from mcp.server import MCPServer
 
-@mcp.tool(annotations={"title": "Search", "readOnlyHint": True, "openWorldHint": True})
+# Called FastMCP, in mcp.server.fastmcp, before SDK 2.0. The old module was
+# removed rather than deprecated, so pin the major you write against.
+mcp = MCPServer("my-server", version="0.1.0")
+
+@mcp.tool(annotations={"title": "Search", "read_only_hint": True, "open_world_hint": True})
 async def search(query: str) -> dict:
     """Search the catalog. Returns up to 10 results."""
     return await my_client.search(query)
@@ -471,7 +474,7 @@ Read the tool-design rules baked into this project:
    constraint is one fewer bad call.
 2. **Descriptions are the contract.** Say what it does, what it returns, and *what it
    doesn't* (so the model picks the right sibling tool).
-3. **Required annotations.** `readOnlyHint`, `destructiveHint`, `title` — these are
+3. **Required annotations.** `read_only_hint`, `destructive_hint`, `title` — these are
    pass/fail for the Anthropic Directory and drive auto-approval UX.
 4. **Read/write split.** A tool is either read-only or it mutates — never both.
 5. **≤ ~30 tools.** Each schema costs context tokens every turn. Past ~30, switch to a

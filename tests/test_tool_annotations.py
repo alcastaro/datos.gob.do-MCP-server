@@ -1,8 +1,8 @@
 """MCP tool-annotation compliance.
 
 The Anthropic Directory review criteria require every tool to carry
-`title`, `readOnlyHint`, and (where relevant) `destructiveHint`. These tests
-introspect the live FastMCP registry via the protocol-level list_tools().
+`title`, `read_only_hint`, and (where relevant) `destructive_hint`. These
+tests introspect the live tool registry via the protocol-level list_tools().
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ async def test_every_tool_has_title_and_readonly_hint():
         ann = t.annotations
         assert ann is not None, f"{t.name}: missing annotations"
         assert ann.title, f"{t.name}: missing title annotation"
-        assert ann.readOnlyHint is not None, f"{t.name}: missing readOnlyHint"
+        assert ann.read_only_hint is not None, f"{t.name}: missing read_only_hint"
 
 
 async def test_read_tools_marked_readonly():
@@ -28,14 +28,14 @@ async def test_read_tools_marked_readonly():
     for name, t in tools.items():
         if name in DESTRUCTIVE_TOOLS:
             continue
-        assert t.annotations.readOnlyHint is True, f"{name}: should be readOnlyHint=True"
+        assert t.annotations.read_only_hint is True, f"{name}: should be read_only_hint=True"
 
 
 async def test_clear_cache_marked_destructive():
     tools = {t.name: t for t in await mcp.list_tools()}
     cc = tools["clear_cache"]
-    assert cc.annotations.destructiveHint is True
-    assert cc.annotations.readOnlyHint is False
+    assert cc.annotations.destructive_hint is True
+    assert cc.annotations.read_only_hint is False
 
 
 async def test_network_tools_marked_open_world():
@@ -46,16 +46,16 @@ async def test_network_tools_marked_open_world():
         "summarize_resource",
         "query_resource",
     ):
-        assert tools[name].annotations.openWorldHint is True, (
-            f"{name}: hits the network, should be openWorldHint=True"
+        assert tools[name].annotations.open_world_hint is True, (
+            f"{name}: hits the network, should be open_world_hint=True"
         )
 
 
 async def test_local_only_tools_not_open_world():
     tools = {t.name: t for t in await mcp.list_tools()}
     for name in ("get_cache_stats", "clear_cache"):
-        assert tools[name].annotations.openWorldHint is False, (
-            f"{name}: purely local, should be openWorldHint=False"
+        assert tools[name].annotations.open_world_hint is False, (
+            f"{name}: purely local, should be open_world_hint=False"
         )
 
 
@@ -76,9 +76,9 @@ DATA_TOOLS_WITH_SCHEMA = {
 
 
 async def test_data_tools_have_output_schema():
-    """The data-producing tools must emit a typed outputSchema (Pydantic-backed)."""
+    """The data-producing tools must emit a typed output schema (Pydantic-backed)."""
     tools = {t.name: t for t in await mcp.list_tools()}
     for name in DATA_TOOLS_WITH_SCHEMA:
         t = tools[name]
-        assert t.outputSchema is not None, f"{name}: missing outputSchema"
-        assert t.outputSchema.get("type") == "object", f"{name}: schema not an object"
+        assert t.output_schema is not None, f"{name}: missing output_schema"
+        assert t.output_schema.get("type") == "object", f"{name}: schema not an object"

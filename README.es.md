@@ -255,7 +255,7 @@ Lo que este servidor declara al conectarse, verificado en sesión real el 2026-0
 
 `listChanged: false` y `subscribe: false` son declaraciones honestas, no omisiones: la lista de tools queda fija al arrancar, y ningún resource aquí cambia con la frecuencia que justificaría una suscripción.
 
-> **Sobre los dos números de versión.** Los enlaces de especificación de arriba apuntan a `2026-07-28`, la especificación vigente, porque es la que conviene leer. El servidor negocia **`2025-11-25`** porque fija `mcp>=1.9.0,<2` — el SDK 2.0 renombró `FastMCP` a `MCPServer` y eliminó la ruta de importación anterior sin capa de compatibilidad. Lo que 2026-07-28 agrega y este servidor por tanto no implementa: [`server/discover`](https://modelcontextprotocol.io/specification/2026-07-28/server/discover), los campos `_meta` por petición, y niveles de log por petición. La migración está registrada como pendiente, no es un descuido.
+> **Sobre los dos números de versión.** Los enlaces de especificación de arriba apuntan a `2026-07-28`, la especificación vigente. El servidor negocia **`2025-11-25`**, y pasar al SDK v2 en 0.15.0 no cambió eso — medido sobre un handshake real, no leído de una constante. `2026-07-28` no acuñó un identificador de handshake nuevo: `2025-11-25` es la versión más reciente que el SDK negocia, tanto en v1 como en v2. Lo que sí cambia el SDK v2 es la API contra la que está escrito este servidor (`FastMCP` pasó a ser `MCPServer`, y la ruta de importación anterior se eliminó en vez de marcarse obsoleta), y por eso el pin ahora es `mcp>=2.1,<3` con ambos extremos necesarios — en mcp 1.x este código ya no importa.
 
 <a id="s7"></a>
 
@@ -478,7 +478,7 @@ uvx --from dominican-open-data-mcp datosgobdo-mcp
 
 `uvx` descarga el paquete, crea un venv aislado y lo ejecuta. La primera vez toma segundos; las siguientes son instantáneas.
 
-> **¿Vienes de ≤ 0.7.0?** Esas versiones fijaban `mcp>=1.9.0` sin tope superior, y el SDK de Python de MCP 2.0 (2026-07-28) eliminó la ruta de importación `mcp.server.fastmcp` — una instalación nueva falla con `ModuleNotFoundError`. Instala 0.7.1 o posterior, o fija el SDK tú mismo: `uvx --with "mcp<2" --from dominican-open-data-mcp datosgobdo-mcp`.
+> **¿Vienes de ≤ 0.7.0?** Esas versiones fijaban `mcp>=1.9.0` sin tope superior, y el SDK de Python de MCP 2.0 (2026-07-28) eliminó la ruta de importación `mcp.server.fastmcp` — una instalación nueva falla con `ModuleNotFoundError`. Instala 0.15.0 o posterior, que está escrita contra el SDK v2 y fija `mcp>=2.1,<3`. Para quedarte en una versión anterior, fija el SDK tú mismo: `uvx --with "mcp<2" --from dominican-open-data-mcp datosgobdo-mcp`.
 
 ### Opción B — `uvx` desde GitHub (versión de desarrollo)
 
@@ -621,7 +621,7 @@ El valor por defecto deliberadamente **no** es una lista blanca de hosts: como m
 
 ```
 src/datosgobdo_mcp/
-  server.py        Servidor FastMCP: 24 tools, 3 resources, 1 plantilla, 6 prompts
+  server.py        MCPServer: 24 tools, 3 resources, 1 plantilla, 6 prompts
   ckan.py          Cliente CKAN: peticiones, escapado Solr, formateadores, procedencia
   analytics.py     Capa DuckDB: constructores de consulta tipados, coerción, validación SQL
   download.py      Descarga en streaming con tope, cabeceras de fetch, detección de codificación
@@ -685,7 +685,7 @@ flowchart TD
 
 ### Decisiones de diseño
 
-- **FastMCP en vez del SDK de bajo nivel.** Las tools son funciones decoradas con `@mcp.tool()` y tipadas con Pydantic: menos boilerplate, validación automática de argumentos.
+- **`MCPServer` en vez del SDK de bajo nivel.** Las tools son funciones decoradas con `@mcp.tool()` y tipadas con Pydantic: menos boilerplate, validación automática de argumentos. (Esta clase se llamaba `FastMCP` antes del SDK 2.0.)
 - **DuckDB + Parquet en vez de pandas.** Caché columnar, motor SQL, streaming desde disco. Una nómina de 94 MB responde agregaciones agrupadas en menos de un segundo en caliente, y la memoria queda acotada.
 - **La llave de caché incluye la build del parser** — versión del paquete más la de DuckDB, porque el sniffer de DuckDB decide los tipos de columna. Una actualización del parser no debe servir tipos inferidos por el anterior.
 - **DataStore no está, así que los archivos se parsean del lado del cliente.** Ver [§12](#s12). Es la única decisión de la que se desprende el resto de la arquitectura.
@@ -698,7 +698,7 @@ flowchart TD
 
 ### Stack
 
-[`mcp`](https://pypi.org/project/mcp/) (SDK oficial de Python, FastMCP) · [`duckdb`](https://duckdb.org/) · [`httpx`](https://www.python-httpx.org/) · [`openpyxl`](https://openpyxl.readthedocs.io/) (XLSX en streaming de solo lectura) · [`pydantic`](https://docs.pydantic.dev/) · stdlib `csv`, `json`, `xml.etree` (ODS en streaming).
+[`mcp`](https://pypi.org/project/mcp/) (SDK oficial de Python v2, `MCPServer`) · [`duckdb`](https://duckdb.org/) · [`httpx`](https://www.python-httpx.org/) · [`openpyxl`](https://openpyxl.readthedocs.io/) (XLSX en streaming de solo lectura) · [`pydantic`](https://docs.pydantic.dev/) · stdlib `csv`, `json`, `xml.etree` (ODS en streaming).
 
 <a id="s17"></a>
 
