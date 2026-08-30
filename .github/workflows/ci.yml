@@ -14,10 +14,19 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
-        # One macOS job: the user base is desktop-heavy and Linux-only CI has
-        # already hidden a real platform bug (macOS $TMPDIR under /private/var).
+        # Two non-Linux jobs, each for a reason that already cost something.
+        # macOS: the user base is desktop-heavy and Linux-only CI had already
+        # hidden a real platform bug ($TMPDIR under /private/var).
+        # Windows: the majority platform for this server's Dominican audience,
+        # and until now the only one whose code path — the msvcrt cache lock,
+        # the system-path denylist, os.O_NOFOLLOW being absent — was never
+        # executed by CI at all. This job does not close that gap on its own:
+        # it proves the suite passes on Windows, not that the lock behaves
+        # under real contention, which still needs a machine and a human.
         include:
           - os: macos-latest
+            python-version: "3.13"
+          - os: windows-latest
             python-version: "3.13"
     steps:
       - uses: actions/checkout@v4
@@ -58,7 +67,10 @@ jobs:
       - name: Run pytest + coverage
         run: uv run --python ${{ matrix.python-version }} pytest -v
 
+      # Backgrounding a process and signalling it is POSIX shell work; the
+      # Windows equivalent below checks the same thing the flag exists for.
       - name: Verify entry point script
+        if: runner.os != 'Windows'
         run: |
           uv run --python ${{ matrix.python-version }} datosgobdo-mcp < /dev/null &
           PID=$!
@@ -76,6 +88,21 @@ jobs:
               exit 1
             fi
           fi
+
+      # --version exists because a Windows tester reached for --help to find out
+      # which version was installed, got a server waiting on stdin, and had no
+      # way to answer the question. Anything other than the package version
+      # here means the entry point is broken on the platform most of this
+      # server's audience runs.
+      - name: Verify entry point (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $out = uv run --python ${{ matrix.python-version }} datosgobdo-mcp --version
+          Write-Host $out
+          if ($out -notmatch '^datosgobdo-mcp \d+\.\d+\.\d+$') {
+            Write-Error "unexpected --version output: $out"
+            exit 1
+          }
 
       - name: Build distributable
         run: uv build

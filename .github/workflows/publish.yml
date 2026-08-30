@@ -1,0 +1,94 @@
+# Publish to PyPI with Trusted Publishing (OIDC) — no long-lived token.
+#
+# Why this exists: publishing was a manual `uv publish` from a laptop holding an
+# API token with upload rights to a package real people install with `uvx`. A
+# token that never expires and lives on one machine is the whole attack: steal
+# it once and you publish forever, and nothing about the release says where it
+# came from. Trusted Publishing removes the secret entirely — PyPI verifies a
+# short-lived OIDC token minted by GitHub for this repository, this workflow,
+# and this environment, then throws it away. Attestations sign what was built,
+# so anyone can check that a wheel on PyPI came from this repo at this commit.
+#
+# It only ever runs when a human publishes a GitHub Release. Not on push, not on
+# a tag, not on a schedule. Publishing this package is a decision, and the
+# trigger is shaped like one.
+#
+# BEFORE THE FIRST RUN, one thing must be done by hand on pypi.org, because it
+# cannot live in this file: under the project's Publishing settings, add a
+# trusted publisher with owner `alcastaro`, repository
+# `datos.gob.do-MCP-server`, workflow `publish.yml`, environment `pypi`. Until
+# that exists, this workflow fails at the upload step and publishes nothing.
+#
+# The MCP Registry stays a separate, manual step (`mcp-publisher`): it
+# authenticates differently and should not ride along on a PyPI release.
+
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  verify:
+    name: Verify before publishing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --group dev --extra dev
+
+      # The release tag and the package version are set by different people at
+      # different times. A mismatch ships a wheel whose version contradicts the
+      # release it was cut from, and PyPI will not let it be replaced.
+      - name: Tag must match the package version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(uv run python -c "from datosgobdo_mcp import __version__; print(__version__)")
+          echo "tag=$TAG package=$PKG"
+          test "$TAG" = "$PKG" || { echo "tag $TAG does not match package $PKG"; exit 1; }
+
+      - name: Lint, types, tests
+        run: |
+          uv run ruff check src/ tests/
+          uv run ruff format --check src/ tests/
+          uv run mypy src/datosgobdo_mcp/ --no-error-summary
+          uv run pytest -q
+
+      - name: Build
+        run: uv build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  pypi:
+    name: Upload to PyPI
+    needs: verify
+    runs-on: ubuntu-latest
+    # Gives the release a second gate: an environment can require a reviewer,
+    # so approving the upload stays a separate act from cutting the release.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/dominican-open-data-mcp
+    permissions:
+      # The only permission Trusted Publishing needs, and the reason no API
+      # token appears anywhere in this repository.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true

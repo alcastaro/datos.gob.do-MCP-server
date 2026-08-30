@@ -127,6 +127,30 @@ same three resources and six prompts.
 
 ### Security
 
+- **CI runs on Windows.** The majority platform for this server's Dominican
+  audience, and until now the only one whose own code path — the `msvcrt` cache
+  lock, the system-path denylist, `os.O_NOFOLLOW` being absent — CI never
+  executed. Worth being precise about what this buys: it proves the suite
+  passes on Windows, not that the cache lock behaves under real contention.
+  That still needs a machine and a person. The entry-point smoke test is split
+  by platform, since backgrounding a process and signalling it is POSIX shell
+  work; Windows checks `--version` instead, which is the flag that exists
+  because a Windows tester reached for `--help` and got a server waiting on
+  stdin.
+
+- **Publishing to PyPI moves to Trusted Publishing.**
+  [`publish.yml`](.github/workflows/publish.yml) uploads via OIDC with build
+  attestations, so no long-lived API token exists anywhere. The old path was a
+  manual upload from a laptop holding a token with permanent rights to a
+  package people install with `uvx`: steal it once and you publish forever, and
+  nothing about the release records where it came from. The workflow runs only
+  when a human publishes a GitHub Release — never on a push, a tag or a
+  schedule — verifies the tag matches the package version before building, and
+  gates the upload behind a protected environment. It needs a trusted publisher
+  configured once on pypi.org before its first run; until then it fails at the
+  upload step and publishes nothing. The MCP Registry stays a separate manual
+  step.
+
 - **A ZIP member can no longer expand without limit.** The download cap bounds
   the bytes that arrive, never the bytes they turn into, and DEFLATE reaches
   roughly 1000:1 — so an archive that passed every check upstream could still
