@@ -24,6 +24,9 @@ export class DatosgobdoContainer extends Container {
     DATOSGOBDO_CACHE_MAX_BYTES: "536870912",
     DATOSGOBDO_DUCKDB_MEMORY: "512MB",
     DATOSGOBDO_DUCKDB_THREADS: "2",
+    // 0 (the default) means no limit, which is right locally and wrong here:
+    // the SQL arrives from a model and nothing else bounds how long it runs.
+    DATOSGOBDO_QUERY_TIMEOUT: "30",
   };
 }
 

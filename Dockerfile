@@ -37,11 +37,18 @@ ENV DATOSGOBDO_TRANSPORT=streamable-http \
     DATOSGOBDO_CACHE_MAX_BYTES=536870912 \
     DATOSGOBDO_DUCKDB_MEMORY=512MB \
     DATOSGOBDO_DUCKDB_THREADS=2 \
+    DATOSGOBDO_QUERY_TIMEOUT=30 \
     PYTHONUNBUFFERED=1
 
 # DATOSGOBDO_HOST must be 0.0.0.0 here and nowhere else: the default is
 # 127.0.0.1, which is right for a local run and invisible from outside a
 # container.
+#
+# DATOSGOBDO_QUERY_TIMEOUT must be set here too, and for the same kind of
+# reason: it defaults to 0, meaning no limit, which is right for a local run
+# where the only person a slow query costs is the one who asked for it. In a
+# shared instance the SQL comes from a model and nothing else bounds how long
+# it runs, so the wall clock has to be turned on explicitly.
 EXPOSE 8080
 
 CMD ["datosgobdo-mcp"]

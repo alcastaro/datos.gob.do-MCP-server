@@ -127,6 +127,25 @@ same three resources and six prompts.
 
 ### Security
 
+- **A ZIP member can no longer expand without limit.** The download cap bounds
+  the bytes that arrive, never the bytes they turn into, and DEFLATE reaches
+  roughly 1000:1 — so an archive that passed every check upstream could still
+  write tens of gigabytes. Unpacking now counts as it writes and refuses past
+  400 MB, removing the partial file before raising. The ceiling is counted
+  rather than read from `ZipInfo.file_size`, because that field is written by
+  whoever built the archive: checking it asks the attacker how big the attack
+  is. The three real resources in this catalog that are a zipped data file
+  expand under 3x and are unaffected.
+
+- **The hosted image ran model-supplied SQL with no wall clock.**
+  `DATOSGOBDO_QUERY_TIMEOUT` defaults to 0, meaning no limit, which is right
+  for a local run where a slow query only costs the person who asked for it.
+  Neither the `Dockerfile` nor the Worker set it, so a shared instance had no
+  bound at all. Both now set 30 seconds, and a test asserts the two files
+  declare the same environment — the `index.js` comment already warned that a
+  value present in only one of them is a difference nobody notices, and this
+  was exactly that.
+
 - **Twenty-two published advisories in four transitive dependencies.**
   `cryptography` 48.0.0, `pyjwt` 2.12.1, `python-multipart` 0.0.29 and
   `starlette` 1.0.0 all arrive through the MCP SDK's HTTP and auth stack, not

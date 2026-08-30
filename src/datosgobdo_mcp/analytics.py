@@ -22,7 +22,6 @@ import hashlib
 import logging
 import os
 import re
-import shutil
 import tempfile
 import unicodedata
 import zipfile
@@ -440,6 +439,16 @@ _MEM_LIMIT_RE = re.compile(r"\A\d+(\.\d+)?\s*(KB|MB|GB|TB|KiB|MiB|GiB|TiB)?\Z", 
 JSON_MAX_OBJECT_BYTES = ANALYTICS_MAX_BYTES + 8 * 1024 * 1024
 
 
+# What one member of a ZIP is allowed to become on disk. The download cap
+# bounds the bytes that arrive, not the bytes they expand into: DEFLATE reaches
+# roughly 1000:1, so a 100 MB archive that passed every check upstream can still
+# write tens of gigabytes. Four times the download cap is well above any real
+# resource in this catalog (the largest observed expands under 3x) and far below
+# the point where filling the disk becomes the failure mode — which on a hosted
+# instance is shared with every other caller.
+ZIP_MAX_EXPANDED_BYTES = 4 * ANALYTICS_MAX_BYTES
+
+
 def _extract_single_member(archive_path: Path, member: str) -> Path:
     """Unpack the one data file inside a ZIP archive, next to the archive.
 
@@ -448,11 +457,35 @@ def _extract_single_member(archive_path: Path, member: str) -> Path:
     name is not used to build the output path — a zip entry can be called
     `../../etc/passwd`, and a reader that trusts it writes wherever the archive
     says. Only the extension travels.
+
+    The ceiling is enforced while copying rather than by reading
+    `ZipInfo.file_size` first, because that field is written by whoever built the
+    archive: a zip bomb declares whatever size it likes, and a check against it
+    is a check against the attacker's own claim. Counting what actually lands on
+    disk cannot be lied to. The partial file is removed before raising, so a
+    refused archive leaves nothing behind.
     """
     suffix = member.rsplit(".", 1)[-1].lower()
     target = archive_path.with_name(archive_path.name + ".unpacked." + suffix)
-    with zipfile.ZipFile(archive_path) as z, z.open(member) as src, target.open("wb") as out:
-        shutil.copyfileobj(src, out, length=1024 * 1024)
+    written = 0
+    try:
+        with zipfile.ZipFile(archive_path) as z, z.open(member) as src, target.open("wb") as out:
+            while True:
+                chunk = src.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > ZIP_MAX_EXPANDED_BYTES:
+                    raise AnalyticsError(
+                        f"Archive member '{member}' expands past the "
+                        f"{ZIP_MAX_EXPANDED_BYTES // (1024 * 1024)} MB limit for unpacked "
+                        "data and was refused. A compressed file this much larger than "
+                        "its archive is not a spreadsheet."
+                    )
+                out.write(chunk)
+    except BaseException:
+        _safe_unlink(target)
+        raise
     return target
 
 

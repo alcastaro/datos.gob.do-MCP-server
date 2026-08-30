@@ -2026,3 +2026,47 @@ async def test_a_unc_path_into_a_system_directory_is_still_called_a_network_path
     )
     assert "error" in out
     assert "Network paths are not a supported destination" in out["error"]
+
+
+# ─── A ZIP is not allowed to become arbitrarily large on disk ─────────────────
+
+
+def test_a_zip_bomb_is_refused_and_leaves_nothing_behind(tmp_path):
+    """The download cap bounds what arrives, not what it expands into.
+
+    DEFLATE reaches roughly 1000:1, so an archive that passed every upstream
+    check can still fill the disk — which on a hosted instance is shared with
+    every other caller. The ceiling is counted while writing rather than read
+    from `ZipInfo.file_size`, because that field is the archive author's own
+    claim and a bomb declares whatever it likes.
+    """
+    import zipfile
+
+    archive = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("big.csv", b"0" * (analytics.ZIP_MAX_EXPANDED_BYTES + 1024))
+
+    # The archive itself is small enough that no download cap would stop it.
+    assert archive.stat().st_size < 5 * 1024 * 1024
+
+    with pytest.raises(analytics.AnalyticsError, match="expands past"):
+        analytics._extract_single_member(archive, "big.csv")
+
+    assert not list(tmp_path.glob("*unpacked*")), "partial extraction left on disk"
+
+
+def test_a_zip_within_the_ceiling_still_unpacks(tmp_path):
+    """The guard must not break the three real resources that are a zipped file."""
+    import zipfile
+
+    archive = tmp_path / "ok.zip"
+    payload = b"nombre;valor\nANA;1\nBENITO;2\n"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("data.csv", payload)
+
+    out = analytics._extract_single_member(archive, "data.csv")
+    try:
+        assert out.read_bytes() == payload
+        assert out.suffix == ".csv"
+    finally:
+        out.unlink(missing_ok=True)

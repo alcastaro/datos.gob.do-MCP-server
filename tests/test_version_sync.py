@@ -103,3 +103,49 @@ def test_security_policy_supports_the_shipping_minor():
     minor = ".".join(__version__.split(".")[:2])
     assert f"| {minor}.x" in text, f"SECURITY.md does not list {minor}.x as supported"
     assert f"| < {minor}" in text, f"SECURITY.md does not mark < {minor} unsupported"
+
+
+def test_the_container_and_the_worker_agree_on_every_env_var():
+    """The Dockerfile and the Worker declare the same environment twice.
+
+    They are deliberately duplicated — the container is what Cloud Run or Fly
+    would use, the Worker is what Cloudflare uses, and neither inherits from the
+    other. The `index.js` comment already says what goes wrong: a value present
+    in only one of them is a difference nobody notices until the numbers
+    disagree. This is that comment, enforced.
+
+    It was written after an audit found `DATOSGOBDO_QUERY_TIMEOUT` set in
+    neither, which meant the published image ran model-supplied SQL with no wall
+    clock at all.
+    """
+    dockerfile = ROOT / "Dockerfile"
+    worker = ROOT / "deploy" / "cloudflare" / "src" / "index.js"
+    if not dockerfile.exists() or not worker.exists():
+        pytest.skip("deploy files not present (installed-package run)")
+
+    # The first var on an ENV line sits right after "ENV ", the rest are indented.
+    docker_env = dict(
+        re.findall(r"^(?:ENV\s+)?\s*(DATOSGOBDO_\w+)=(\S+)", dockerfile.read_text(), re.M)
+    )
+    worker_env = dict(re.findall(r'^\s*(DATOSGOBDO_\w+):\s*"([^"]*)"', worker.read_text(), re.M))
+
+    assert docker_env, "no DATOSGOBDO_* vars parsed from the Dockerfile"
+    assert set(docker_env) == set(worker_env), (
+        f"only in Dockerfile: {sorted(set(docker_env) - set(worker_env))}; "
+        f"only in Worker: {sorted(set(worker_env) - set(docker_env))}"
+    )
+    for name, value in docker_env.items():
+        assert worker_env[name] == value.rstrip("\\"), (
+            f"{name}: Dockerfile says {value!r}, Worker says {worker_env[name]!r}"
+        )
+
+
+def test_hosted_deploys_bound_query_time():
+    """0 means no timeout. That is the right default locally and the wrong one
+    on an instance whose SQL arrives from a model and is shared with strangers."""
+    dockerfile = ROOT / "Dockerfile"
+    if not dockerfile.exists():
+        pytest.skip("Dockerfile not present (installed-package run)")
+    m = re.search(r"DATOSGOBDO_QUERY_TIMEOUT=(\d+)", dockerfile.read_text())
+    assert m, "the hosted image sets no query timeout"
+    assert int(m.group(1)) > 0, "a query timeout of 0 is no timeout at all"
