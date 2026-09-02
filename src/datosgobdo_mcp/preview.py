@@ -173,39 +173,46 @@ async def _preview_via_cache(url: str, kind: str, rows: int, sample: SampleMode)
     except (httpx.HTTPError, AnalyticsError, NetGuardError, OSError) as e:
         return {"error": f"No se pudo cargar el recurso: {err_text(e)}"}
 
+    import asyncio
+
     import duckdb
 
-    con = duckdb.connect(":memory:")
-    try:
-        p = str(parquet).replace("'", "''")
-        described = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{p}')").fetchall()
-        columns = [r[0] for r in described]
-        total = con.execute(f"SELECT COUNT(*) FROM read_parquet('{p}')").fetchone()[0]  # type: ignore[index]
-        order = {
-            "head": "",
-            "tail": f"OFFSET {max(0, total - rows)}",
-            "random": f"USING SAMPLE {rows} ROWS",
-        }[sample]
-        if sample == "random":
-            sql = f"SELECT * FROM read_parquet('{p}') {order}"
-        else:
-            sql = f"SELECT * FROM read_parquet('{p}') LIMIT {rows} {order}"
-        out_rows = [list(r) for r in con.execute(sql).fetchall()]
-    except duckdb.Error as e:
-        return {"error": f"No se pudo leer el recurso: {e}"}
-    finally:
-        con.close()
+    def _run() -> dict[str, Any]:
+        # Off the event loop for the same reason as every analytics tool: a
+        # DuckDB read is synchronous, and a tail over a large Parquet is a scan.
+        con = duckdb.connect(":memory:")
+        try:
+            p = str(parquet).replace("'", "''")
+            described = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{p}')").fetchall()
+            columns = [r[0] for r in described]
+            total = con.execute(f"SELECT COUNT(*) FROM read_parquet('{p}')").fetchone()[0]  # type: ignore[index]
+            order = {
+                "head": "",
+                "tail": f"OFFSET {max(0, total - rows)}",
+                "random": f"USING SAMPLE {rows} ROWS",
+            }[sample]
+            if sample == "random":
+                sql = f"SELECT * FROM read_parquet('{p}') {order}"
+            else:
+                sql = f"SELECT * FROM read_parquet('{p}') LIMIT {rows} {order}"
+            out_rows = [list(r) for r in con.execute(sql).fetchall()]
+        except duckdb.Error as e:
+            return {"error": f"No se pudo leer el recurso: {e}"}
+        finally:
+            con.close()
 
-    return {
-        "format": kind,
-        "columns": columns,
-        "total_rows_in_download": total,
-        "rows_returned": len(out_rows),
-        "sample_mode": sample,
-        "rows": [[_jsonable(v) for v in r] for r in out_rows],
-        "source": "parquet-cache",
-        "cache": meta.get("cache"),
-    }
+        return {
+            "format": kind,
+            "columns": columns,
+            "total_rows_in_download": total,
+            "rows_returned": len(out_rows),
+            "sample_mode": sample,
+            "rows": [[_jsonable(v) for v in r] for r in out_rows],
+            "source": "parquet-cache",
+            "cache": meta.get("cache"),
+        }
+
+    return await asyncio.to_thread(_run)
 
 
 async def preview_resource_data(

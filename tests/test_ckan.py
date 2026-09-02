@@ -135,13 +135,18 @@ def test_format_organization_full_truncates_description():
 
 
 @pytest.fixture(autouse=True)
-def reset_ckan_client():
-    """Reset the ckan module-level client so httpx_mock intercepts cleanly."""
-    import asyncio
+async def reset_ckan_client():
+    """Reset the ckan module-level client so httpx_mock intercepts cleanly.
 
-    asyncio.get_event_loop().run_until_complete(ckan.close_client())
+    An async fixture, run by pytest-asyncio on the test's own loop. The previous
+    version called `asyncio.get_event_loop().run_until_complete(...)` from a sync
+    fixture, which Python 3.12 deprecates when no loop is running and 3.14 turns
+    into a RuntimeError — a suite that passes today and stops collecting on the
+    next interpreter.
+    """
+    await ckan.close_client()
     yield
-    asyncio.get_event_loop().run_until_complete(ckan.close_client())
+    await ckan.close_client()
 
 
 @pytest.mark.asyncio

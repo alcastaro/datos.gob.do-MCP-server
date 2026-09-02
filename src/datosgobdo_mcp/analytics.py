@@ -1358,6 +1358,21 @@ def _open_sandboxed(con: duckdb.DuckDBPyConnection, parquet: Path) -> list[str]:
 # ─── Public analytics tools ───────────────────────────────────────────────────
 
 
+async def _off_loop(work: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """Run a tool's DuckDB section in a worker thread and return its reply.
+
+    Everything DuckDB does is CPU-bound and synchronous. Run on the event loop
+    it freezes the whole server for the duration of the query — every other
+    client of a hosted instance, and the interrupt timer that is supposed to cut
+    a long query short. The cold path moved its conversion to a thread in 0.7.x;
+    the warm path, which serves every call but the first, still ran each query
+    inline. Measured on a 40-column, 300k-row file: 160-220 ms per call with the
+    loop frozen throughout. Each tool builds its reply inside `work`, connection
+    included, because a DuckDB connection is not meant to change threads.
+    """
+    return await asyncio.to_thread(work)
+
+
 @_tool_envelope
 async def get_resource_schema(
     url: str,
@@ -1372,40 +1387,44 @@ async def get_resource_schema(
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
         return _load_error(e, url)
 
-    con = _new_con()
-    try:
-        _open_view(con, parquet)
-        described = con.execute("DESCRIBE data").fetchall()
-        columns_meta = [
-            {"name": row[0], "type": row[1], "nullable": row[2] == "YES"} for row in described
-        ]
-        row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]  # type: ignore[index]
+    def _run() -> dict[str, Any]:
+        con = _new_con()
+        try:
+            _open_view(con, parquet)
+            described = con.execute("DESCRIBE data").fetchall()
+            # No `nullable` field: DESCRIBE over a Parquet view answers YES for every
+            # column, so the flag carried no information and cost a line per column
+            # in the reply the model reads first.
+            columns_meta = [{"name": row[0], "type": row[1]} for row in described]
+            row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]  # type: ignore[index]
 
-        n = min(max(int(sample_rows), 1), SCHEMA_SAMPLE_ROWS)
-        for col in columns_meta:
-            # These names came from DuckDB's own DESCRIBE of a file it just
-            # parsed, not from the model, so they are escaped rather than
-            # validated. Validating them was the reason a header the publisher
-            # mangled ("A¤o") made every tool refuse the whole file.
-            quoted = _raw_quote(col["name"])
-            try:
-                vals = con.execute(
-                    f"SELECT DISTINCT {quoted} FROM data WHERE {quoted} IS NOT NULL LIMIT {n}"
-                ).fetchall()
-                col["sample_values"] = [v[0] for v in vals]
-            except duckdb.Error:
-                col["sample_values"] = []
-    finally:
-        con.close()
+            n = min(max(int(sample_rows), 1), SCHEMA_SAMPLE_ROWS)
+            for col in columns_meta:
+                # These names came from DuckDB's own DESCRIBE of a file it just
+                # parsed, not from the model, so they are escaped rather than
+                # validated. Validating them was the reason a header the publisher
+                # mangled ("A¤o") made every tool refuse the whole file.
+                quoted = _raw_quote(col["name"])
+                try:
+                    vals = con.execute(
+                        f"SELECT DISTINCT {quoted} FROM data WHERE {quoted} IS NOT NULL LIMIT {n}"
+                    ).fetchall()
+                    col["sample_values"] = [v[0] for v in vals]
+                except duckdb.Error:
+                    col["sample_values"] = []
+        finally:
+            con.close()
 
-    return {
-        "source_url": url,
-        "format": kind,
-        "cache": meta,
-        "row_count": row_count,
-        "column_count": len(columns_meta),
-        "columns": columns_meta,
-    }
+        return {
+            "source_url": url,
+            "format": kind,
+            "cache": meta,
+            "row_count": row_count,
+            "column_count": len(columns_meta),
+            "columns": columns_meta,
+        }
+
+    return await _off_loop(_run)
 
 
 def _column_stats(
@@ -1495,24 +1514,28 @@ async def summarize_resource(
         return _load_error(e, url)
 
     top_n = min(max(int(max_categorical_top_n), 1), SUMMARIZE_MAX_TOP_N)
-    con = _new_con()
-    try:
-        _open_view(con, parquet)
-        described = con.execute("DESCRIBE data").fetchall()
-        columns_meta = [{"name": row[0], "type": row[1]} for row in described]
-        row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]  # type: ignore[index]
-        column_stats = [_column_stats(con, c["name"], c["type"], top_n) for c in columns_meta]
-    finally:
-        con.close()
 
-    return {
-        "source_url": url,
-        "format": kind,
-        "cache": meta,
-        "row_count": row_count,
-        "column_count": len(columns_meta),
-        "columns": column_stats,
-    }
+    def _run() -> dict[str, Any]:
+        con = _new_con()
+        try:
+            _open_view(con, parquet)
+            described = con.execute("DESCRIBE data").fetchall()
+            columns_meta = [{"name": row[0], "type": row[1]} for row in described]
+            row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]  # type: ignore[index]
+            column_stats = [_column_stats(con, c["name"], c["type"], top_n) for c in columns_meta]
+        finally:
+            con.close()
+
+        return {
+            "source_url": url,
+            "format": kind,
+            "cache": meta,
+            "row_count": row_count,
+            "column_count": len(columns_meta),
+            "columns": column_stats,
+        }
+
+    return await _off_loop(_run)
 
 
 # ─── Filter and aggregate ─────────────────────────────────────────────────────
@@ -2016,105 +2039,108 @@ async def quantiles_resource(
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
         return _load_error(e, url)
 
-    con = _new_con()
-    try:
-        available = _open_view(con, parquet)
-        described = con.execute("DESCRIBE data").fetchall()
-        row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]  # type: ignore[index]
-
-        types = {row[0]: row[1] for row in described}
-        all_numeric = [(n, t) for n, t in types.items() if _is_numeric_type(t)]
-
-        filter_notes: list[dict[str, Any]] = []
+    def _run() -> dict[str, Any]:
+        con = _new_con()
         try:
-            where = _build_where(filters, available, _column_types(con), filter_notes)
-        except AnalyticsError as e:
-            return {"error": str(e)}
+            available = _open_view(con, parquet)
+            described = con.execute("DESCRIBE data").fetchall()
+            row_count = con.execute("SELECT COUNT(*) FROM data").fetchone()[0]  # type: ignore[index]
 
-        # Columns the caller named are inspected even when stored as text; the
-        # rest of the file is not, because probing every VARCHAR column of a
-        # wide file to see whether it is secretly a number costs a scan per
-        # column and usually finds names.
-        coercion: list[dict[str, Any]] = []
-        exprs: dict[str, str] = {}
-        if columns is not None:
-            resolved = []
-            for c in columns:
-                hit = _match_column(c, available)
-                if hit is None:
-                    return {"error": f"Column '{c}' not found in resource"}
-                resolved.append(hit)
-            selected = []
-            for n in resolved:
-                if _is_numeric_type(types.get(n, "")):
-                    selected.append((n, types.get(n, "")))
-                    continue
-                expr, report = _numeric_ref(con, n, types, where)
-                if report and report.get("coerced"):
-                    selected.append((n, types.get(n, "")))
-                    exprs[n] = expr
-                    coercion.append(report)
-                elif report:
-                    coercion.append(report)
-        else:
-            selected = all_numeric
+            types = {row[0]: row[1] for row in described}
+            all_numeric = [(n, t) for n, t in types.items() if _is_numeric_type(t)]
 
-        if not selected:
-            out: dict[str, Any] = {
-                "error": (
-                    "No numeric columns found (or none of the requested columns hold "
-                    "numbers, even read as text)"
-                )
-            }
-            if coercion:
-                out["numeric_coercion"] = coercion
-            return _with_filter_notes(out, filter_notes)
-
-        pctile_arr = "[" + ", ".join(repr(float(p)) for p in percentiles) + "]"
-        pctile_keys = [f"p{int(round(p * 100))}" for p in percentiles]
-
-        col_results = []
-        for col_name, col_type in selected:
-            quoted = exprs.get(col_name) or _raw_quote(col_name)
+            filter_notes: list[dict[str, Any]] = []
             try:
-                row = con.execute(
-                    f"SELECT quantile_cont({quoted}, {pctile_arr}), "
-                    f"min({quoted}), max({quoted}), avg({quoted}), "
-                    f"count({quoted}), count(*) - count({quoted}) "
-                    f"FROM data {where}"
-                ).fetchone()
-                if row is None:
-                    continue
-                q_arr, mn, mx, mean, non_null, null_ct = row
-                result = {
-                    "name": col_name,
-                    "type": col_type,
-                    "non_null_count": non_null,
-                    "null_count": null_ct,
-                    "min": mn,
-                    "max": mx,
-                    "mean": mean,
-                }
-                if q_arr is not None:
-                    for key, val in zip(pctile_keys, q_arr):
-                        result[key] = val
-                col_results.append(result)
-            except duckdb.Error as e:
-                col_results.append({"name": col_name, "type": col_type, "error": str(e)})
-    finally:
-        con.close()
+                where = _build_where(filters, available, _column_types(con), filter_notes)
+            except AnalyticsError as e:
+                return {"error": str(e)}
 
-    quantile_result: dict[str, Any] = {
-        "source_url": url,
-        "format": kind,
-        "cache": meta,
-        "row_count": row_count,
-        "percentiles": percentiles,
-        "columns": col_results,
-    }
-    if coercion:
-        quantile_result["numeric_coercion"] = coercion
-    return _with_filter_notes(quantile_result, filter_notes)
+            # Columns the caller named are inspected even when stored as text; the
+            # rest of the file is not, because probing every VARCHAR column of a
+            # wide file to see whether it is secretly a number costs a scan per
+            # column and usually finds names.
+            coercion: list[dict[str, Any]] = []
+            exprs: dict[str, str] = {}
+            if columns is not None:
+                resolved = []
+                for c in columns:
+                    hit = _match_column(c, available)
+                    if hit is None:
+                        return {"error": f"Column '{c}' not found in resource"}
+                    resolved.append(hit)
+                selected = []
+                for n in resolved:
+                    if _is_numeric_type(types.get(n, "")):
+                        selected.append((n, types.get(n, "")))
+                        continue
+                    expr, report = _numeric_ref(con, n, types, where)
+                    if report and report.get("coerced"):
+                        selected.append((n, types.get(n, "")))
+                        exprs[n] = expr
+                        coercion.append(report)
+                    elif report:
+                        coercion.append(report)
+            else:
+                selected = all_numeric
+
+            if not selected:
+                out: dict[str, Any] = {
+                    "error": (
+                        "No numeric columns found (or none of the requested columns hold "
+                        "numbers, even read as text)"
+                    )
+                }
+                if coercion:
+                    out["numeric_coercion"] = coercion
+                return _with_filter_notes(out, filter_notes)
+
+            pctile_arr = "[" + ", ".join(repr(float(p)) for p in percentiles) + "]"
+            pctile_keys = [f"p{int(round(p * 100))}" for p in percentiles]
+
+            col_results = []
+            for col_name, col_type in selected:
+                quoted = exprs.get(col_name) or _raw_quote(col_name)
+                try:
+                    row = con.execute(
+                        f"SELECT quantile_cont({quoted}, {pctile_arr}), "
+                        f"min({quoted}), max({quoted}), avg({quoted}), "
+                        f"count({quoted}), count(*) - count({quoted}) "
+                        f"FROM data {where}"
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    q_arr, mn, mx, mean, non_null, null_ct = row
+                    result = {
+                        "name": col_name,
+                        "type": col_type,
+                        "non_null_count": non_null,
+                        "null_count": null_ct,
+                        "min": mn,
+                        "max": mx,
+                        "mean": mean,
+                    }
+                    if q_arr is not None:
+                        for key, val in zip(pctile_keys, q_arr):
+                            result[key] = val
+                    col_results.append(result)
+                except duckdb.Error as e:
+                    col_results.append({"name": col_name, "type": col_type, "error": str(e)})
+        finally:
+            con.close()
+
+        quantile_result: dict[str, Any] = {
+            "source_url": url,
+            "format": kind,
+            "cache": meta,
+            "row_count": row_count,
+            "percentiles": percentiles,
+            "columns": col_results,
+        }
+        if coercion:
+            quantile_result["numeric_coercion"] = coercion
+        return _with_filter_notes(quantile_result, filter_notes)
+
+    return await _off_loop(_run)
 
 
 @_tool_envelope
@@ -2138,67 +2164,69 @@ async def find_duplicates_resource(
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
         return _load_error(e, url)
 
-    con = _new_con()
-    try:
-        available = _open_view(con, parquet)
-        filter_notes: list[dict[str, Any]] = []
+    def _run() -> dict[str, Any]:
+        con = _new_con()
         try:
-            where = _build_where(filters, available, _column_types(con), filter_notes)
-        except AnalyticsError as e:
-            return {"error": str(e)}
+            available = _open_view(con, parquet)
+            filter_notes: list[dict[str, Any]] = []
+            try:
+                where = _build_where(filters, available, _column_types(con), filter_notes)
+            except AnalyticsError as e:
+                return {"error": str(e)}
 
-        if columns is None:
-            columns = list(available)
+            checked = list(available) if columns is None else columns
 
-        try:
-            group_cols = ", ".join(_quote_ident(c, available) for c in columns)
-        except AnalyticsError as e:
-            return {"error": str(e)}
+            try:
+                group_cols = ", ".join(_quote_ident(c, available) for c in checked)
+            except AnalyticsError as e:
+                return {"error": str(e)}
 
-        count_sql = (
-            f"SELECT COUNT(*) AS grps, SUM(cnt) AS total_rows FROM ("
-            f"SELECT COUNT(*) AS cnt FROM data {where} "
-            f"GROUP BY {group_cols} HAVING COUNT(*) > 1) t"
-        ).strip()
-        try:
-            count_row = con.execute(count_sql).fetchone()
-        except duckdb.Error as e:
-            return _duckdb_error(e)
+            count_sql = (
+                f"SELECT COUNT(*) AS grps, SUM(cnt) AS total_rows FROM ("
+                f"SELECT COUNT(*) AS cnt FROM data {where} "
+                f"GROUP BY {group_cols} HAVING COUNT(*) > 1) t"
+            ).strip()
+            try:
+                count_row = con.execute(count_sql).fetchone()
+            except duckdb.Error as e:
+                return _duckdb_error(e)
 
-        duplicate_groups = count_row[0] if count_row else 0  # type: ignore[index]
-        total_dup_rows = count_row[1] if count_row else 0  # type: ignore[index]
+            duplicate_groups = count_row[0] if count_row else 0  # type: ignore[index]
+            total_dup_rows = count_row[1] if count_row else 0  # type: ignore[index]
 
-        main_sql = (
-            f"SELECT {group_cols}, COUNT(*) AS duplicate_count "
-            f"FROM data {where} "
-            f"GROUP BY {group_cols} "
-            f"HAVING COUNT(*) > 1 "
-            f"ORDER BY duplicate_count DESC "
-            f"LIMIT {limit}"
-        ).strip()
-        try:
-            rs = con.execute(main_sql)
-        except duckdb.Error as e:
-            return _duckdb_error(e)
-        col_names = [d[0] for d in rs.description]
-        rows = rs.fetchall()
-    finally:
-        con.close()
+            main_sql = (
+                f"SELECT {group_cols}, COUNT(*) AS duplicate_count "
+                f"FROM data {where} "
+                f"GROUP BY {group_cols} "
+                f"HAVING COUNT(*) > 1 "
+                f"ORDER BY duplicate_count DESC "
+                f"LIMIT {limit}"
+            ).strip()
+            try:
+                rs = con.execute(main_sql)
+            except duckdb.Error as e:
+                return _duckdb_error(e)
+            col_names = [d[0] for d in rs.description]
+            rows = rs.fetchall()
+        finally:
+            con.close()
 
-    return _with_filter_notes(
-        {
-            "source_url": url,
-            "format": kind,
-            "cache": meta,
-            "columns_checked": columns,
-            "duplicate_groups_found": duplicate_groups,
-            "groups_returned": len(rows),
-            "total_duplicate_rows": total_dup_rows,
-            "columns": col_names,
-            "rows": [list(r) for r in rows],
-        },
-        filter_notes,
-    )
+        return _with_filter_notes(
+            {
+                "source_url": url,
+                "format": kind,
+                "cache": meta,
+                "columns_checked": checked,
+                "duplicate_groups_found": duplicate_groups,
+                "groups_returned": len(rows),
+                "total_duplicate_rows": total_dup_rows,
+                "columns": col_names,
+                "rows": [list(r) for r in rows],
+            },
+            filter_notes,
+        )
+
+    return await _off_loop(_run)
 
 
 @_tool_envelope
@@ -2224,115 +2252,120 @@ async def detect_outliers_resource(
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
         return _load_error(e, url)
 
-    con = _new_con()
-    try:
-        available = _open_view(con, parquet)
-        filter_notes: list[dict[str, Any]] = []
+    def _run() -> dict[str, Any]:
+        con = _new_con()
         try:
-            where = _build_where(filters, available, _column_types(con), filter_notes)
-        except AnalyticsError as e:
-            return {"error": str(e)}
+            available = _open_view(con, parquet)
+            filter_notes: list[dict[str, Any]] = []
+            try:
+                where = _build_where(filters, available, _column_types(con), filter_notes)
+            except AnalyticsError as e:
+                return {"error": str(e)}
 
-        quoted = _quote_ident(column, available)
-        types = {r[0]: r[1] for r in con.execute("DESCRIBE data").fetchall()}
-        resolved = _match_column(column, available) or column
-        coercion_report = None
-        if not _is_numeric_type(types.get(resolved, "")):
-            expr, coercion_report = _numeric_ref(con, resolved, types, where)
-            if coercion_report and coercion_report.get("coerced"):
-                quoted = expr
-            else:
+            quoted = _quote_ident(column, available)
+            types = {r[0]: r[1] for r in con.execute("DESCRIBE data").fetchall()}
+            resolved = _match_column(column, available) or column
+            coercion_report = None
+            if not _is_numeric_type(types.get(resolved, "")):
+                expr, coercion_report = _numeric_ref(con, resolved, types, where)
+                if coercion_report and coercion_report.get("coerced"):
+                    quoted = expr
+                else:
+                    return {
+                        "error": (
+                            f"Column '{column}' is stored as text and does not hold numbers, "
+                            "so it has no quartiles."
+                        ),
+                        "numeric_coercion": [coercion_report] if coercion_report else [],
+                    }
+
+            try:
+                stats_row = con.execute(
+                    f"SELECT quantile_cont({quoted}, 0.25), quantile_cont({quoted}, 0.75) "
+                    f"FROM data {where}"
+                ).fetchone()
+            except duckdb.Error as e:
                 return {
-                    "error": (
-                        f"Column '{column}' is stored as text and does not hold numbers, "
-                        "so it has no quartiles."
-                    ),
-                    "numeric_coercion": [coercion_report] if coercion_report else [],
+                    "error": f"Could not compute IQR for column '{column}': {e}. Is it numeric?"
                 }
 
-        try:
-            stats_row = con.execute(
-                f"SELECT quantile_cont({quoted}, 0.25), quantile_cont({quoted}, 0.75) "
-                f"FROM data {where}"
-            ).fetchone()
-        except duckdb.Error as e:
-            return {"error": f"Could not compute IQR for column '{column}': {e}. Is it numeric?"}
+            if stats_row is None or stats_row[0] is None or stats_row[1] is None:
+                return {"error": f"Column '{column}' has no non-null values in the filtered data."}
 
-        if stats_row is None or stats_row[0] is None or stats_row[1] is None:
-            return {"error": f"Column '{column}' has no non-null values in the filtered data."}
+            q1, q3 = stats_row[0], stats_row[1]
+            iqr = q3 - q1
+            if iqr == 0:
+                # Not a failure. The question "which values are outliers?" has a
+                # correct answer here — none — and the column being flat is itself
+                # the finding. Reporting it as an error made a working tool look
+                # broken on 13 of 113 real columns during the catalog audit, and
+                # left the assistant with nothing to tell the user.
+                return {
+                    "outliers": [],
+                    "column": column,
+                    "q1": q1,
+                    "q3": q3,
+                    "iqr": 0,
+                    "note": (
+                        f"Column '{column}' has no spread: the first and third quartiles are "
+                        f"both {q1}, so no value can be an outlier. This usually means the "
+                        f"column holds a constant, a year, or only a handful of repeated values."
+                    ),
+                }
 
-        q1, q3 = stats_row[0], stats_row[1]
-        iqr = q3 - q1
-        if iqr == 0:
-            # Not a failure. The question "which values are outliers?" has a
-            # correct answer here — none — and the column being flat is itself
-            # the finding. Reporting it as an error made a working tool look
-            # broken on 13 of 113 real columns during the catalog audit, and
-            # left the assistant with nothing to tell the user.
-            return {
-                "outliers": [],
-                "column": column,
-                "q1": q1,
-                "q3": q3,
-                "iqr": 0,
-                "note": (
-                    f"Column '{column}' has no spread: the first and third quartiles are "
-                    f"both {q1}, so no value can be an outlier. This usually means the "
-                    f"column holds a constant, a year, or only a handful of repeated values."
-                ),
-            }
+            lower_fence = q1 - 1.5 * iqr
+            upper_fence = q3 + 1.5 * iqr
 
-        lower_fence = q1 - 1.5 * iqr
-        upper_fence = q3 + 1.5 * iqr
-
-        outlier_where = (
-            f"{where} AND ({quoted} < {lower_fence} OR {quoted} > {upper_fence})"
-            if where
-            else f"WHERE ({quoted} < {lower_fence} OR {quoted} > {upper_fence})"
-        )
-        try:
-            count_row = con.execute(f"SELECT COUNT(*) FROM data {outlier_where}").fetchone()
-            outlier_count = count_row[0] if count_row else 0  # type: ignore[index]
-        except duckdb.Error:
-            outlier_count = None
-
-        try:
-            rs = con.execute(
-                f"SELECT *, {lower_fence} AS lower_fence, {upper_fence} AS upper_fence "
-                f"FROM data {outlier_where} "
-                f"ORDER BY ABS({quoted} - {(q1 + q3) / 2}) DESC "
-                f"LIMIT {limit}"
+            outlier_where = (
+                f"{where} AND ({quoted} < {lower_fence} OR {quoted} > {upper_fence})"
+                if where
+                else f"WHERE ({quoted} < {lower_fence} OR {quoted} > {upper_fence})"
             )
-            col_names = [d[0] for d in rs.description]
-            rows = rs.fetchall()
-        except duckdb.Error as e:
-            return _duckdb_error(e)
-    finally:
-        con.close()
+            try:
+                count_row = con.execute(f"SELECT COUNT(*) FROM data {outlier_where}").fetchone()
+                outlier_count = count_row[0] if count_row else 0  # type: ignore[index]
+            except duckdb.Error:
+                outlier_count = None
 
-    outliers_result = {
-        "source_url": url,
-        "format": kind,
-        "cache": meta,
-        "column": column,
-        "method": "IQR",
-        "q1": q1,
-        "q3": q3,
-        "iqr": iqr,
-        "lower_fence": lower_fence,
-        "upper_fence": upper_fence,
-        "outlier_count_estimate": outlier_count,
-        "rows_returned": len(rows),
-        "columns": col_names,
-        "rows": [list(r) for r in rows],
-    }
-    return _with_filter_notes(
-        {
-            **outliers_result,
-            **({"numeric_coercion": [coercion_report]} if coercion_report else {}),
-        },
-        filter_notes,
-    )
+            try:
+                rs = con.execute(
+                    f"SELECT *, {lower_fence} AS lower_fence, {upper_fence} AS upper_fence "
+                    f"FROM data {outlier_where} "
+                    f"ORDER BY ABS({quoted} - {(q1 + q3) / 2}) DESC "
+                    f"LIMIT {limit}"
+                )
+                col_names = [d[0] for d in rs.description]
+                rows = rs.fetchall()
+            except duckdb.Error as e:
+                return _duckdb_error(e)
+        finally:
+            con.close()
+
+        outliers_result = {
+            "source_url": url,
+            "format": kind,
+            "cache": meta,
+            "column": column,
+            "method": "IQR",
+            "q1": q1,
+            "q3": q3,
+            "iqr": iqr,
+            "lower_fence": lower_fence,
+            "upper_fence": upper_fence,
+            "outlier_count_estimate": outlier_count,
+            "rows_returned": len(rows),
+            "columns": col_names,
+            "rows": [list(r) for r in rows],
+        }
+        return _with_filter_notes(
+            {
+                **outliers_result,
+                **({"numeric_coercion": [coercion_report]} if coercion_report else {}),
+            },
+            filter_notes,
+        )
+
+    return await _off_loop(_run)
 
 
 @_tool_envelope
@@ -2378,8 +2411,19 @@ async def save_query_to_csv(
         # dir that is itself a Windows system path: TEMP is C:\Windows\Temp for the
         # SYSTEM account and some services, and honouring the exception there would
         # switch the denylist off exactly where it matters most.
+        # Only an absolute destination can earn the exemption. A relative one
+        # resolves against whatever the working directory happens to be, and when
+        # that directory sits under the temp root — a checkout in /private/tmp, a
+        # CI runner's scratch — `C:\Windows\evil.csv` on POSIX resolved *inside*
+        # the exemption and was reported as "must be absolute" instead of as a
+        # system path. Nothing was written either way; the message was wrong and
+        # the tests depended on where the repository lived.
         tmp_root = Path(tempfile.gettempdir()).resolve()
-        in_scratch = tmp_root in dest_path.parents and not _forbidden_windows(str(tmp_root))
+        in_scratch = (
+            expanded.is_absolute()
+            and tmp_root in dest_path.parents
+            and not _forbidden_windows(str(tmp_root))
+        )
         if not in_scratch:
             # Network locations are refused, and told apart from system paths so the
             # message names the actual policy. Checked first because a UNC path to a
@@ -2423,68 +2467,73 @@ async def save_query_to_csv(
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
         return _load_error(e, url)
 
-    con = _new_con()
-    try:
-        if sql is not None:
-            try:
-                cleaned = _validate_sql(sql)
-            except AnalyticsError as e:
-                return {"error": str(e)}
-            available = _open_sandboxed(con, parquet)
-            wrapped = f"SELECT * FROM ({cleaned}) AS _q LIMIT {limit}"
-            try:
-                # Same wall-clock backstop as query_resource — this is the
-                # other free-form SQL entry point.
-                rs = _execute_guarded(con, wrapped)
-            except duckdb.Error as e:
-                return _duckdb_error(e, available=available)
-        else:
-            available = _open_view(con, parquet)
-            select_clause = "*"
-            if columns:
+    def _run() -> dict[str, Any]:
+        con = _new_con()
+        try:
+            if sql is not None:
                 try:
-                    select_clause = ", ".join(_quote_ident(c, available) for c in columns)
+                    cleaned = _validate_sql(sql)
                 except AnalyticsError as e:
                     return {"error": str(e)}
-            try:
-                where = _build_where(filters, available, _column_types(con), filter_notes)
-            except AnalyticsError as e:
-                return {"error": str(e)}
-            try:
-                rs = con.execute(f"SELECT {select_clause} FROM data {where} LIMIT {limit}".strip())
-            except duckdb.Error as e:
-                return _duckdb_error(e)
+                available = _open_sandboxed(con, parquet)
+                wrapped = f"SELECT * FROM ({cleaned}) AS _q LIMIT {limit}"
+                try:
+                    # Same wall-clock backstop as query_resource — this is the
+                    # other free-form SQL entry point.
+                    rs = _execute_guarded(con, wrapped)
+                except duckdb.Error as e:
+                    return _duckdb_error(e, available=available)
+            else:
+                available = _open_view(con, parquet)
+                select_clause = "*"
+                if columns:
+                    try:
+                        select_clause = ", ".join(_quote_ident(c, available) for c in columns)
+                    except AnalyticsError as e:
+                        return {"error": str(e)}
+                try:
+                    where = _build_where(filters, available, _column_types(con), filter_notes)
+                except AnalyticsError as e:
+                    return {"error": str(e)}
+                try:
+                    rs = con.execute(
+                        f"SELECT {select_clause} FROM data {where} LIMIT {limit}".strip()
+                    )
+                except duckdb.Error as e:
+                    return _duckdb_error(e)
 
-        col_names = [d[0] for d in rs.description]
-        rows = rs.fetchall()
-    finally:
-        con.close()
+            col_names = [d[0] for d in rs.description]
+            rows = rs.fetchall()
+        finally:
+            con.close()
 
-    try:
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        # O_NOFOLLOW closes the TOCTOU window: a symlink swapped in between the
-        # earlier path checks and this write would otherwise be followed when
-        # overwrite=True. Raises ELOOP instead of writing through the link.
-        open_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(str(dest_path), open_flags, 0o644)
-    except OSError as e:
-        return _dest_open_error(e, dest_path)
-    with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
-        writer = _csv.writer(f)
-        writer.writerow(col_names)
-        writer.writerows(rows)
+        try:
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            # O_NOFOLLOW closes the TOCTOU window: a symlink swapped in between the
+            # earlier path checks and this write would otherwise be followed when
+            # overwrite=True. Raises ELOOP instead of writing through the link.
+            open_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(str(dest_path), open_flags, 0o644)
+        except OSError as e:
+            return _dest_open_error(e, dest_path)
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
+            writer = _csv.writer(f)
+            writer.writerow(col_names)
+            writer.writerows(rows)
 
-    bytes_written = dest_path.stat().st_size
-    return _with_filter_notes(
-        {
-            "path": str(dest_path),
-            "rows_written": len(rows),
-            "columns": col_names,
-            "bytes_written": bytes_written,
-            "cache": meta,
-        },
-        filter_notes,
-    )
+        bytes_written = dest_path.stat().st_size
+        return _with_filter_notes(
+            {
+                "path": str(dest_path),
+                "rows_written": len(rows),
+                "columns": col_names,
+                "bytes_written": bytes_written,
+                "cache": meta,
+            },
+            filter_notes,
+        )
+
+    return await _off_loop(_run)
 
 
 @_tool_envelope
@@ -2510,51 +2559,54 @@ async def filter_resource(
     limit = min(max(int(limit), 1), FILTER_MAX_LIMIT)
     offset = max(int(offset), 0)
 
-    con = _new_con()
-    try:
-        available = _open_view(con, parquet)
-        select_clause = "*"
-        if columns:
-            select_clause = ", ".join(_quote_ident(c, available) for c in columns)
-        filter_notes: list[dict[str, Any]] = []
+    def _run() -> dict[str, Any]:
+        con = _new_con()
         try:
-            where = _build_where(filters, available, _column_types(con), filter_notes)
-            order = _build_order_by(order_by, available)
-        except AnalyticsError as e:
-            return {"error": str(e)}
+            available = _open_view(con, parquet)
+            select_clause = "*"
+            if columns:
+                select_clause = ", ".join(_quote_ident(c, available) for c in columns)
+            filter_notes: list[dict[str, Any]] = []
+            try:
+                where = _build_where(filters, available, _column_types(con), filter_notes)
+                order = _build_order_by(order_by, available)
+            except AnalyticsError as e:
+                return {"error": str(e)}
 
-        sql = (
-            f"SELECT {select_clause} FROM data {where} {order} LIMIT {limit} OFFSET {offset}"
-        ).strip()
-        try:
-            rs = con.execute(sql)
-        except duckdb.Error as e:
-            return _duckdb_error(e, sql)
-        col_names = [d[0] for d in rs.description]
-        rows = rs.fetchall()
-        # Estimate total matching rows (separate count query).
-        try:
-            total = con.execute(f"SELECT COUNT(*) FROM data {where}".strip()).fetchone()[0]  # type: ignore[index]
-        except duckdb.Error:
-            total = None
+            sql = (
+                f"SELECT {select_clause} FROM data {where} {order} LIMIT {limit} OFFSET {offset}"
+            ).strip()
+            try:
+                rs = con.execute(sql)
+            except duckdb.Error as e:
+                return _duckdb_error(e, sql)
+            col_names = [d[0] for d in rs.description]
+            rows = rs.fetchall()
+            # Estimate total matching rows (separate count query).
+            try:
+                total = con.execute(f"SELECT COUNT(*) FROM data {where}".strip()).fetchone()[0]  # type: ignore[index]
+            except duckdb.Error:
+                total = None
 
-    finally:
-        con.close()
+        finally:
+            con.close()
 
-    return _with_filter_notes(
-        {
-            "source_url": url,
-            "format": kind,
-            "cache": meta,
-            "matching_rows_total": total,
-            "rows_returned": len(rows),
-            "columns": col_names,
-            "limit": limit,
-            "offset": offset,
-            "rows": [list(r) for r in rows],
-        },
-        filter_notes,
-    )
+        return _with_filter_notes(
+            {
+                "source_url": url,
+                "format": kind,
+                "cache": meta,
+                "matching_rows_total": total,
+                "rows_returned": len(rows),
+                "columns": col_names,
+                "limit": limit,
+                "offset": offset,
+                "rows": [list(r) for r in rows],
+            },
+            filter_notes,
+        )
+
+    return await _off_loop(_run)
 
 
 @_tool_envelope
@@ -2582,101 +2634,111 @@ async def aggregate_resource(
 
     limit = min(max(int(limit), 1), AGGREGATE_MAX_LIMIT)
 
-    con = _new_con()
-    try:
-        available = _open_view(con, parquet)
-        types = {r[0]: r[1] for r in con.execute("DESCRIBE data").fetchall()}
-        # Resolve each measure once, so a column aggregated three ways is
-        # inspected once and reported once.
-        coercion: dict[str, dict[str, Any]] = {}
-
-        def measure(name: str) -> str:
-            resolved = _match_column(name, available)
-            if resolved is None:
-                return _quote_ident(name, available)  # raises, naming the real columns
-            if resolved not in coercion:
-                expr, report = _numeric_ref(con, resolved, types, "")
-                coercion[resolved] = {"expr": expr, "report": report}
-            return coercion[resolved]["expr"]
-
+    def _run() -> dict[str, Any]:
+        con = _new_con()
         try:
-            agg_parts = [_build_agg_expr(a, available, measure) for a in aggregations]
-        except AnalyticsError as e:
-            return {"error": str(e)}
-
-        group_parts: list[str] = []
-        if group_by:
+            available = _open_view(con, parquet)
+            types = {r[0]: r[1] for r in con.execute("DESCRIBE data").fetchall()}
+            # The WHERE clause is built before the measures because the coercion
+            # report has to describe the rows the figure was computed over. Probing
+            # the whole file and then aggregating a filtered slice reported "38 used,
+            # 3 excluded" against a January total that only saw 20 values.
+            filter_notes: list[dict[str, Any]] = []
             try:
-                group_parts = [_quote_ident(c, available) for c in group_by]
+                where = _build_where(filters, available, types, filter_notes)
+            except AnalyticsError as e:
+                return {"error": str(e)}
+            # Resolve each measure once, so a column aggregated three ways is
+            # inspected once and reported once.
+            coercion: dict[str, dict[str, Any]] = {}
+
+            def measure(name: str) -> str:
+                resolved = _match_column(name, available)
+                if resolved is None:
+                    return _quote_ident(name, available)  # raises, naming the real columns
+                if resolved not in coercion:
+                    expr, report = _numeric_ref(con, resolved, types, where)
+                    coercion[resolved] = {"expr": expr, "report": report}
+                return coercion[resolved]["expr"]
+
+            try:
+                agg_parts = [_build_agg_expr(a, available, measure) for a in aggregations]
             except AnalyticsError as e:
                 return {"error": str(e)}
 
-        select_clause = ", ".join([*group_parts, *agg_parts])
-        # ORDER BY and HAVING may legitimately name an aggregation alias, which
-        # is not a column of the file, so they see the columns plus the aliases
-        # this query just defined.
-        aliases = [
-            a.get("alias") or f"{(a.get('fn') or '').lower()}_{a.get('col') or 'all'}"
-            for a in aggregations
-        ]
-        selectable = available + [a for a in aliases if isinstance(a, str)]
-        filter_notes: list[dict[str, Any]] = []
-        try:
-            where = _build_where(filters, available, _column_types(con), filter_notes)
-            order = _build_order_by(order_by, selectable)
-        except AnalyticsError as e:
-            return {"error": str(e)}
-        group_clause = "GROUP BY " + ", ".join(group_parts) if group_parts else ""
+            group_parts: list[str] = []
+            if group_by:
+                try:
+                    group_parts = [_quote_ident(c, available) for c in group_by]
+                except AnalyticsError as e:
+                    return {"error": str(e)}
 
-        # HAVING uses the same filter syntax but column refs are agg aliases.
-        having_clause = ""
-        if having:
+            select_clause = ", ".join([*group_parts, *agg_parts])
+            # ORDER BY and HAVING may legitimately name an aggregation alias, which
+            # is not a column of the file, so they see the columns plus the aliases
+            # this query just defined.
+            aliases = [
+                a.get("alias") or f"{(a.get('fn') or '').lower()}_{a.get('col') or 'all'}"
+                for a in aggregations
+            ]
+            selectable = available + [a for a in aliases if isinstance(a, str)]
             try:
-                having_clause = "HAVING " + " AND ".join(
-                    _build_filter_clause(h, selectable) for h in having
-                )
+                order = _build_order_by(order_by, selectable)
             except AnalyticsError as e:
                 return {"error": str(e)}
+            group_clause = "GROUP BY " + ", ".join(group_parts) if group_parts else ""
 
-        sql = (
-            f"SELECT {select_clause} FROM data {where} {group_clause} "
-            f"{having_clause} {order} LIMIT {limit}"
-        ).strip()
-        try:
-            rs = con.execute(sql)
-        except duckdb.Error as e:
-            return _duckdb_error(e, sql)
-        col_names = [d[0] for d in rs.description]
-        rows = rs.fetchall()
-        reports = [v["report"] for v in coercion.values() if v["report"]]
-        computation = _computation(con, sql)
-    finally:
-        con.close()
+            # HAVING uses the same filter syntax but column refs are agg aliases.
+            having_clause = ""
+            if having:
+                try:
+                    having_clause = "HAVING " + " AND ".join(
+                        _build_filter_clause(h, selectable) for h in having
+                    )
+                except AnalyticsError as e:
+                    return {"error": str(e)}
 
-    result: dict[str, Any] = {
-        "source_url": url,
-        "format": kind,
-        "cache": meta,
-        "groups_returned": len(rows),
-        "columns": col_names,
-        "limit": limit,
-        "rows": [list(r) for r in rows],
-        "computation": computation,
-    }
-    if reports:
-        result["numeric_coercion"] = reports
-    # Asking for ten groups without saying which ten returns ten arbitrary ones,
-    # and the reply is shaped exactly like a top ten. Warn only when the cut
-    # actually happened: an unordered query that fit under the limit lost
-    # nothing, and warning on every one of those is noise that trains the
-    # caller to ignore the field.
-    if not order_by and len(rows) == limit:
-        result["warning"] = (
-            f"Returned {limit} group(s) with no order_by, so these are an arbitrary "
-            "slice of the groups, not the largest ones. Add order_by, e.g. "
-            f'[{{"col": "{aliases[0] if aliases else "alias"}", "dir": "desc"}}].'
-        )
-    return _with_filter_notes(result, filter_notes)
+            sql = (
+                f"SELECT {select_clause} FROM data {where} {group_clause} "
+                f"{having_clause} {order} LIMIT {limit}"
+            ).strip()
+            try:
+                rs = con.execute(sql)
+            except duckdb.Error as e:
+                return _duckdb_error(e, sql)
+            col_names = [d[0] for d in rs.description]
+            rows = rs.fetchall()
+            reports = [v["report"] for v in coercion.values() if v["report"]]
+            computation = _computation(con, sql)
+        finally:
+            con.close()
+
+        result: dict[str, Any] = {
+            "source_url": url,
+            "format": kind,
+            "cache": meta,
+            "groups_returned": len(rows),
+            "columns": col_names,
+            "limit": limit,
+            "rows": [list(r) for r in rows],
+            "computation": computation,
+        }
+        if reports:
+            result["numeric_coercion"] = reports
+        # Asking for ten groups without saying which ten returns ten arbitrary ones,
+        # and the reply is shaped exactly like a top ten. Warn only when the cut
+        # actually happened: an unordered query that fit under the limit lost
+        # nothing, and warning on every one of those is noise that trains the
+        # caller to ignore the field.
+        if not order_by and len(rows) == limit:
+            result["warning"] = (
+                f"Returned {limit} group(s) with no order_by, so these are an arbitrary "
+                "slice of the groups, not the largest ones. Add order_by, e.g. "
+                f'[{{"col": "{aliases[0] if aliases else "alias"}", "dir": "desc"}}].'
+            )
+        return _with_filter_notes(result, filter_notes)
+
+    return await _off_loop(_run)
 
 
 # ─── Raw SQL escape hatch ─────────────────────────────────────────────────────
@@ -2731,29 +2793,32 @@ async def query_resource(
     limit = min(max(int(limit), 1), SQL_MAX_LIMIT)
     wrapped = f"SELECT * FROM ({cleaned}) AS _user_q LIMIT {limit}"
 
-    con = _new_con()
-    try:
-        available = _open_sandboxed(con, parquet)
+    def _run() -> dict[str, Any]:
+        con = _new_con()
         try:
-            rs = _execute_guarded(con, wrapped)
-        except duckdb.Error as e:
-            return _duckdb_error(e, wrapped, available)
-        col_names = [d[0] for d in rs.description]
-        rows = rs.fetchall()
-        computation = _computation(con, wrapped)
-    finally:
-        con.close()
+            available = _open_sandboxed(con, parquet)
+            try:
+                rs = _execute_guarded(con, wrapped)
+            except duckdb.Error as e:
+                return _duckdb_error(e, wrapped, available)
+            col_names = [d[0] for d in rs.description]
+            rows = rs.fetchall()
+            computation = _computation(con, wrapped)
+        finally:
+            con.close()
 
-    return {
-        "source_url": url,
-        "format": kind,
-        "cache": meta,
-        "sql_executed": wrapped,
-        "rows_returned": len(rows),
-        "columns": col_names,
-        "rows": [list(r) for r in rows],
-        "computation": computation,
-    }
+        return {
+            "source_url": url,
+            "format": kind,
+            "cache": meta,
+            "sql_executed": wrapped,
+            "rows_returned": len(rows),
+            "columns": col_names,
+            "rows": [list(r) for r in rows],
+            "computation": computation,
+        }
+
+    return await _off_loop(_run)
 
 
 # ─── Cache management tool ────────────────────────────────────────────────────

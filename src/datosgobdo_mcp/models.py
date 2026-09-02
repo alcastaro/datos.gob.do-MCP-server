@@ -94,7 +94,6 @@ class SchemaColumn(_Lean):
     model_config = ConfigDict(extra="allow")
     name: str
     type: str
-    nullable: bool | None = None
     sample_values: list[Any] | None = None
 
 

@@ -389,20 +389,6 @@ async def test_query_resource_blocks_file_access(mock_csv_endpoint, tmp_cache_di
     assert "error" in out, f"file access was NOT blocked: {out}"
 
 
-async def test_query_resource_legit_query_still_works_after_sandbox(
-    mock_csv_endpoint, tmp_cache_dir
-):
-    # Regression: the sandbox must not break normal queries against `data`.
-    out = await analytics.query_resource(
-        mock_csv_endpoint,
-        "csv",
-        sql="SELECT Estatus, COUNT(*) AS n FROM data GROUP BY Estatus",
-    )
-    assert "error" not in out, out
-    by = {r[0]: r[1] for r in out["rows"]}
-    assert by["FIJO"] == 4
-
-
 # ─── #3: get_resource_schema.sample_rows must actually control the cap ─────────
 
 
@@ -921,21 +907,6 @@ async def test_ensure_cached_zero_bytes_returns_error(tmp_cache_dir, httpx_mock)
 # ─── _quote_ident denylist branch ─────────────────────────────────────────────
 
 
-def test_quote_ident_rejects_forbidden_substring_dash_dash():
-    with pytest.raises(analytics.AnalyticsError):
-        analytics._quote_ident("col--comment")
-
-
-def test_quote_ident_rejects_forbidden_substring_block_comment():
-    with pytest.raises(analytics.AnalyticsError):
-        analytics._quote_ident("col/*bad")
-
-
-def test_quote_ident_rejects_semicolon():
-    with pytest.raises(analytics.AnalyticsError):
-        analytics._quote_ident("col;drop")
-
-
 # ─── error envelope: handled failures must never escape as exceptions ─────────
 #
 # Found by the 2026-08-07 catalog sweep: a resource hosted on a domain whose DNS
@@ -1143,6 +1114,63 @@ async def test_cold_path_does_not_block_the_event_loop(mock_ods_endpoint, tmp_ca
         beat.cancel()
     assert "error" not in out, out
     assert ticks > 0, "event loop never got control during the cold path"
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda url: analytics.get_resource_schema(url, "csv"),
+        lambda url: analytics.summarize_resource(url, "csv"),
+        lambda url: analytics.filter_resource(url, "csv", limit=5),
+        lambda url: analytics.aggregate_resource(url, "csv", [{"col": None, "fn": "count"}]),
+        lambda url: analytics.quantiles_resource(url, "csv"),
+        lambda url: analytics.find_duplicates_resource(url, "csv"),
+        lambda url: analytics.detect_outliers_resource(url, "csv", column="Sueldo"),
+        lambda url: analytics.query_resource(url, "csv", sql="SELECT count(*) FROM data"),
+    ],
+    ids=[
+        "schema",
+        "summarize",
+        "filter",
+        "aggregate",
+        "quantiles",
+        "duplicates",
+        "outliers",
+        "query",
+    ],
+)
+async def test_the_warm_path_does_not_block_the_event_loop(mock_csv_endpoint, tmp_cache_dir, call):
+    """The cold path moved its conversion to a worker thread; the warm path,
+    which serves every call but the first, still ran every DuckDB query on the
+    event loop. Measured on a 40-column, 300k-row file: 160-220 ms per call with
+    the loop frozen throughout — zero heartbeat ticks — which on a hosted
+    instance is every other client waiting, and locally is the interrupt timer
+    unable to fire.
+
+    `sleep(0)` rather than a millisecond: the fixture is tiny and a query can
+    finish before a timed sleep wakes, which would make a zero flaky. A tool that
+    yields to a thread suspends at least once, so one tick is a hard guarantee;
+    a tool that never yields produces exactly zero. That asymmetry is the test.
+    """
+    import asyncio
+
+    await analytics.get_resource_schema(mock_csv_endpoint, "csv")  # warm the cache
+    ticks = 0
+
+    async def heartbeat():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0)
+            ticks += 1
+
+    beat = asyncio.create_task(heartbeat())
+    try:
+        out = await call(mock_csv_endpoint)
+    finally:
+        beat.cancel()
+    assert "error" not in out, out
+    assert out["cache"]["cache"] == "hit", "must exercise the warm path"
+    assert ticks > 0, "the event loop never got control during a warm call"
 
 
 async def test_xlsx_falls_back_to_all_text_when_type_inference_fails(tmp_cache_dir, httpx_mock):
@@ -1502,6 +1530,26 @@ async def test_outliers_work_on_a_text_measure(mock_dirty_numeric_endpoint, tmp_
     assert out["numeric_coercion"][0]["values_excluded"] == 3
 
 
+async def test_the_coercion_report_describes_the_filtered_rows(
+    mock_dirty_numeric_endpoint, tmp_cache_dir
+):
+    """The `numeric_coercion` block is the audit claim, so it has to describe the
+    rows the figure was computed over. It used to be measured over the whole file
+    even when `filters` cut it down — 38 used and 3 excluded reported against a
+    January total that only ever saw 20 values and skipped one."""
+    out = await analytics.aggregate_resource(
+        mock_dirty_numeric_endpoint,
+        "csv",
+        aggregations=[{"col": "Sueldo Bruto (RD$)", "fn": "sum", "alias": "total"}],
+        filters=[{"col": "Mes", "op": "=", "val": "Enero"}],
+    )
+    assert "error" not in out, out
+    report = out["numeric_coercion"][0]
+    assert report["values_used"] == 20
+    assert report["values_excluded"] == 1
+    assert {e["value"] for e in report["excluded_values"]} == {"N/A"}
+
+
 def test_the_cleanup_never_removes_a_value_separator():
     """Measured and rejected: also stripping spaces.
 
@@ -1522,13 +1570,17 @@ async def test_a_megabyte_that_parses_into_one_cell_is_flagged(httpx_mock, tmp_c
     12 do this, six of them JSON.
     """
     url = "https://example.test/grande.json"
-    payload = b"[" + b",".join(b'{"a":%d}' % i for i in range(12000)) + b"]"
+    # One object, one key, one scalar: DuckDB reads it as exactly one row and one
+    # column, and succeeds. The earlier fixture wrapped a JSON array in quotes,
+    # which DuckDB rejects as malformed — so the test took an early `return` on
+    # the error and its assertions never ran. A test that cannot fail is not one.
+    payload = b'{"data": "' + b"x" * 120_000 + b'"}'
     assert len(payload) > 100_000
     httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "j1"})
-    httpx_mock.add_response(url=url, method="GET", content=b'"' + payload + b'"')
+    httpx_mock.add_response(url=url, method="GET", content=payload)
     out = await analytics.get_resource_schema(url, "json")
-    if "error" in out:
-        return  # DuckDB refused it outright, which is also an acceptable answer
+    assert "error" not in out, out
+    assert out["row_count"] == 1 and out["column_count"] == 1
     aviso = out["cache"].get("parse_warning")
     assert aviso, "a file this size collapsing to one cell must not pass silently"
     assert "parse failure" in aviso

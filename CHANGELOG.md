@@ -6,6 +6,46 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **Warm-path queries no longer block the event loop.** Every analytics tool
+  ran its DuckDB work inline on the server's event loop; only the cold-path
+  conversion had been moved to a thread. Measured on a 40-column, 300k-row
+  file: 160–220 ms per call with the loop frozen throughout, which on a hosted
+  instance stalls every other client and locally keeps the query-timeout timer
+  from firing. The DuckDB section of all nine tools, and the cached preview,
+  now run in a worker thread.
+- **`numeric_coercion` describes the filtered rows.** `aggregate_resource`
+  probed the whole file for the coercion report even when `filters` cut it
+  down, so a January total reported "38 values used, 3 excluded" over a slice
+  that only saw 20 and skipped 1.
+- **Tool descriptions agree on the accepted formats.** Half the data tools
+  told the model they accepted "csv, tsv, xlsx, json" while the server has read
+  xls, xlsm and ods — a third of the catalog — for many releases. One shared
+  wording now lists all seven; the note that a wrong declaration is sniffed and
+  corrected moved into the session instructions.
+- **Cache lock timeout and sleep are read at call time.** They were bound as
+  default arguments at import, so neither a runtime reconfiguration nor a test
+  patching them had any effect.
+- **`save_query_to_csv` scratch exemption applies to absolute paths only.** A
+  relative destination that resolved under the temp root skipped the
+  system-path check and got the wrong refusal message; nothing was written
+  either way.
+
+### Changed
+
+- **`get_resource_schema` no longer returns `nullable`.** DESCRIBE over a
+  Parquet view answers YES for every column, so the field carried no
+  information and cost a line per column in the reply the model reads first.
+- **A warm hit only rewrites the index every 30 s per entry.** Each touch took
+  the cross-process lock and rewrote the whole index (4 ms and 167 KB of JSON
+  per call at 600 entries). LRU order is unchanged at that granularity.
+- **Suite runs in about 20 s, down from 69 s.** Four lock-timeout tests were waiting
+  the real ten seconds each because of the default-argument binding above; the
+  cache is isolated per test for the whole suite; one test that could return
+  early without asserting anything now asserts.
+
+
 ## [0.15.0] — 2026-08-30
 
 Migrated to the **MCP Python SDK v2** (the 2026-07-28 spec). This is why the

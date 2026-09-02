@@ -107,7 +107,10 @@ and leave headers inside the data, so results carry numeric_coercion naming \
 what was excluded, source_sha256 for the bytes read, and computation with the \
 SQL that ran. Pass those on: they are what make a figure checkable.
 
-Start with search_datasets, then get_resource_schema before analysing.\
+Start with search_datasets, then get_resource_schema before analysing. Pass a \
+resource's format exactly as the catalog declares it — ODS included, a third of \
+the catalog — the bytes are sniffed and a wrong declaration is corrected and \
+reported in format_corrected.\
 """
 
 mcp = MCPServer(
@@ -139,6 +142,20 @@ def _ro(title: str) -> ToolAnnotations:
 def _ro_local(title: str) -> ToolAnnotations:
     """Read-only tool that touches only local state (no network)."""
     return ToolAnnotations(title=title, read_only_hint=True, open_world_hint=False)
+
+
+# One wording for the two parameters every data tool takes. Ten tools carried
+# their own copy, and the copies disagreed: half of them told the model the tool
+# accepted "csv, tsv, xlsx, json" while `classify_format` — the only check that
+# runs — has taken xls, xlsm and ods for a long time. ODS is a third of this
+# catalog, so a model reading that list refused, on its own, files the server
+# reads fine. The format list is the one `classify_format` enforces; keep them
+# in step.
+_URL_DESC = "Direct URL to the file (CKAN resource 'url' field)."
+# Short on purpose: it is repeated ten times in the tool list, and every byte
+# here is paid by every conversation. The sentence about sniffing lives once, in
+# INSTRUCTIONS, where a client sends it a single time per session.
+_FMT_DESC = "CKAN 'format' field: csv, tsv, xlsx, xls, xlsm, json or ods."
 
 
 # ─── Search and discovery ────────────────────────────────────────────────
@@ -247,19 +264,11 @@ async def search_resources(
 async def download_resource_preview(
     url: Annotated[
         str,
-        Field(
-            description=(
-                "Direct URL to the file (CKAN resource 'url' field). Supports CSV, TSV, XLSX, JSON."
-            )
-        ),
+        Field(description=_URL_DESC),
     ],
     format: Annotated[
         str,
-        Field(
-            description=(
-                "Format declared in CKAN ('format' field). Accepts: csv, tsv, xlsx, xls, json."
-            )
-        ),
+        Field(description=_FMT_DESC),
     ],
     rows: Annotated[
         int,
@@ -279,10 +288,11 @@ async def download_resource_preview(
     """Download a resource and return N rows with their column headers.
 
     The datos.gob.do portal has no DataStore (no SQL), so this tool downloads
-    the file and parses it client-side. 5 MB cap to avoid huge files. Useful
-    for inspecting the structure of the data before deciding how to query it.
-    For analytical queries on big files, use get_resource_schema +
-    summarize_resource (v0.2) or aggregate_resource (v0.3+).
+    the file and parses it client-side. 5 MB cap to avoid huge files; ODS and
+    any resource already read by an analytics tool are served from the Parquet
+    cache instead. Useful for inspecting the structure of the data before
+    deciding how to query it. For analytical queries on big files, use
+    get_resource_schema, then summarize_resource or aggregate_resource.
     """
     return PreviewResult(
         **await preview_resource_data(url=url, fmt=format, rows=rows, sample=sample)
@@ -317,11 +327,11 @@ async def check_resources(
 async def get_resource_schema(
     url: Annotated[
         str,
-        Field(description="Direct URL to the file (CKAN resource 'url' field)."),
+        Field(description=_URL_DESC),
     ],
     format: Annotated[
         str,
-        Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json."),
+        Field(description=_FMT_DESC),
     ],
     sample_rows: Annotated[
         int,
@@ -350,11 +360,11 @@ async def get_resource_schema(
 async def summarize_resource(
     url: Annotated[
         str,
-        Field(description="Direct URL to the file (CKAN resource 'url' field)."),
+        Field(description=_URL_DESC),
     ],
     format: Annotated[
         str,
-        Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json."),
+        Field(description=_FMT_DESC),
     ],
     max_categorical_top_n: Annotated[
         int,
@@ -382,10 +392,10 @@ async def summarize_resource(
 
 @mcp.tool(annotations=_ro("Filter resource rows"))
 async def filter_resource(
-    url: Annotated[str, Field(description="Direct URL to the file (CKAN resource 'url' field).")],
+    url: Annotated[str, Field(description=_URL_DESC)],
     format: Annotated[
         str,
-        Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json."),
+        Field(description=_FMT_DESC),
     ],
     filters: Annotated[
         list[dict] | None,
@@ -436,10 +446,10 @@ async def filter_resource(
 
 @mcp.tool(annotations=_ro("Aggregate resource"))
 async def aggregate_resource(
-    url: Annotated[str, Field(description="Direct URL to the file (CKAN resource 'url' field).")],
+    url: Annotated[str, Field(description=_URL_DESC)],
     format: Annotated[
         str,
-        Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json."),
+        Field(description=_FMT_DESC),
     ],
     aggregations: Annotated[
         list[dict],
@@ -506,10 +516,8 @@ async def aggregate_resource(
 
 @mcp.tool(annotations=_ro("Quantile distribution of numeric columns"))
 async def quantiles_resource(
-    url: Annotated[str, Field(description="Direct URL to the file (CKAN resource 'url' field).")],
-    format: Annotated[
-        str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
-    ],
+    url: Annotated[str, Field(description=_URL_DESC)],
+    format: Annotated[str, Field(description=_FMT_DESC)],
     columns: Annotated[
         list[str | dict] | None,
         Field(description="Numeric columns to analyze. None = all numeric columns."),
@@ -543,10 +551,8 @@ async def quantiles_resource(
 
 @mcp.tool(annotations=_ro("Find duplicate rows"))
 async def find_duplicates_resource(
-    url: Annotated[str, Field(description="Direct URL to the file (CKAN resource 'url' field).")],
-    format: Annotated[
-        str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
-    ],
+    url: Annotated[str, Field(description=_URL_DESC)],
+    format: Annotated[str, Field(description=_FMT_DESC)],
     columns: Annotated[
         list[str | dict] | None,
         Field(
@@ -579,10 +585,8 @@ async def find_duplicates_resource(
 
 @mcp.tool(annotations=_ro("Detect outliers in a numeric column"))
 async def detect_outliers_resource(
-    url: Annotated[str, Field(description="Direct URL to the file (CKAN resource 'url' field).")],
-    format: Annotated[
-        str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
-    ],
+    url: Annotated[str, Field(description=_URL_DESC)],
+    format: Annotated[str, Field(description=_FMT_DESC)],
     column: Annotated[str, Field(description="Numeric column to check. One column per call.")],
     filters: Annotated[
         list[dict] | None,
@@ -617,10 +621,8 @@ async def detect_outliers_resource(
     )
 )
 async def save_query_to_csv(
-    url: Annotated[str, Field(description="Direct URL to the file (CKAN resource 'url' field).")],
-    format: Annotated[
-        str, Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, json.")
-    ],
+    url: Annotated[str, Field(description=_URL_DESC)],
+    format: Annotated[str, Field(description=_FMT_DESC)],
     dest: Annotated[
         str | None,
         Field(
@@ -680,10 +682,10 @@ async def save_query_to_csv(
 
 @mcp.tool(annotations=_ro("Query resource (read-only SQL)"))
 async def query_resource(
-    url: Annotated[str, Field(description="Direct URL to the file (CKAN resource 'url' field).")],
+    url: Annotated[str, Field(description=_URL_DESC)],
     format: Annotated[
         str,
-        Field(description="Format declared in CKAN. Accepts: csv, tsv, xlsx, xls, json, ods."),
+        Field(description=_FMT_DESC),
     ],
     sql: Annotated[
         str,

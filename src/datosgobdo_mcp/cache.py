@@ -49,6 +49,13 @@ LOCK_TIMEOUT_SECONDS = 10.0
 # abandoned. It has to exceed the window between writing a file and recording it,
 # because inside that window a live write is indistinguishable from an orphan.
 _ORPHAN_GRACE_SECONDS = 60.0
+# How fresh an access time has to be for `touch` to leave the index alone. LRU
+# eviction only needs the order of last use, and thirty seconds of granularity
+# does not change that order for entries days apart. What it changes is the
+# cost of a warm hit: every touch took the cross-process lock, re-read the index
+# and rewrote the whole file — 4 ms and 167 KB of JSON per call at 600 entries —
+# and on Windows that lock is the one thing this project has seen time out.
+_TOUCH_INTERVAL_SECONDS = 30.0
 _LOCK_FIRST_DELAY = 0.01
 _LOCK_MAX_DELAY = 0.25
 
@@ -75,9 +82,9 @@ def _acquire_with_backoff(
     try_lock: Callable[[], bool],
     describe: str,
     *,
-    timeout: float = LOCK_TIMEOUT_SECONDS,
-    sleep: Callable[[float], None] = time.sleep,
-    monotonic: Callable[[], float] = time.monotonic,
+    timeout: float | None = None,
+    sleep: Callable[[float], None] | None = None,
+    monotonic: Callable[[], float] | None = None,
     jitter: Callable[[], float] = random.random,
 ) -> None:
     """Call `try_lock` until it succeeds, or raise CacheLockError at `timeout`.
@@ -91,8 +98,20 @@ def _acquire_with_backoff(
     lockstep that produced the starvation.
 
     The clock and the sleep are injectable because the msvcrt branch cannot run
-    anywhere but Windows, and the retry policy is the part worth testing.
+    anywhere but Windows, and the retry policy is the part worth testing. They
+    are resolved here rather than as default arguments on purpose: a default is
+    bound once, at import, so `LOCK_TIMEOUT_SECONDS` and `time.sleep` patched by
+    a test (or reconfigured at runtime) were never seen by this function. Four
+    tests that believed they had set a zero timeout each waited the full ten
+    seconds of real time, and passed anyway — fifty seconds of every suite run
+    spent proving nothing.
     """
+    if timeout is None:
+        timeout = LOCK_TIMEOUT_SECONDS
+    if sleep is None:
+        sleep = time.sleep
+    if monotonic is None:
+        monotonic = time.monotonic
     deadline = monotonic() + timeout
     delay = _LOCK_FIRST_DELAY
     attempts = 0
@@ -391,6 +410,13 @@ class LocalDiskCache:
         # frequent index mutation there is, and therefore the one most likely to
         # meet contention. Losing an access timestamp costs LRU accuracy, not an
         # answer, so it degrades rather than raises.
+        #
+        # Skipped entirely when the entry was touched moments ago. The in-memory
+        # copy is consulted without the lock: it may be stale, in which case the
+        # only consequence is one write that could have been spared.
+        last = self._index.get(key, {}).get("accessed_at", 0.0)
+        if time.time() - last < _TOUCH_INTERVAL_SECONDS:
+            return
         with self._index_if_lockable(f"access time for {key}") as index:
             if index is not None:
                 index.setdefault(key, {})["accessed_at"] = time.time()

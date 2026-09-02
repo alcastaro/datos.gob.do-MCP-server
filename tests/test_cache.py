@@ -130,9 +130,9 @@ def test_localdiskcache_lru_eviction(tmp_path):
         p = c.put_path(key)
         p.write_bytes(b"x" * 2_000)  # 2 KB each
         c.finalize(key)
-        # Stagger access times so LRU has a stable order.
+        # Stagger access times so LRU has a stable order. finalize() stamps
+        # accessed_at itself; the sleep is what separates the three.
         time.sleep(0.01)
-        c.touch(key)
 
     # After 3 × 2 KB = 6 KB and a 5 KB cap, oldest entry should be gone.
     stats = c.stats()
@@ -154,7 +154,8 @@ def test_localdiskcache_clear_removes_entries(tmp_path):
     assert c.stats()["entries"] == 0
 
 
-def test_localdiskcache_touch_updates_access_time(tmp_path):
+def test_localdiskcache_touch_updates_access_time(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache_mod, "_TOUCH_INTERVAL_SECONDS", 0.0)
     c = cache_mod.LocalDiskCache(cache_dir=tmp_path)
     key = "k"
     p = c.put_path(key)
@@ -166,6 +167,28 @@ def test_localdiskcache_touch_updates_access_time(tmp_path):
     c.touch(key)
     after = c._index[key]["accessed_at"]
     assert after > before
+
+
+def test_a_fresh_entry_is_not_touched_again(tmp_path, monkeypatch):
+    """Every warm hit used to take the cross-process lock and rewrite the whole
+    index — 4 ms and 167 KB of JSON per call at 600 entries, and on Windows the
+    one lock this project has seen time out. LRU needs the order of last use,
+    not the millisecond, so an entry used moments ago is left alone."""
+    fake = _FakeMsvcrt()
+    monkeypatch.setattr(cache_mod, "fcntl", None)
+    monkeypatch.setattr(cache_mod, "msvcrt", fake)
+    c = cache_mod.LocalDiskCache(cache_dir=tmp_path)
+    c.put_path("k").write_bytes(b"x")
+    c.finalize("k", url="https://example.test/k.csv")
+    assert fake.calls == ["lock", "unlock"]
+
+    c.touch("k")
+    c.touch("k")
+    assert fake.calls == ["lock", "unlock"], "a fresh entry must not take the lock"
+
+    c._index["k"]["accessed_at"] -= cache_mod._TOUCH_INTERVAL_SECONDS + 1
+    c.touch("k")
+    assert fake.calls == ["lock", "unlock", "lock", "unlock"], "a stale one must"
 
 
 def test_get_cache_respects_env_override(tmp_path, monkeypatch):

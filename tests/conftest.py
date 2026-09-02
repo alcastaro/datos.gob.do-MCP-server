@@ -53,9 +53,15 @@ def sample_csv_url() -> str:
     return "https://example.test/nomina.csv"
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def tmp_cache_dir(tmp_path, monkeypatch) -> Iterator[Path]:
-    """Redirect the cache singleton to a per-test temp dir."""
+    """Redirect the cache singleton to a per-test temp dir.
+
+    Autouse, because opting in was the hole: any test that reached the cache
+    without requesting this fixture — a preview call, a warm-path lookup — built
+    the singleton at the real `~/.cache/datosgobdo-mcp/` and read the developer's
+    own index. Requesting it explicitly still works and still yields the path.
+    """
     cache_dir = tmp_path / "cache"
     monkeypatch.setenv("DATOSGOBDO_CACHE_DIR", str(cache_dir))
     monkeypatch.setenv("DATOSGOBDO_CACHE_MAX_BYTES", str(50 * 1024 * 1024))
