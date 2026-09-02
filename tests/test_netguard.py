@@ -97,7 +97,7 @@ async def test_dns_failure_rejected(monkeypatch):
     monkeypatch.setattr(netguard, "_resolve_host", boom)
     monkeypatch.setenv("DATOSGOBDO_NETGUARD", "public-only")
     with pytest.raises(netguard.NetGuardError, match="DNS resolution failed"):
-        await netguard.validate_outbound_url("https://nope.invalid/x.csv")
+        await netguard.validate_outbound_url("https://no-existe.test/x.csv")
 
 
 # ─── strict mode ──────────────────────────────────────────────────────────────

@@ -87,8 +87,9 @@ REPOSITORY_URL = "https://github.com/alcastaro/datos.gob.do-MCP-server"
 # habits had to be taught prompt by prompt in three separate client sessions,
 # and an assistant that never reads the prompts still reads this.
 INSTRUCTIONS = """\
-Open data from the Dominican Republic's official portal, datos.gob.do: 1,061 \
-datasets from 266 government institutions.
+Open data from the Dominican Republic's official portal, datos.gob.do: about a \
+thousand datasets from some 260 government institutions. Call get_site_stats \
+for today's exact counts — the numbers here are a scale, not a figure to quote.
 
 Three habits this catalog demands:
 
@@ -818,8 +819,8 @@ async def list_organizations(
     """List the government institutions publishing on datos.gob.do.
 
     Ministries, autonomous agencies, municipalities and so on, with a dataset
-    count each. Returns `{organizations, count, limit_reached}`: 266 exist and
-    `limit` caps at 200, so a full page is a page, not the set.
+    count each. Returns `{organizations, count, limit_reached}`: more publish
+    here than `limit` can return, so a full page is a page, not the set.
     """
     orgs = await ckan.list_organizations(limit=limit)
     return _listing(orgs, "organizations", limit_reached=len(orgs) >= limit)
@@ -858,7 +859,7 @@ async def list_tags(
 ) -> dict[str, Any]:
     """Tags, optionally filtered by prefix → `{tags, count, limit_reached}`.
 
-    874 exist, so a listing without `query` is a sample.
+    Hundreds exist, so a listing without `query` is a sample.
     """
     tags = await ckan.list_tags(query=query, limit=limit)
     return _listing(tags, "tags", limit_reached=len(tags) >= limit)

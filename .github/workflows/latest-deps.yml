@@ -1,0 +1,83 @@
+# Canary: resolve every dependency to its newest allowed version and run the
+# suite against that instead of against the lockfile.
+#
+# It exists because of a specific incident. The MCP Python SDK published 2.0.0
+# on 2026-07-28, renaming the class this server is built on and deleting the old
+# import path with no shim. Our pin was `mcp>=1.9.0` with no upper bound, so
+# every fresh `pip install` resolved to 2.x and failed on the first import —
+# while CI stayed green, because CI installed from `uv.lock`, which still held
+# 1.27.1. The break was invisible here and total for anyone installing the
+# published package. We learned about it from a user.
+#
+# A lockfile is the right thing for reproducible CI and the wrong thing for
+# answering "does what we publish still work?". This job answers the second
+# question once a week. It is deliberately a separate workflow: its failure is
+# an early warning about the outside world, not a verdict on the commit, and it
+# must never be what blocks a merge.
+name: Latest deps canary
+
+on:
+  schedule:
+    # Mondays 06:00 UTC. Weekly is the right cadence: the thing it watches for
+    # happens a few times a year, and a daily run would train everyone to
+    # ignore the notification.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latest:
+    name: Newest allowed versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      # --upgrade recomputes the lock from pyproject.toml alone, which is what
+      # a fresh install of the published package resolves. The rewritten lock
+      # is never committed; this checkout is thrown away with the runner.
+      - name: Re-resolve every dependency to its newest allowed version
+        run: uv lock --upgrade
+
+      - name: Show what moved
+        run: |
+          echo "### Dependencies that differ from the committed lock" >> "$GITHUB_STEP_SUMMARY"
+          echo '```diff' >> "$GITHUB_STEP_SUMMARY"
+          git diff --unified=0 -- uv.lock | grep -E '^[+-](name|version) ' | head -100 \
+            >> "$GITHUB_STEP_SUMMARY" || echo "(nothing moved)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install
+        run: uv sync --python 3.13 --group dev --extra dev
+
+      # The import check is separate from the suite on purpose: the failure this
+      # job exists to catch was an ImportError at module load, and seeing it
+      # named on its own line is faster to read than finding it under 610
+      # collection errors.
+      - name: Verify the package still imports
+        run: |
+          uv run --python 3.13 python -c "
+          from datosgobdo_mcp import server, analytics, cache
+          assert hasattr(server, 'mcp')
+          print('OK: imports clean against newest deps')
+          "
+
+      - name: Run the suite
+        run: uv run --python 3.13 pytest -q
+
+      - name: Say what to do about it
+        if: failure()
+        run: |
+          echo "The suite passes on the committed lock and fails on the newest" \
+               "allowed versions. Something a dependency released has broken us," \
+               "and anyone installing the published package today gets that" \
+               "version. Read the diff above, then either widen the code to" \
+               "cope or add an upper bound in pyproject.toml." \
+               >> "$GITHUB_STEP_SUMMARY"

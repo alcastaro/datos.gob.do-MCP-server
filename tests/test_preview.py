@@ -149,10 +149,10 @@ async def test_preview_rejects_html_error_page(httpx_mock):
     assert "HTML" in out["error"]
 
 
-async def test_preview_returns_netguard_error_as_result(monkeypatch):
-    monkeypatch.delenv("DATOSGOBDO_ALLOW_HOSTS", raising=False)
-    out = await preview.preview_resource_data("https://nonexistent.invalid/d.csv", "csv")
+async def test_preview_returns_netguard_error_as_result(unresolvable_host):
+    out = await preview.preview_resource_data(unresolvable_host, "csv")
     assert "error" in out
+    assert "DNS resolution failed" in out["error"]
 
 
 async def test_preview_supports_ods_via_cache(mock_ods_endpoint, tmp_cache_dir):

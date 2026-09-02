@@ -37,6 +37,30 @@ def _netguard_trusts_test_host(monkeypatch):
 
 
 @pytest.fixture
+def unresolvable_host(monkeypatch) -> str:
+    """A URL whose hostname does not resolve, without asking a real resolver.
+
+    Three tests used to name a host under the reserved never-registered TLD and
+    let the machine's own resolver answer. RFC 2606 guarantees the name is not
+    registered, but not that the question is cheap or that the answer is
+    NXDOMAIN: behind a captive portal, or on an ISP that wildcards every miss to
+    an ad server, the lookup is slow or comes back with an address — and the
+    test either drags or asserts the wrong failure. It was also the last thing
+    in this suite that reached the network at all.
+    """
+    import socket
+
+    from datosgobdo_mcp import netguard
+
+    async def no_such_host(host: str) -> list[str]:
+        raise socket.gaierror(f"Name or service not known: {host}")
+
+    monkeypatch.setattr(netguard, "_resolve_host", no_such_host)
+    monkeypatch.delenv("DATOSGOBDO_ALLOW_HOSTS", raising=False)
+    return "https://no-existe.test/datos.csv"
+
+
+@pytest.fixture
 def sample_csv_bytes() -> bytes:
     """Tiny semicolon-delimited CSV that mirrors the Agricultura nómina shape."""
     return SAMPLE_NOMINA_CSV.encode("utf-8")

@@ -32,6 +32,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   system-path check and got the wrong refusal message; nothing was written
   either way.
 
+- **A portal's plain-text refusal is quoted, not guessed at.** Thirteen of the
+  fifteen resources the census filed as "format not identifiable" are text
+  messages of 23 to 36 bytes served with HTTP 200 — `La url no existe`,
+  `Categoria no encontrada`. The reply said the portal "most likely served a
+  web page", which is wrong about those bodies and discards the one piece of
+  evidence the caller could act on. When the whole file is a short plain-text
+  message it is now quoted in full. Markup, binary and anything over 300 bytes
+  still get the general refusal.
+
 ### Changed
 
 - **`get_resource_schema` no longer returns `nullable`.** DESCRIBE over a
@@ -40,11 +49,26 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 - **A warm hit only rewrites the index every 30 s per entry.** Each touch took
   the cross-process lock and rewrote the whole index (4 ms and 167 KB of JSON
   per call at 600 entries). LRU order is unchanged at that granularity.
+- **The catalog figures in the server instructions are rounded.** "1,061
+  datasets from 266 government institutions" was a snapshot that drifts in
+  silence; the instructions now give the scale and point at `get_site_stats`
+  for today's count. Same for the two tool descriptions that named 266 and 874.
 - **Suite runs in about 20 s, down from 69 s.** Four lock-timeout tests were waiting
   the real ten seconds each because of the default-argument binding above; the
   cache is isolated per test for the whole suite; one test that could return
   early without asserting anything now asserts.
-
+- **Every test has a 120-second wall clock** (`pytest-timeout`), and no test
+  resolves a hostname against the machine's resolver any more. Two tests could
+  hang rather than fail — the query-timeout test depends on `con.interrupt()`
+  actually interrupting — and three test functions, six runs counting the
+  parametrised one, reached a real DNS server to be told a reserved name does
+  not exist, which is slow behind a captive portal and wrong on an ISP that
+  wildcards every miss.
+- **A weekly CI job resolves every dependency to its newest allowed version**
+  and runs the suite against that (`.github/workflows/latest-deps.yml`). CI
+  installs from the lockfile, which is why the MCP SDK 2.0 release broke every
+  fresh install on 2026-07-28 while CI stayed green. Its failure is an early
+  warning, not a merge gate.
 
 ## [0.15.0] — 2026-08-30
 

@@ -703,6 +703,52 @@ def _repair_csv_text(path: Path) -> Path:
     return out
 
 
+# Whole-file error messages, as these portals actually send them. Thirteen of
+# the fifteen resources the census filed as "format not identifiable" are plain
+# text of 23 to 36 bytes served with HTTP 200 — `Downloading failed`, `La url no
+# existe`, `Categoria no encontrada`. The whole file fits in a tweet, so the
+# reply can quote it instead of guessing what the portal meant by it.
+_QUOTABLE_BODY_MAX_BYTES = 300
+
+
+def _short_text_body(path: Path) -> str | None:
+    """The whole file as one line, when it is a message rather than a document.
+
+    Returns None unless every one of four things holds: the file is small
+    enough that quoting it in full costs nothing, it decodes as text, it
+    carries no control characters, and it carries no markup. The third keeps a
+    truncated spreadsheet out — those are also small, and quoting their binary
+    header back would be noise dressed up as evidence.
+
+    The fourth is the one that took a failing test to find. A short fragment of
+    a page (`<br /><b>Warning</b>: include failed…`) is small and printable and
+    would have been quoted verbatim, which is worse than the general refusal it
+    replaced: markup handed back as "the publisher's own words" is the same
+    hazard `looks_like_text_table` refuses for the same reason. None of the
+    measured messages contains an angle bracket, so any text that does falls
+    through to the general refusal.
+    """
+    try:
+        raw_bytes = path.read_bytes()
+    except OSError:  # pragma: no cover — the file was just written
+        return None
+    if not raw_bytes or len(raw_bytes) > _QUOTABLE_BODY_MAX_BYTES:
+        return None
+    for encoding in ("utf-8", "cp1252"):
+        try:
+            text = raw_bytes.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        return None  # undecodable: bytes, not a message
+    if any(unicodedata.category(c) == "Cc" and c not in "\r\n\t" for c in text):
+        return None
+    if "<" in text:
+        return None  # markup, not a message
+    return _IDENT_WHITESPACE.sub(" ", text).strip() or None
+
+
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as fh:
@@ -1044,6 +1090,21 @@ async def _ensure_cached_live(
             # always shaped like the HTML the guard above recognises. This turns
             # "IO Error: Failed to open zip for reading" into a sentence about the
             # file.
+            #
+            # When the whole file is a short text message, quote it. The portal
+            # already said why the file is not there; guessing on its behalf
+            # discards the one piece of evidence the caller could act on, and
+            # "most likely served a web page" is wrong about a body that reads
+            # `Categoria no encontrada`.
+            served = _short_text_body(raw)
+            if served is not None:
+                raise AnalyticsError(
+                    f"The portal answered with a {bytes_written}-byte text message and "
+                    f"HTTP 200 instead of a {fmt.upper()} file. It reads, in full: "
+                    f'"{served}". Those are the publisher\'s own words about why the '
+                    "file is not there — report it as the state of the resource, not "
+                    "as a format problem, and do not answer from a different file."
+                )
             raise AnalyticsError(
                 f"The file is not a valid {fmt.upper()} — it does not start "
                 "like a spreadsheet. The portal most likely served a web "

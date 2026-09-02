@@ -916,13 +916,14 @@ async def test_ensure_cached_zero_bytes_returns_error(tmp_cache_dir, httpx_mock)
 # after the tool's only try block, so it escaped too.
 
 
-async def test_netguard_error_is_returned_not_raised(tmp_cache_dir, monkeypatch):
+async def test_netguard_error_is_returned_not_raised(tmp_cache_dir, unresolvable_host):
     """A blocked/unresolvable host yields {"error": ...}, never an exception."""
-    monkeypatch.delenv("DATOSGOBDO_ALLOW_HOSTS", raising=False)
-    # .invalid is reserved by RFC 2606 and never resolves.
-    out = await analytics.get_resource_schema("https://nonexistent.invalid/data.csv", "csv")
+    out = await analytics.get_resource_schema(unresolvable_host, "csv")
     assert "error" in out
-    assert "invalid" in out["error"].lower()
+    # Naming the failure, not merely reporting one: the old assertion matched
+    # the substring "invalid" from the hostname itself, so it would have passed
+    # on any error at all as long as the URL kept its name.
+    assert "DNS resolution failed" in out["error"]
 
 
 @pytest.mark.parametrize(
@@ -934,9 +935,8 @@ async def test_netguard_error_is_returned_not_raised(tmp_cache_dir, monkeypatch)
         ("aggregate_resource", {"aggregations": [{"col": None, "fn": "count"}]}),
     ],
 )
-async def test_every_tool_wraps_netguard_error(tool, kwargs, tmp_cache_dir, monkeypatch):
-    monkeypatch.delenv("DATOSGOBDO_ALLOW_HOSTS", raising=False)
-    out = await getattr(analytics, tool)("https://nonexistent.invalid/d.csv", "csv", **kwargs)
+async def test_every_tool_wraps_netguard_error(tool, kwargs, tmp_cache_dir, unresolvable_host):
+    out = await getattr(analytics, tool)(unresolvable_host, "csv", **kwargs)
     assert "error" in out
 
 
@@ -2054,6 +2054,67 @@ async def test_a_page_under_a_spreadsheet_name_is_refused_not_read_as_csv(
 
     assert "error" in out
     assert "not a valid ODS" in out["error"]
+
+
+# ─── What the portal actually said, instead of a guess about it ───────────────
+
+
+async def test_a_plain_text_error_body_is_quoted_not_guessed(tmp_cache_dir, httpx_mock):
+    """Thirteen of the fifteen resources the census filed as "format not
+    identifiable" are plain-text error messages of 23 to 36 bytes served with
+    HTTP 200 — `Downloading failed`, `La url no existe`, `Categoria no
+    encontrada`. The reply used to guess ("most likely served a web page"),
+    which is wrong about those bodies and throws away the only evidence the
+    caller could act on. The whole file fits in a sentence, so it is quoted."""
+    url = "https://example.test/nomina-inexistente.xlsx"
+    body = b"La url no existe"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "t1"})
+    httpx_mock.add_response(url=url, method="GET", content=body)
+
+    out = await analytics.get_resource_schema(url, "xlsx")
+
+    assert "error" in out
+    assert '"La url no existe"' in out["error"]
+    assert str(len(body)) in out["error"], "the size says it is a message, not a file"
+    assert "most likely" not in out["error"], "it stopped guessing"
+
+
+async def test_an_unreadable_body_still_gets_the_general_refusal(tmp_cache_dir, httpx_mock):
+    """The quote replaces the guess only when there is something to quote. A
+    truncated spreadsheet is also small, and echoing its binary header back at
+    the caller would be noise dressed up as evidence."""
+    url = "https://example.test/cortado.xlsx"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "t2"})
+    httpx_mock.add_response(url=url, method="GET", content=b"\x00\x01\x02\x81\x8d rubbish")
+
+    out = await analytics.get_resource_schema(url, "xlsx")
+
+    assert "error" in out
+    assert "not a valid XLSX" in out["error"]
+
+
+@pytest.mark.parametrize(
+    "body,quoted",
+    [
+        (b"Categoria no encontrada", "Categoria no encontrada"),
+        (b"  Downloading\n  failed\n", "Downloading failed"),  # collapsed to one line
+        ("La categoría no existe".encode("cp1252"), "La categoría no existe"),
+        (b"x" * 5000, None),  # a document, not a message
+        (b"\x00\x01\x02", None),  # control characters: bytes, not text
+        # Markup is small and printable and must still not be quoted: handing
+        # a page fragment back as "the publisher's own words" is the hazard
+        # looks_like_text_table refuses for the same reason. Caught by the
+        # canary running the whole suite, not by the tests written for this.
+        (b"<br /><b>Warning</b>: include failed", None),
+        (b"Error <sin> datos", None),
+        (b"", None),
+        (b"   \n  ", None),  # whitespace only
+    ],
+)
+def test_short_text_body_only_quotes_what_is_a_message(tmp_path, body, quoted):
+    f = tmp_path / "cuerpo.bin"
+    f.write_bytes(body)
+    assert analytics._short_text_body(f) == quoted
 
 
 async def test_a_network_destination_is_refused_as_a_network_path(tmp_cache_dir):
