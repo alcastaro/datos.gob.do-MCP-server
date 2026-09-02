@@ -245,14 +245,19 @@ class LocalDiskCache:
         lock_file = self.cache_dir / ".lock"
         with open(lock_file, "w") as f:
             if fcntl is not None:
-                fcntl.flock(f, fcntl.LOCK_EX)
+                # Same reason the msvcrt calls below carry one, in the other
+                # direction: typeshed guards both modules by platform, so on
+                # Windows `fcntl` resolves to a module with no attributes at
+                # all and there is no way to express "only reached where the
+                # import succeeded" to mypy.
+                fcntl.flock(f, fcntl.LOCK_EX)  # type: ignore[attr-defined]
             else:  # pragma: no cover — Windows only
                 _acquire_with_backoff(lambda: _try_msvcrt_lock(f), str(self.index_path))
             try:
                 yield
             finally:
                 if fcntl is not None:
-                    fcntl.flock(f, fcntl.LOCK_UN)
+                    fcntl.flock(f, fcntl.LOCK_UN)  # type: ignore[attr-defined]
                 else:  # pragma: no cover — Windows only
                     f.seek(0)
                     msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
