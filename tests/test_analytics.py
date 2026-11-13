@@ -1931,6 +1931,34 @@ async def test_truncated_download_carries_no_digest(
     assert "source_sha256" not in out.get("cache", {})
 
 
+async def test_one_call_with_the_wrong_format_does_not_poison_the_url(httpx_mock, tmp_cache_dir):
+    """A model that guesses `csv` for a JSON file once must not keep getting
+    the CSV parse of it after it asks for `json`."""
+    import json
+
+    url = "https://example.test/datos"
+    body = json.dumps([{"a": i, "b": f"x,{i}"} for i in range(50)]).encode()
+    for _ in range(2):
+        httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "f1"})
+        httpx_mock.add_response(url=url, method="GET", content=body)
+    await analytics.get_resource_schema(url, "csv")
+    out = await analytics.get_resource_schema(url, "json")
+    assert out["cache"]["cache"] == "miss"
+    assert [c["name"] for c in out["columns"]] == ["a", "b"]
+    assert out["row_count"] == 50
+
+
+async def test_a_format_corrected_file_is_still_served_warm(httpx_mock, tmp_cache_dir):
+    """The key follows the declared format, which the sniffer may override."""
+    url = "https://example.test/registro.xlsx"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "fc1"})
+    httpx_mock.add_response(url=url, method="GET", content=b"id,monto\n1,10\n2,20\n")
+    first = await analytics.get_resource_schema(url, "xlsx")
+    assert first["cache"]["format_corrected"]["actual"] == "csv"
+    again = await analytics.get_resource_schema(url, "xlsx")
+    assert again["cache"]["cache"] == "hit"
+
+
 async def test_a_cut_file_is_declared_partial_on_every_call(
     httpx_mock, sample_csv_url, tmp_cache_dir, monkeypatch
 ):

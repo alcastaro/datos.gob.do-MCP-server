@@ -259,7 +259,7 @@ async def preview_resource_data(
     # assistant glanced at a file it had already read.
     from .analytics import warm_parquet_for
 
-    if warm_parquet_for(url) is not None:
+    if warm_parquet_for(url, kind) is not None:
         return await _preview_via_cache(url, kind, rows, sample)
 
     try:

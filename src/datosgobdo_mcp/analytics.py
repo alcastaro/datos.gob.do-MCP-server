@@ -963,7 +963,7 @@ def _ods_repeat(raw: str | None) -> int:
         return 1
 
 
-def warm_parquet_for(url: str) -> Path | None:
+def warm_parquet_for(url: str, fmt: str | None = None) -> Path | None:
     """Return the cached Parquet for this URL, or None — never touches the network.
 
     Lets a caller ask "have we already read this?" without paying for a HEAD
@@ -971,7 +971,7 @@ def warm_parquet_for(url: str) -> Path | None:
     portal about it again.
     """
     try:
-        hit = get_cache().get_by_url(url)
+        hit = get_cache().get_by_url(url, fmt)
     except OSError:  # pragma: no cover — unreadable cache dir
         return None
     return hit[0] if hit else None
@@ -989,10 +989,13 @@ async def _ensure_cached_live(
     any network request. Cold path: HEAD → download → transcode → Parquet.
     """
     cache = cache or get_cache()
+    # The format the caller declared. `fmt` itself may be corrected below to
+    # what the bytes are, and the cache has to be found again by what was asked.
+    declared = fmt
 
     # Warm path: URL→key reverse lookup skips HEAD entirely.
     if not force_refresh:
-        url_hit = cache.get_by_url(url)
+        url_hit = cache.get_by_url(url, declared)
         if url_hit is not None:
             cached_path, key = url_hit
             logger.info("cache URL-HIT key=%s size=%d", key, cached_path.stat().st_size)
@@ -1005,7 +1008,7 @@ async def _ensure_cached_live(
 
     # Cold path (or forced refresh): HEAD to compute version key.
     etag, last_mod = await _head_metadata(url)
-    key = build_cache_key(url, etag=etag, last_modified=last_mod)
+    key = build_cache_key(url, etag=etag, last_modified=last_mod, fmt=declared)
     # A refresh skips this too: a server that sends no ETag or Last-Modified
     # gives the same key for new bytes, and the old copy would win again.
     cached = None if force_refresh else cache.get(key)
@@ -1313,7 +1316,8 @@ async def _ensure_cached_live(
         if truncated:
             provenance["source_truncated"] = True
             provenance["source_bytes"] = bytes_written
-        cache.finalize(key, url=url, provenance=provenance)  # URL for warm-path lookups
+        # URL and format for warm-path lookups
+        cache.finalize(key, url=url, provenance=provenance, fmt=declared)
         logger.info(
             "cache STORE key=%s parquet=%d source=%d",
             key,

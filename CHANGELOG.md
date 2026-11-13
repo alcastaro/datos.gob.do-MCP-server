@@ -34,6 +34,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   analytics reply built from such a file carries a top-level `warning` that
   the figures are partial. The cached preview carries `source_truncated` and
   `fetched_at` too.
+- **The cache tells formats apart.** The cache key and the warm lookup used
+  the URL alone, so a JSON file asked for once as `csv` kept returning that
+  garbage parse after the caller switched to `json`. The declared format is
+  now part of the key and of the warm lookup. Files already in the cache are
+  downloaded once more after upgrading, because their entries carry no format.
 
 - **Warm-path queries no longer block the event loop.** Every analytics tool
   ran its DuckDB work inline on the server's event loop; only the cold-path
