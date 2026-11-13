@@ -346,6 +346,15 @@ async def get_resource_schema(
             le=1000,
         ),
     ] = SCHEMA_SAMPLE_DEFAULT,
+    refresh: Annotated[
+        bool,
+        Field(
+            description=(
+                "Download the file again and replace the cached copy every tool reads. "
+                "cache.fetched_at says when the copy was downloaded."
+            )
+        ),
+    ] = False,
 ) -> SchemaResult:
     """Return column names, inferred types, and sample values for a resource.
 
@@ -354,7 +363,9 @@ async def get_resource_schema(
     raw rows. Use this before summarize_resource or aggregate_resource so the
     model knows column names and types.
     """
-    return SchemaResult(**await _get_resource_schema(url=url, fmt=format, sample_rows=sample_rows))
+    return SchemaResult(
+        **await _get_resource_schema(url=url, fmt=format, sample_rows=sample_rows, refresh=refresh)
+    )
 
 
 @mcp.tool(annotations=_ro("Summarize resource"))

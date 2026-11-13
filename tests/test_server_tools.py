@@ -208,7 +208,7 @@ async def test_get_resource_schema_wraps_model(monkeypatch):
     assert isinstance(result, SchemaResult)
     assert result.row_count == 7
     assert result.columns[0].name == "Sueldo"
-    assert calls["kwargs"] == {"url": URL, "fmt": "csv", "sample_rows": 50}
+    assert calls["kwargs"] == {"url": URL, "fmt": "csv", "sample_rows": 50, "refresh": False}
 
 
 async def test_summarize_resource_wraps_model(monkeypatch):

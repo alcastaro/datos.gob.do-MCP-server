@@ -455,6 +455,31 @@ async def test_force_refresh_does_head(mock_csv_endpoint, tmp_cache_dir, httpx_m
     assert meta["cache"] == "miss"
 
 
+async def test_a_caller_can_refresh_a_file_that_changed_in_place(httpx_mock, tmp_cache_dir):
+    """A ministry replaces its monthly file at the same URL, with no ETag or
+    Last-Modified to say so. The cached copy must carry its download date, and a
+    caller must be able to replace it."""
+    url = "https://example.test/nomina-mensual.csv"
+    httpx_mock.add_response(url=url, method="HEAD")
+    httpx_mock.add_response(url=url, method="GET", content=b"id;monto\n1;10\n2;20\n")
+    first = await analytics.get_resource_schema(url, "csv")
+    assert first["row_count"] == 2
+    assert first["cache"]["fetched_at"].endswith("+00:00")
+
+    warm = await analytics.get_resource_schema(url, "csv")
+    assert warm["cache"]["cache"] == "hit"
+    assert warm["cache"]["fetched_at"] == first["cache"]["fetched_at"]
+
+    httpx_mock.add_response(url=url, method="HEAD")
+    httpx_mock.add_response(url=url, method="GET", content=b"id;monto\n1;10\n2;20\n3;30\n")
+    fresh = await analytics.get_resource_schema(url, "csv", refresh=True)
+    assert fresh["cache"]["cache"] == "miss"
+    assert fresh["row_count"] == 3
+
+    after = await analytics.aggregate_resource(url, "csv", [{"col": "monto", "fn": "sum"}])
+    assert after["rows"] == [[60]]
+
+
 # ─── quantiles_resource ───────────────────────────────────────────────────────
 
 

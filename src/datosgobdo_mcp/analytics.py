@@ -26,6 +26,7 @@ import tempfile
 import unicodedata
 import zipfile
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 
@@ -995,7 +996,9 @@ async def _ensure_cached_live(
     # Cold path (or forced refresh): HEAD to compute version key.
     etag, last_mod = await _head_metadata(url)
     key = build_cache_key(url, etag=etag, last_modified=last_mod)
-    cached = cache.get(key)
+    # A refresh skips this too: a server that sends no ETag or Last-Modified
+    # gives the same key for new bytes, and the old copy would win again.
+    cached = None if force_refresh else cache.get(key)
     if cached is not None:
         logger.info("cache HIT key=%s size=%d", key, cached.stat().st_size)
         return cached, {"cache": "hit", "key": key, **cache.provenance(key)}
@@ -1285,7 +1288,10 @@ async def _ensure_cached_live(
         # file parsed into a shape that cannot be right. Saying so is not
         # optional in an audit tool — and it is stored, not just returned,
         # because every later call reads this entry from the warm path.
-        provenance: dict[str, Any] = {}
+        # Stored with the entry, so every later hit says how old the copy is.
+        provenance: dict[str, Any] = {
+            "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds")
+        }
         if resolved_from:
             provenance["resolved_from"] = resolved_from
         if warning:
@@ -1439,12 +1445,13 @@ async def get_resource_schema(
     url: str,
     fmt: str | None,
     sample_rows: int = SCHEMA_SAMPLE_ROWS,
+    refresh: bool = False,
 ) -> dict[str, Any]:
     kind = classify_format(fmt)
     if kind is None:
         return {"error": f"Format '{fmt}' not supported"}
     try:
-        parquet, meta = await ensure_cached(url, kind)
+        parquet, meta = await ensure_cached(url, kind, force_refresh=refresh)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
         return _load_error(e, url)
 

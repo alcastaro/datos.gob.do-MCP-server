@@ -18,6 +18,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   conventions at once) is left out of the figure and reported with
   `ambiguous_separator: true` in `numeric_coercion`. Filters follow the same
   rule. A decimal-comma column is marked `decimal_separator: ","`.
+- **A cached file says when it was downloaded, and can be refreshed.** After
+  the first download every call read the cached copy, with no date on it and
+  no way for a caller to replace it, so a file republished at the same URL
+  kept answering with the old rows. Every reply's `cache` block now carries
+  `fetched_at` (UTC), on warm hits too, and `get_resource_schema` takes an
+  optional `refresh: true` that downloads the file again and replaces the copy
+  every tool reads. A refresh used to keep the old copy whenever the server
+  sent no ETag or Last-Modified; it now always downloads.
 
 - **Warm-path queries no longer block the event loop.** Every analytics tool
   ran its DuckDB work inline on the server's event loop; only the cold-path
