@@ -301,10 +301,20 @@ def _tool_envelope(fn: _T) -> _T:
     @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
         try:
-            return await fn(*args, **kwargs)
+            result = await fn(*args, **kwargs)
         except _ENVELOPE_ERRORS as e:
             logger.warning("%s failed: %s: %s", fn.__name__, type(e).__name__, e)
             return {"error": err_text(e)}
+        cache = result.get("cache") if isinstance(result, dict) else None
+        if isinstance(cache, dict) and cache.get("source_truncated"):
+            # Top level, where a caller looks: the flag alone sits inside `cache`.
+            cut = (
+                f"Only the first {cache.get('source_bytes', 0):,} bytes of this file were "
+                "read: it is larger than this server downloads. Counts, sums and every "
+                "other figure here are partial."
+            )
+            result["warning"] = f"{cut} {result['warning']}" if result.get("warning") else cut
+        return result
 
     return wrapper  # type: ignore[return-value]
 
@@ -1300,6 +1310,9 @@ async def _ensure_cached_live(
             provenance["format_corrected"] = format_corrected
         if source_sha256:
             provenance["source_sha256"] = source_sha256
+        if truncated:
+            provenance["source_truncated"] = True
+            provenance["source_bytes"] = bytes_written
         cache.finalize(key, url=url, provenance=provenance)  # URL for warm-path lookups
         logger.info(
             "cache STORE key=%s parquet=%d source=%d",

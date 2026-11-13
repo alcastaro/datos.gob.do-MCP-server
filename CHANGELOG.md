@@ -26,6 +26,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   optional `refresh: true` that downloads the file again and replaces the copy
   every tool reads. A refresh used to keep the old copy whenever the server
   sent no ETag or Last-Modified; it now always downloads.
+- **A file cut at the download limit is declared partial on every reply.** A
+  CSV larger than the 100 MB cap still parses, and the count and sum over its
+  first part came back as the file's. `source_truncated` appeared only inside
+  the `cache` block of the first reply and disappeared from every cached one.
+  It is now stored with the entry, together with `source_bytes`, and every
+  analytics reply built from such a file carries a top-level `warning` that
+  the figures are partial. The cached preview carries `source_truncated` and
+  `fetched_at` too.
 
 - **Warm-path queries no longer block the event loop.** Every analytics tool
   ran its DuckDB work inline on the server's event loop; only the cold-path

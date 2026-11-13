@@ -210,6 +210,7 @@ async def _preview_via_cache(url: str, kind: str, rows: int, sample: SampleMode)
             "rows": [[_jsonable(v) for v in r] for r in out_rows],
             "source": "parquet-cache",
             "cache": meta.get("cache"),
+            **{k: meta[k] for k in ("fetched_at", "source_truncated", "source_bytes") if k in meta},
         }
 
     return await asyncio.to_thread(_run)

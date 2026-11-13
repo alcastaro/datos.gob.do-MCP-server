@@ -1931,6 +1931,29 @@ async def test_truncated_download_carries_no_digest(
     assert "source_sha256" not in out.get("cache", {})
 
 
+async def test_a_cut_file_is_declared_partial_on_every_call(
+    httpx_mock, sample_csv_url, tmp_cache_dir, monkeypatch
+):
+    """A sum over the first part of a file is not the file's sum, and the
+    second call, served from the cache, is where the flag used to vanish."""
+    big = b"id;monto\n" + b"".join(b"%d;10\n" % i for i in range(5000))
+    httpx_mock.add_response(url=sample_csv_url, method="HEAD", headers={"etag": "t2"})
+    httpx_mock.add_response(url=sample_csv_url, method="GET", content=big)
+    monkeypatch.setattr(analytics, "ANALYTICS_MAX_BYTES", 3000)
+    aggs = [{"col": "monto", "fn": "sum", "alias": "total"}]
+    for expected in ("miss", "hit"):
+        out = await analytics.aggregate_resource(sample_csv_url, "csv", aggs)
+        assert out["cache"]["cache"] == expected
+        assert out["cache"]["source_truncated"] is True
+        assert out["cache"]["source_bytes"] == 3000
+        assert "partial" in out["warning"]
+
+    from datosgobdo_mcp import preview
+
+    shown = await preview.preview_resource_data(sample_csv_url, "csv", rows=2)
+    assert shown["source_truncated"] is True
+
+
 async def test_aggregate_reports_computation(mock_csv_endpoint, tmp_cache_dir):
     out = await analytics.aggregate_resource(
         mock_csv_endpoint,
