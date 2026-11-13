@@ -1561,6 +1561,104 @@ def test_the_cleanup_never_removes_a_value_separator():
     assert "REPLACE({c}, ' ', '')" not in analytics._NUMERIC_TEXT_CLEAN
 
 
+# One column per number convention. Semicolon-separated, as the files that use
+# a decimal comma are, so the commas stay inside the values.
+_SEPARATORS_CSV = (
+    "id;pct;grande;europeo;dudoso\n"
+    "1;78,10;1,234,567;1.234,56;1,234\n"
+    "2;95,30;2,000,000;2.000,00;5,678\n"
+    "3;88,00;350;78,10;12,500\n"
+)
+
+
+@pytest.fixture
+def separators_endpoint(httpx_mock):
+    url = "https://example.test/separadores.csv"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "sep1"})
+    httpx_mock.add_response(url=url, method="GET", content=_SEPARATORS_CSV.encode())
+    return url
+
+
+async def test_number_convention_is_decided_per_column(separators_endpoint, tmp_cache_dir):
+    """`78,10` is 78.1, and `1,234,567` is still 1234567 in the next column.
+
+    Removing every comma read the decimal-comma column 100 times too big and
+    reported it as clean.
+    """
+    out = await analytics.aggregate_resource(
+        separators_endpoint,
+        "csv",
+        aggregations=[
+            {"col": "pct", "fn": "avg", "alias": "pct"},
+            {"col": "pct", "fn": "max", "alias": "pct_max"},
+            {"col": "grande", "fn": "sum", "alias": "grande"},
+            {"col": "europeo", "fn": "sum", "alias": "europeo"},
+        ],
+    )
+    assert "error" not in out, out
+    pct, pct_max, grande, europeo = out["rows"][0]
+    assert pct == pytest.approx((78.10 + 95.30 + 88.00) / 3)
+    assert pct_max == pytest.approx(95.30)
+    assert grande == pytest.approx(1_234_567 + 2_000_000 + 350)
+    assert europeo == pytest.approx(1234.56 + 2000.00 + 78.10)
+    reports = {r["column"]: r for r in out["numeric_coercion"]}
+    assert reports["pct"]["decimal_separator"] == ","
+    assert reports["europeo"]["decimal_separator"] == ","
+    assert "decimal_separator" not in reports["grande"]
+
+
+async def test_a_column_of_ambiguous_commas_is_reported_not_guessed(
+    separators_endpoint, tmp_cache_dir
+):
+    """`1,234` is 1234 or 1.234, and nothing else in the column says which."""
+    out = await analytics.aggregate_resource(
+        separators_endpoint,
+        "csv",
+        aggregations=[{"col": "dudoso", "fn": "sum", "alias": "total"}],
+    )
+    assert "error" not in out, out
+    assert out["rows"][0][0] is None
+    report = out["numeric_coercion"][0]
+    assert report["column"] == "dudoso"
+    assert report["ambiguous_separator"] is True
+    assert report["coerced"] is False
+    assert "1,234" in report["note"]
+
+    out = await analytics.filter_resource(
+        separators_endpoint, "csv", filters=[{"col": "dudoso", "op": ">", "val": 0}]
+    )
+    assert out["rows"] == []
+    assert out["numeric_coercion"][0]["ambiguous_separator"] is True
+
+
+async def test_a_column_with_both_conventions_is_reported_with_the_counts(
+    httpx_mock, tmp_cache_dir
+):
+    """`40,000.00` and `27000,50` in one column: one of them is misread
+    whichever rule is applied, so the column is refused and says why."""
+    url = "https://example.test/mixto.csv"
+    body = "id;monto\n1;40,000.00\n2;31,500.25\n3;27000,50\n"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "mx1"})
+    httpx_mock.add_response(url=url, method="GET", content=body.encode())
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "monto", "fn": "sum"}])
+    assert out["rows"][0][0] is None
+    report = out["numeric_coercion"][0]
+    assert report["ambiguous_separator"] is True
+    assert "1 value(s) can only have a decimal comma" in report["note"]
+    assert "2 only a decimal point" in report["note"]
+
+
+async def test_a_numeric_filter_uses_the_column_convention(separators_endpoint, tmp_cache_dir):
+    out = await analytics.filter_resource(
+        separators_endpoint,
+        "csv",
+        filters=[{"col": "pct", "op": ">", "val": 90}],
+        columns=["id"],
+    )
+    assert "error" not in out, out
+    assert out["rows"] == [[2]]
+
+
 async def test_a_megabyte_that_parses_into_one_cell_is_flagged(httpx_mock, tmp_cache_dir):
     """The dangerous case is not the error, it is the success.
 

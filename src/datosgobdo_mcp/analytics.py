@@ -1630,6 +1630,7 @@ def _filter_measure(
     val: Any,
     types: dict[str, str] | None,
     notes: list[dict[str, Any]] | None,
+    con: duckdb.DuckDBPyConnection | None = None,
 ) -> str:
     """Decide how a comparison should read a column, and say so.
 
@@ -1654,19 +1655,24 @@ def _filter_measure(
     if isinstance(val, bool):  # bool is an int in Python; not a measurement
         return quoted
     if isinstance(val, (int, float)):
+        style, why = _number_style(con, quoted) if con is not None else ("thousands_comma", "")
         if notes is not None:
-            notes.append(
-                {
-                    "column": col,
-                    "coerced": True,
-                    "where": "filter",
-                    "note": (
-                        f"'{col}' is stored as text in this file and was compared as a "
-                        "number. Values that do not read as numbers do not match."
-                    ),
-                }
-            )
-        return _as_number(quoted)
+            note: dict[str, Any] = {
+                "column": col,
+                "coerced": True,
+                "where": "filter",
+                "note": (
+                    f"'{col}' is stored as text in this file and was compared as a "
+                    "number. Values that do not read as numbers do not match."
+                ),
+            }
+            if style == "decimal_comma":
+                note["decimal_separator"] = ","
+            elif style == "ambiguous":
+                note["ambiguous_separator"] = True
+                note["note"] = f"'{col}': {why} No row matches this filter."
+            notes.append(note)
+        return _as_number(quoted, style)
 
     if isinstance(val, str) and notes is not None:
         stripped = val.strip()
@@ -1696,6 +1702,7 @@ def _build_filter_clause(
     available: list[str] | None = None,
     types: dict[str, str] | None = None,
     notes: list[dict[str, Any]] | None = None,
+    con: duckdb.DuckDBPyConnection | None = None,
 ) -> str:
     col = f.get("col")
     op = f.get("op", "=")
@@ -1744,7 +1751,7 @@ def _build_filter_clause(
         return f"{q} ILIKE '%{esc}' ESCAPE '\\'"
     # Comparison ops.
     cmp_op = "<>" if op == "!=" else op
-    measured = _filter_measure(col, q, op, val, types, notes)
+    measured = _filter_measure(col, q, op, val, types, notes, con)
     return f"{measured} {cmp_op} {_quote_literal(val)}"
 
 
@@ -1753,10 +1760,11 @@ def _build_where(
     available: list[str] | None = None,
     types: dict[str, str] | None = None,
     notes: list[dict[str, Any]] | None = None,
+    con: duckdb.DuckDBPyConnection | None = None,
 ) -> str:
     if not filters:
         return ""
-    parts = [_build_filter_clause(f, available, types, notes) for f in filters]
+    parts = [_build_filter_clause(f, available, types, notes, con) for f in filters]
     return "WHERE " + " AND ".join(parts)
 
 
@@ -1993,9 +2001,76 @@ _SUSPICIOUS_SOURCE_BYTES = 100_000
 _SUSPICIOUS_ROWS = 5
 
 
-def _as_number(quoted: str) -> str:
+# The same column written the other way round: `1.234,56` and `78,10`. The dots
+# go first, then the comma becomes the decimal point.
+_DECIMAL_COMMA_CLEAN = (
+    "NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE({c}, '.', ''), ',', '.'),"
+    " CHR(160), ''), 'RD$', ''), '$', '')), '')"
+)
+
+# Currency and padding stripped, separators left alone: what the convention
+# checks below look at.
+_SYMBOLS_CLEAN = (
+    "NULLIF(TRIM(REPLACE(REPLACE(REPLACE({c}, CHR(160), ''), 'RD$', ''), '$', '')), '')"
+)
+
+# What one value proves about its column. `78,10` and `1.234,56` can only have
+# a decimal comma; `40,000.00`, `1,234,567` and `56.78` can only have a decimal
+# point. `1,234` proves nothing: it is 1234 in a payroll and 1.234 in a price
+# index, and a single cell cannot tell which file it came from.
+_PROVES_DECIMAL_COMMA = r"-?\d{1,3}(\.\d{3})+,\d+|-?\d{1,3}(\.\d{3}){2,}|-?\d+,\d+"
+_PROVES_DECIMAL_DOT = r"-?\d{1,3}(,\d{3})+\.\d+|-?\d{1,3}(,\d{3}){2,}|-?\d+\.\d+"
+_COMMA_GROUPS = r"-?\d{1,3}(,\d{3})+"
+_DOT_GROUPS = r"-?\d{1,3}(\.\d{3})+"
+_AMBIGUOUS_COMMA = r"-?\d{1,3},\d{3}"
+
+
+def _number_style(con: duckdb.DuckDBPyConnection, quoted: str) -> tuple[str, str]:
+    """Which separator is the decimal one in this column, judged on all its values.
+
+    Per column, because a cell cannot answer it. `thousands_comma` is what every
+    column got before, and stays the answer whenever nothing contradicts it.
+    Returns the style and, when it is `ambiguous`, the sentence saying why.
+    """
+    s = _SYMBOLS_CLEAN.format(c=quoted)
+    row = con.execute(
+        f"SELECT count(*) FILTER (WHERE regexp_full_match({s}, '{_PROVES_DECIMAL_COMMA}') "
+        f"AND NOT regexp_full_match({s}, '{_COMMA_GROUPS}')), "
+        f"count(*) FILTER (WHERE regexp_full_match({s}, '{_PROVES_DECIMAL_DOT}') "
+        f"AND NOT regexp_full_match({s}, '{_DOT_GROUPS}')), "
+        f"count(*) FILTER (WHERE regexp_full_match({s}, '{_AMBIGUOUS_COMMA}')) FROM data"
+    ).fetchone()
+    comma, dot, ambiguous = row or (0, 0, 0)
+    if comma and not dot:
+        return "decimal_comma", ""
+    if comma and dot:
+        why = (
+            f"the column mixes both conventions: {comma} value(s) can only have a decimal "
+            f"comma (like '78,10') and {dot} only a decimal point (like '40,000.00')."
+        )
+    elif ambiguous and not dot:
+        why = (
+            "values such as '1,234' could have a thousands comma or a decimal comma, "
+            "and the rest of the column does not settle which."
+        )
+    else:
+        return "thousands_comma", ""
+    return "ambiguous", (
+        f"{why} It was left out of this result rather than guessed. If you know the "
+        "convention, read it with query_resource and an explicit REPLACE and CAST."
+    )
+
+
+_STYLE_CLEAN = {"thousands_comma": _NUMERIC_TEXT_CLEAN, "decimal_comma": _DECIMAL_COMMA_CLEAN}
+
+
+def _as_number(quoted: str, style: str = "thousands_comma") -> str:
     """SQL reading a text column as a number, NULL where it cannot."""
-    return f"TRY_CAST({_NUMERIC_TEXT_CLEAN.format(c=quoted)} AS DOUBLE)"
+    if style == "ambiguous":
+        # Dropping only the `1,234` cells would drop exactly the large values and
+        # return a total biased low, so the whole column reads as NULL.
+        return "CAST(NULL AS DOUBLE)"
+    return f"TRY_CAST({_STYLE_CLEAN[style].format(c=quoted)} AS DOUBLE)"
 
 
 def _and_where(where: str, condition: str) -> str:
@@ -2026,7 +2101,15 @@ def _numeric_ref(
     if _is_numeric_type(types.get(col_name, "")):
         return quoted, None
 
-    expr = _as_number(quoted)
+    style, why = _number_style(con, quoted)
+    expr = _as_number(quoted, style)
+    if style == "ambiguous":
+        return expr, {
+            "column": col_name,
+            "coerced": False,
+            "ambiguous_separator": True,
+            "note": f"'{col_name}': {why}",
+        }
     row = con.execute(f"SELECT count({quoted}), count({expr}) FROM data {where}").fetchone()
     non_null, usable = (row or (0, 0))[0], (row or (0, 0))[1]
     if not non_null or usable / non_null < _COERCION_MIN_RATIO:
@@ -2065,6 +2148,8 @@ def _numeric_ref(
             f"'{col_name}' is stored as text in this file but every value read as a "
             "number. Nothing was excluded."
         )
+    if style == "decimal_comma":
+        report["decimal_separator"] = ","
     return expr, report
 
 
@@ -2112,7 +2197,7 @@ async def quantiles_resource(
 
             filter_notes: list[dict[str, Any]] = []
             try:
-                where = _build_where(filters, available, _column_types(con), filter_notes)
+                where = _build_where(filters, available, _column_types(con), filter_notes, con)
             except AnalyticsError as e:
                 return {"error": str(e)}
 
@@ -2231,7 +2316,7 @@ async def find_duplicates_resource(
             available = _open_view(con, parquet)
             filter_notes: list[dict[str, Any]] = []
             try:
-                where = _build_where(filters, available, _column_types(con), filter_notes)
+                where = _build_where(filters, available, _column_types(con), filter_notes, con)
             except AnalyticsError as e:
                 return {"error": str(e)}
 
@@ -2319,7 +2404,7 @@ async def detect_outliers_resource(
             available = _open_view(con, parquet)
             filter_notes: list[dict[str, Any]] = []
             try:
-                where = _build_where(filters, available, _column_types(con), filter_notes)
+                where = _build_where(filters, available, _column_types(con), filter_notes, con)
             except AnalyticsError as e:
                 return {"error": str(e)}
 
@@ -2553,7 +2638,7 @@ async def save_query_to_csv(
                     except AnalyticsError as e:
                         return {"error": str(e)}
                 try:
-                    where = _build_where(filters, available, _column_types(con), filter_notes)
+                    where = _build_where(filters, available, _column_types(con), filter_notes, con)
                 except AnalyticsError as e:
                     return {"error": str(e)}
                 try:
@@ -2629,7 +2714,7 @@ async def filter_resource(
                 select_clause = ", ".join(_quote_ident(c, available) for c in columns)
             filter_notes: list[dict[str, Any]] = []
             try:
-                where = _build_where(filters, available, _column_types(con), filter_notes)
+                where = _build_where(filters, available, _column_types(con), filter_notes, con)
                 order = _build_order_by(order_by, available)
             except AnalyticsError as e:
                 return {"error": str(e)}
@@ -2706,7 +2791,7 @@ async def aggregate_resource(
             # 3 excluded" against a January total that only saw 20 values.
             filter_notes: list[dict[str, Any]] = []
             try:
-                where = _build_where(filters, available, types, filter_notes)
+                where = _build_where(filters, available, types, filter_notes, con)
             except AnalyticsError as e:
                 return {"error": str(e)}
             # Resolve each measure once, so a column aggregated three ways is

@@ -8,6 +8,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Fixed
 
+- **Numbers with a decimal comma are read at their real size.** Reading a
+  text column as a number removed every comma, so `78,10` became 7810 and a
+  water-quality index averaged 8,736 instead of 87.36, with a coercion note
+  saying every value read cleanly. The convention is now decided per column
+  from all its values: `78,10` and `1.234,56` mean a decimal comma, and
+  `40,000.00` and `1,234,567` mean a decimal point, as before. A column whose
+  commas could mean either (`1,234` with nothing else to settle it, or both
+  conventions at once) is left out of the figure and reported with
+  `ambiguous_separator: true` in `numeric_coercion`. Filters follow the same
+  rule. A decimal-comma column is marked `decimal_separator: ","`.
+
 - **Warm-path queries no longer block the event loop.** Every analytics tool
   ran its DuckDB work inline on the server's event loop; only the cold-path
   conversion had been moved to a thread. Measured on a 40-column, 300k-row
