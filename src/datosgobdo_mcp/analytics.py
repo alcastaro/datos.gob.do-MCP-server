@@ -24,6 +24,7 @@ import os
 import re
 import tempfile
 import unicodedata
+import weakref
 import zipfile
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -977,7 +978,28 @@ def warm_parquet_for(url: str, fmt: str | None = None) -> Path | None:
     return hit[0] if hit else None
 
 
+# One fetch per (URL, format) at a time in this process. Concurrent first calls
+# each downloaded and converted the same file, and half of them failed renaming
+# the same Parquet into place; with this, the later callers wait and then take
+# the warm path. Weak values, so a lock lives only while someone holds or waits
+# on it, and never outlives the event loop it was used on.
+_fetch_locks: weakref.WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
+    weakref.WeakValueDictionary()
+)
+
+
 async def _ensure_cached_live(
+    url: str,
+    fmt: str,
+    cache: LocalDiskCache | None = None,
+    force_refresh: bool = False,
+) -> tuple[Path, dict[str, Any]]:
+    lock = _fetch_locks.setdefault((url, fmt), asyncio.Lock())
+    async with lock:
+        return await _fetch_or_reuse(url, fmt, cache, force_refresh)
+
+
+async def _fetch_or_reuse(
     url: str,
     fmt: str,
     cache: LocalDiskCache | None = None,

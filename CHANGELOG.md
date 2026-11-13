@@ -39,6 +39,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   garbage parse after the caller switched to `json`. The declared format is
   now part of the key and of the warm lookup. Files already in the cache are
   downloaded once more after upgrading, because their entries carry no format.
+- **Concurrent first calls for one file share one download.** Eight calls at
+  once for a file not yet cached made eight downloads, and half of them failed
+  with a DuckDB rename error that also showed the cache path. Calls for the
+  same URL and format in one server process now wait for the first download
+  and are served from its copy.
 
 - **Warm-path queries no longer block the event loop.** Every analytics tool
   ran its DuckDB work inline on the server's event loop; only the cold-path

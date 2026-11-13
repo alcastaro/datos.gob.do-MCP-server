@@ -1948,6 +1948,24 @@ async def test_one_call_with_the_wrong_format_does_not_poison_the_url(httpx_mock
     assert out["row_count"] == 50
 
 
+async def test_concurrent_first_calls_share_one_download(httpx_mock, tmp_cache_dir):
+    """Eight calls at once for a file nobody has read yet: one download, and
+    eight answers. Each used to download and convert on its own, and half of
+    them failed renaming the same Parquet into place."""
+    import asyncio
+
+    url = "https://example.test/concurrente.csv"
+    body = b"id,monto\n" + b"".join(b"%d,%d\n" % (i, i * 10) for i in range(20000))
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "c1"})
+    httpx_mock.add_response(url=url, method="GET", content=body)
+    aggs = [{"col": None, "fn": "count", "alias": "n"}]
+    results = await asyncio.gather(
+        *[analytics.aggregate_resource(url, "csv", aggs) for _ in range(8)]
+    )
+    assert [r.get("rows") for r in results] == [[[20000]]] * 8, results
+    assert len(httpx_mock.get_requests(method="GET")) == 1
+
+
 async def test_a_format_corrected_file_is_still_served_warm(httpx_mock, tmp_cache_dir):
     """The key follows the declared format, which the sniffer may override."""
     url = "https://example.test/registro.xlsx"
