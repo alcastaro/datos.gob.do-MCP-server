@@ -210,6 +210,7 @@ async def _preview_via_cache(url: str, kind: str, rows: int, sample: SampleMode)
             "rows": [[_jsonable(v) for v in r] for r in out_rows],
             "source": "parquet-cache",
             "cache": meta.get("cache"),
+            **{k: meta[k] for k in ("fetched_at", "source_truncated", "source_bytes") if k in meta},
         }
 
     return await asyncio.to_thread(_run)
@@ -258,7 +259,7 @@ async def preview_resource_data(
     # assistant glanced at a file it had already read.
     from .analytics import warm_parquet_for
 
-    if warm_parquet_for(url) is not None:
+    if warm_parquet_for(url, kind) is not None:
         return await _preview_via_cache(url, kind, rows, sample)
 
     try:

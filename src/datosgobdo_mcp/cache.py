@@ -185,10 +185,15 @@ def _parser_build() -> str:
     return _parser_build_cached
 
 
-def _build_key(url: str, etag: str | None, last_modified: str | None) -> str:
+def _build_key(
+    url: str, etag: str | None, last_modified: str | None, fmt: str | None = None
+) -> str:
     version_tag = etag or last_modified or "no-version"
     version_safe = hashlib.sha256(version_tag.encode("utf-8")).hexdigest()[:12]
-    return f"{_hash_url(url)}__{version_safe}__{_parser_build()}"
+    # The format is part of what was parsed: the same bytes read as CSV and as
+    # JSON are two different tables.
+    source = f"{url}|{fmt}" if fmt else url
+    return f"{_hash_url(source)}__{version_safe}__{_parser_build()}"
 
 
 class LocalDiskCache:
@@ -245,14 +250,19 @@ class LocalDiskCache:
         lock_file = self.cache_dir / ".lock"
         with open(lock_file, "w") as f:
             if fcntl is not None:
-                fcntl.flock(f, fcntl.LOCK_EX)
+                # Same reason the msvcrt calls below carry one, in the other
+                # direction: typeshed guards both modules by platform, so on
+                # Windows `fcntl` resolves to a module with no attributes at
+                # all and there is no way to express "only reached where the
+                # import succeeded" to mypy.
+                fcntl.flock(f, fcntl.LOCK_EX)  # type: ignore[attr-defined]
             else:  # pragma: no cover — Windows only
                 _acquire_with_backoff(lambda: _try_msvcrt_lock(f), str(self.index_path))
             try:
                 yield
             finally:
                 if fcntl is not None:
-                    fcntl.flock(f, fcntl.LOCK_UN)
+                    fcntl.flock(f, fcntl.LOCK_UN)  # type: ignore[attr-defined]
                 else:  # pragma: no cover — Windows only
                     f.seek(0)
                     msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
@@ -331,6 +341,7 @@ class LocalDiskCache:
         key: str,
         url: str | None = None,
         provenance: dict[str, Any] | None = None,
+        fmt: str | None = None,
     ) -> None:
         """Mark a put as complete; refresh size metadata.
 
@@ -365,6 +376,8 @@ class LocalDiskCache:
             index[key]["build"] = _parser_build()
             if url is not None:
                 index[key]["url"] = url
+            if fmt is not None:
+                index[key]["format"] = fmt
             if provenance:
                 index[key]["provenance"] = provenance
             self._evict_to_fit_locked(self.max_bytes)
@@ -379,7 +392,7 @@ class LocalDiskCache:
         stored = self._index.get(key, {}).get("provenance")
         return dict(stored) if isinstance(stored, dict) else {}
 
-    def get_by_url(self, url: str) -> tuple[Path, str] | None:
+    def get_by_url(self, url: str, fmt: str | None = None) -> tuple[Path, str] | None:
         """Return (path, key) for the most recently accessed entry matching url, or None.
 
         This is the warm path the analytics tools take, and it never computes a
@@ -389,11 +402,16 @@ class LocalDiskCache:
         predating the stamp carry no build and are treated as stale, which is
         the right answer for them: they were written before we started tracking
         this, so we cannot claim they match.
+
+        With `fmt`, only an entry parsed as that format matches. Entries from
+        before the format was recorded have none, so they are downloaded again.
         """
         build = _parser_build()
         best_key: str | None = None
         best_accessed: float = -1.0
         for key, meta in self._index.items():
+            if fmt is not None and meta.get("format") != fmt:
+                continue
             if meta.get("url") == url and meta.get("build") == build:
                 p = self._entry_path(key)
                 if p.exists():
@@ -580,5 +598,6 @@ def build_cache_key(
     url: str,
     etag: str | None = None,
     last_modified: str | None = None,
+    fmt: str | None = None,
 ) -> str:
-    return _build_key(url, etag, last_modified)
+    return _build_key(url, etag, last_modified, fmt)

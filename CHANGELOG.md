@@ -8,6 +8,57 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Fixed
 
+- **Numbers with a decimal comma are read at their real size.** Reading a
+  text column as a number removed every comma, so `78,10` became 7810 and a
+  water-quality index averaged 8,736 instead of 87.36, with a coercion note
+  saying every value read cleanly. The convention is now decided per column
+  from all its values: one, two or four or more digits after a comma
+  (`12,5`, `78,10`, `3,1416`), a leading `0,`, or `1.234,56` mean a decimal
+  comma, and `40,000.00` and `1,234,567` mean a decimal point, as before. A
+  column marked `decimal_separator: ","` was read with a decimal comma; in it,
+  a value whose dots do not separate groups of three (`75.000.00`) is
+  excluded and listed. Filters follow the same rule, and `numeric_coercion` says which rule
+  decided in `separator_rule`:
+  - `dominant`: when 98% or more of the values that show a convention use
+    one, the column is read in it. Each cell written the other way is reread
+    in the other convention when only that reading falls within ten times the
+    column's median, and excluded otherwise; `reinterpreted` and
+    `excluded_other_convention` give both counts.
+  - `column_evidence`, `file`, `assumed`: a column whose commas are all of the
+    `1,234` kind is read with a thousands comma when the same column holds
+    whole numbers written plainly from 1,000 up or of several lengths; else
+    in the convention every other number column of the file agrees on; else
+    with a thousands comma, the usual one for counts on the portal, marked
+    `assumed_separator: "thousands_comma"`.
+  - A column where both conventions are well represented is left out of the
+    figure and reported with `ambiguous_separator: true`.
+- **A cached file says when it was downloaded, and can be refreshed.** After
+  the first download every call read the cached copy, with no date on it and
+  no way for a caller to replace it, so a file republished at the same URL
+  kept answering with the old rows. Every reply's `cache` block now carries
+  `fetched_at` (UTC), on warm hits too, and `get_resource_schema` takes an
+  optional `refresh: true` that downloads the file again and replaces the copy
+  every tool reads. A refresh used to keep the old copy whenever the server
+  sent no ETag or Last-Modified; it now always downloads.
+- **A file cut at the download limit is declared partial on every reply.** A
+  CSV larger than the 100 MB cap still parses, and the count and sum over its
+  first part came back as the file's. `source_truncated` appeared only inside
+  the `cache` block of the first reply and disappeared from every cached one.
+  It is now stored with the entry, together with `source_bytes`, and every
+  analytics reply built from such a file carries a top-level `warning` that
+  the figures are partial. The cached preview carries `source_truncated` and
+  `fetched_at` too.
+- **The cache tells formats apart.** The cache key and the warm lookup used
+  the URL alone, so a JSON file asked for once as `csv` kept returning that
+  garbage parse after the caller switched to `json`. The declared format is
+  now part of the key and of the warm lookup. Files already in the cache are
+  downloaded once more after upgrading, because their entries carry no format.
+- **Concurrent first calls for one file share one download.** Eight calls at
+  once for a file not yet cached made eight downloads, and half of them failed
+  with a DuckDB rename error that also showed the cache path. Calls for the
+  same URL and format in one server process now wait for the first download
+  and are served from its copy.
+
 - **Warm-path queries no longer block the event loop.** Every analytics tool
   ran its DuckDB work inline on the server's event loop; only the cold-path
   conversion had been moved to a thread. Measured on a 40-column, 300k-row

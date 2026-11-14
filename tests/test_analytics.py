@@ -455,6 +455,31 @@ async def test_force_refresh_does_head(mock_csv_endpoint, tmp_cache_dir, httpx_m
     assert meta["cache"] == "miss"
 
 
+async def test_a_caller_can_refresh_a_file_that_changed_in_place(httpx_mock, tmp_cache_dir):
+    """A ministry replaces its monthly file at the same URL, with no ETag or
+    Last-Modified to say so. The cached copy must carry its download date, and a
+    caller must be able to replace it."""
+    url = "https://example.test/nomina-mensual.csv"
+    httpx_mock.add_response(url=url, method="HEAD")
+    httpx_mock.add_response(url=url, method="GET", content=b"id;monto\n1;10\n2;20\n")
+    first = await analytics.get_resource_schema(url, "csv")
+    assert first["row_count"] == 2
+    assert first["cache"]["fetched_at"].endswith("+00:00")
+
+    warm = await analytics.get_resource_schema(url, "csv")
+    assert warm["cache"]["cache"] == "hit"
+    assert warm["cache"]["fetched_at"] == first["cache"]["fetched_at"]
+
+    httpx_mock.add_response(url=url, method="HEAD")
+    httpx_mock.add_response(url=url, method="GET", content=b"id;monto\n1;10\n2;20\n3;30\n")
+    fresh = await analytics.get_resource_schema(url, "csv", refresh=True)
+    assert fresh["cache"]["cache"] == "miss"
+    assert fresh["row_count"] == 3
+
+    after = await analytics.aggregate_resource(url, "csv", [{"col": "monto", "fn": "sum"}])
+    assert after["rows"] == [[60]]
+
+
 # ─── quantiles_resource ───────────────────────────────────────────────────────
 
 
@@ -1561,6 +1586,212 @@ def test_the_cleanup_never_removes_a_value_separator():
     assert "REPLACE({c}, ' ', '')" not in analytics._NUMERIC_TEXT_CLEAN
 
 
+# One column per number convention. Semicolon-separated, as the files that use
+# a decimal comma are, so the commas stay inside the values.
+_SEPARATORS_CSV = (
+    "id;pct;grande;europeo;dudoso\n"
+    "1;78,10;1,234,567;1.234,56;1,234\n"
+    "2;95,30;2,000,000;2.000,00;5,678\n"
+    "3;88,00;350;78,10;12,500\n"
+)
+
+
+@pytest.fixture
+def separators_endpoint(httpx_mock):
+    url = "https://example.test/separadores.csv"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "sep1"})
+    httpx_mock.add_response(url=url, method="GET", content=_SEPARATORS_CSV.encode())
+    return url
+
+
+async def test_number_convention_is_decided_per_column(separators_endpoint, tmp_cache_dir):
+    """`78,10` is 78.1, and `1,234,567` is still 1234567 in the next column.
+
+    Removing every comma read the decimal-comma column 100 times too big and
+    reported it as clean.
+    """
+    out = await analytics.aggregate_resource(
+        separators_endpoint,
+        "csv",
+        aggregations=[
+            {"col": "pct", "fn": "avg", "alias": "pct"},
+            {"col": "pct", "fn": "max", "alias": "pct_max"},
+            {"col": "grande", "fn": "sum", "alias": "grande"},
+            {"col": "europeo", "fn": "sum", "alias": "europeo"},
+        ],
+    )
+    assert "error" not in out, out
+    pct, pct_max, grande, europeo = out["rows"][0]
+    assert pct == pytest.approx((78.10 + 95.30 + 88.00) / 3)
+    assert pct_max == pytest.approx(95.30)
+    assert grande == pytest.approx(1_234_567 + 2_000_000 + 350)
+    assert europeo == pytest.approx(1234.56 + 2000.00 + 78.10)
+    reports = {r["column"]: r for r in out["numeric_coercion"]}
+    assert reports["pct"]["decimal_separator"] == ","
+    assert reports["europeo"]["decimal_separator"] == ","
+    assert "decimal_separator" not in reports["grande"]
+
+
+async def test_a_column_of_ambiguous_commas_is_read_as_thousands_and_says_so(
+    separators_endpoint, tmp_cache_dir
+):
+    """`1,234` is 1234 or 1.234, and nothing in the column or the file settles
+    it: the other columns disagree with each other. The thousands comma is the
+    usual one for counts on the portal, so it is used, and the reply says it was
+    assumed."""
+    out = await analytics.aggregate_resource(
+        separators_endpoint,
+        "csv",
+        aggregations=[{"col": "dudoso", "fn": "sum", "alias": "total"}],
+    )
+    assert "error" not in out, out
+    assert out["rows"][0][0] == pytest.approx(1234 + 5678 + 12500)
+    report = out["numeric_coercion"][0]
+    assert report["column"] == "dudoso"
+    assert report["assumed_separator"] == "thousands_comma"
+    assert report["separator_rule"] == "assumed"
+    assert "ambiguous_separator" not in report
+    assert "assumed" in report["note"]
+
+    out = await analytics.filter_resource(
+        separators_endpoint, "csv", filters=[{"col": "dudoso", "op": ">", "val": 5000}]
+    )
+    assert len(out["rows"]) == 2
+    assert out["numeric_coercion"][0]["assumed_separator"] == "thousands_comma"
+
+
+def _csv_endpoint(httpx_mock, name: str, body: str) -> str:
+    url = f"https://example.test/{name}.csv"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": name})
+    httpx_mock.add_response(url=url, method="GET", content=body.encode())
+    return url
+
+
+async def test_a_dominant_convention_reads_the_column_and_rereads_stray_cells(
+    httpx_mock, tmp_cache_dir
+):
+    """A payroll written `18,533.33` with two cells written the other way.
+
+    `26171,14` read with a thousands comma is 2,617,114, more than a hundred
+    times the typical salary; read with a decimal comma it is 26171.14, inside
+    the range, so it is reread and counted. `2,5` is 25 or 2.5, and neither is
+    a salary, so it is left out and counted. The column used to come back NULL.
+    """
+    salaries = [f"{15 + i % 10},{i % 1000:03d}.33" for i in range(200)]
+    body = "id;sueldo\n" + "".join(f"{i};{v}\n" for i, v in enumerate(salaries))
+    body += "200;26171,14\n201;2,5\n"
+    url = _csv_endpoint(httpx_mock, "nomina", body)
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "sueldo", "fn": "sum"}])
+    assert "error" not in out, out
+    expected = sum(float(v.replace(",", "")) for v in salaries) + 26171.14
+    assert out["rows"][0][0] == pytest.approx(expected)
+    report = out["numeric_coercion"][0]
+    assert report["separator_rule"] == "dominant"
+    assert report["decimal_separator"] == "."
+    assert report["reinterpreted"] == 1
+    assert report["excluded_other_convention"] == 1
+    assert report["values_excluded"] == 1
+    assert "ambiguous_separator" not in report
+
+
+async def test_a_dominant_decimal_comma_rereads_a_stray_decimal_point(httpx_mock, tmp_cache_dir):
+    """The mirror image: `30.000,00` throughout and one `40,000.00`, which the
+    dominant reading turns into 40."""
+    values = [f"{25 + i % 10}.{i % 1000:03d},00" for i in range(200)]
+    body = "id;monto\n" + "".join(f"{i};{v}\n" for i, v in enumerate(values))
+    body += "200;40,000.00\n"
+    url = _csv_endpoint(httpx_mock, "monto_coma", body)
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "monto", "fn": "sum"}])
+    expected = sum(float(v.replace(".", "").replace(",", ".")) for v in values) + 40000
+    assert out["rows"][0][0] == pytest.approx(expected)
+    report = out["numeric_coercion"][0]
+    assert report["decimal_separator"] == ","
+    assert report["reinterpreted"] == 1
+    assert report["excluded_other_convention"] == 0
+
+    out = await analytics.filter_resource(
+        url, "csv", filters=[{"col": "monto", "op": ">", "val": 39000}], columns=["id"]
+    )
+    assert out["rows"] == [[200]]
+    assert out["numeric_coercion"][0]["separator_rule"] == "dominant"
+
+
+async def test_a_decimal_comma_column_does_not_glue_misplaced_dots(httpx_mock, tmp_cache_dir):
+    """`75.000.00` is a typo for 75 000; removing every dot made it 7,500,000."""
+    body = "id;v\n" + "".join(f"{i};1.234,50\n" for i in range(10)) + "10;75.000.00\n"
+    url = _csv_endpoint(httpx_mock, "puntos", body)
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "v", "fn": "sum"}])
+    assert out["rows"][0][0] == pytest.approx(12345.0)
+    assert out["numeric_coercion"][0]["values_excluded"] == 1
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("12,5", 12.5), ("78,10", 78.1), ("3,1416", 3.1416), ("0,234", 0.234)],
+)
+async def test_digits_after_the_separator_decide_a_decimal_comma(
+    httpx_mock, tmp_cache_dir, value, expected
+):
+    """One, two or four digits after a comma, or a number starting `0,`, can
+    only be a decimal comma, so the `1,500` next to it is 1.5."""
+    url = _csv_endpoint(httpx_mock, "digitos", f"id;v\n1;{value}\n2;1,500\n")
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "v", "fn": "sum"}])
+    assert out["rows"][0][0] == pytest.approx(expected + 1.5)
+    assert out["numeric_coercion"][0]["decimal_separator"] == ","
+
+
+async def test_plain_integers_above_a_thousand_settle_an_ambiguous_column(
+    httpx_mock, tmp_cache_dir
+):
+    """`2500` written plainly next to `1,234`: the column holds thousands, and
+    nothing is assumed."""
+    url = _csv_endpoint(httpx_mock, "conteo", "id;n\n1;1,234\n2;2500\n3;350\n")
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "n", "fn": "sum"}])
+    assert out["rows"][0][0] == pytest.approx(1234 + 2500 + 350)
+    report = out["numeric_coercion"][0]
+    assert report["separator_rule"] == "column_evidence"
+    assert "assumed_separator" not in report
+
+
+async def test_the_file_convention_settles_an_ambiguous_column(httpx_mock, tmp_cache_dir):
+    """Every other number in the file has a decimal comma, so `1,234` is 1.234."""
+    url = _csv_endpoint(httpx_mock, "archivo", "id;precio;peso\n1;78,10;1,234\n2;95,30;2,500\n")
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "peso", "fn": "sum"}])
+    assert out["rows"][0][0] == pytest.approx(1.234 + 2.5)
+    report = out["numeric_coercion"][0]
+    assert report["separator_rule"] == "file"
+    assert report["decimal_separator"] == ","
+    assert "assumed_separator" not in report
+
+
+async def test_a_column_with_both_conventions_is_reported_with_the_counts(
+    httpx_mock, tmp_cache_dir
+):
+    """`40,000.00` and `27000,50` in one column: one of them is misread
+    whichever rule is applied, so the column is refused and says why."""
+    url = "https://example.test/mixto.csv"
+    body = "id;monto\n1;40,000.00\n2;31,500.25\n3;27000,50\n"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "mx1"})
+    httpx_mock.add_response(url=url, method="GET", content=body.encode())
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "monto", "fn": "sum"}])
+    assert out["rows"][0][0] is None
+    report = out["numeric_coercion"][0]
+    assert report["ambiguous_separator"] is True
+    assert "1 value(s) can only have a decimal comma" in report["note"]
+    assert "2 only a decimal point" in report["note"]
+
+
+async def test_a_numeric_filter_uses_the_column_convention(separators_endpoint, tmp_cache_dir):
+    out = await analytics.filter_resource(
+        separators_endpoint,
+        "csv",
+        filters=[{"col": "pct", "op": ">", "val": 90}],
+        columns=["id"],
+    )
+    assert "error" not in out, out
+    assert out["rows"] == [[2]]
+
+
 async def test_a_megabyte_that_parses_into_one_cell_is_flagged(httpx_mock, tmp_cache_dir):
     """The dangerous case is not the error, it is the success.
 
@@ -1806,6 +2037,75 @@ async def test_truncated_download_carries_no_digest(
     monkeypatch.setattr(analytics, "ANALYTICS_MAX_BYTES", 100)
     out = await analytics.get_resource_schema(sample_csv_url, "csv")
     assert "source_sha256" not in out.get("cache", {})
+
+
+async def test_one_call_with_the_wrong_format_does_not_poison_the_url(httpx_mock, tmp_cache_dir):
+    """A model that guesses `csv` for a JSON file once must not keep getting
+    the CSV parse of it after it asks for `json`."""
+    import json
+
+    url = "https://example.test/datos"
+    body = json.dumps([{"a": i, "b": f"x,{i}"} for i in range(50)]).encode()
+    for _ in range(2):
+        httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "f1"})
+        httpx_mock.add_response(url=url, method="GET", content=body)
+    await analytics.get_resource_schema(url, "csv")
+    out = await analytics.get_resource_schema(url, "json")
+    assert out["cache"]["cache"] == "miss"
+    assert [c["name"] for c in out["columns"]] == ["a", "b"]
+    assert out["row_count"] == 50
+
+
+async def test_concurrent_first_calls_share_one_download(httpx_mock, tmp_cache_dir):
+    """Eight calls at once for a file nobody has read yet: one download, and
+    eight answers. Each used to download and convert on its own, and half of
+    them failed renaming the same Parquet into place."""
+    import asyncio
+
+    url = "https://example.test/concurrente.csv"
+    body = b"id,monto\n" + b"".join(b"%d,%d\n" % (i, i * 10) for i in range(20000))
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "c1"})
+    httpx_mock.add_response(url=url, method="GET", content=body)
+    aggs = [{"col": None, "fn": "count", "alias": "n"}]
+    results = await asyncio.gather(
+        *[analytics.aggregate_resource(url, "csv", aggs) for _ in range(8)]
+    )
+    assert [r.get("rows") for r in results] == [[[20000]]] * 8, results
+    assert len(httpx_mock.get_requests(method="GET")) == 1
+
+
+async def test_a_format_corrected_file_is_still_served_warm(httpx_mock, tmp_cache_dir):
+    """The key follows the declared format, which the sniffer may override."""
+    url = "https://example.test/registro.xlsx"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": "fc1"})
+    httpx_mock.add_response(url=url, method="GET", content=b"id,monto\n1,10\n2,20\n")
+    first = await analytics.get_resource_schema(url, "xlsx")
+    assert first["cache"]["format_corrected"]["actual"] == "csv"
+    again = await analytics.get_resource_schema(url, "xlsx")
+    assert again["cache"]["cache"] == "hit"
+
+
+async def test_a_cut_file_is_declared_partial_on_every_call(
+    httpx_mock, sample_csv_url, tmp_cache_dir, monkeypatch
+):
+    """A sum over the first part of a file is not the file's sum, and the
+    second call, served from the cache, is where the flag used to vanish."""
+    big = b"id;monto\n" + b"".join(b"%d;10\n" % i for i in range(5000))
+    httpx_mock.add_response(url=sample_csv_url, method="HEAD", headers={"etag": "t2"})
+    httpx_mock.add_response(url=sample_csv_url, method="GET", content=big)
+    monkeypatch.setattr(analytics, "ANALYTICS_MAX_BYTES", 3000)
+    aggs = [{"col": "monto", "fn": "sum", "alias": "total"}]
+    for expected in ("miss", "hit"):
+        out = await analytics.aggregate_resource(sample_csv_url, "csv", aggs)
+        assert out["cache"]["cache"] == expected
+        assert out["cache"]["source_truncated"] is True
+        assert out["cache"]["source_bytes"] == 3000
+        assert "partial" in out["warning"]
+
+    from datosgobdo_mcp import preview
+
+    shown = await preview.preview_resource_data(sample_csv_url, "csv", rows=2)
+    assert shown["source_truncated"] is True
 
 
 async def test_aggregate_reports_computation(mock_csv_endpoint, tmp_cache_dir):

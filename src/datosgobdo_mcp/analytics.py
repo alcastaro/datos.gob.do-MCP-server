@@ -24,8 +24,10 @@ import os
 import re
 import tempfile
 import unicodedata
+import weakref
 import zipfile
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 
@@ -300,10 +302,20 @@ def _tool_envelope(fn: _T) -> _T:
     @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
         try:
-            return await fn(*args, **kwargs)
+            result = await fn(*args, **kwargs)
         except _ENVELOPE_ERRORS as e:
             logger.warning("%s failed: %s: %s", fn.__name__, type(e).__name__, e)
             return {"error": err_text(e)}
+        cache = result.get("cache") if isinstance(result, dict) else None
+        if isinstance(cache, dict) and cache.get("source_truncated"):
+            # Top level, where a caller looks: the flag alone sits inside `cache`.
+            cut = (
+                f"Only the first {cache.get('source_bytes', 0):,} bytes of this file were "
+                "read: it is larger than this server downloads. Counts, sums and every "
+                "other figure here are partial."
+            )
+            result["warning"] = f"{cut} {result['warning']}" if result.get("warning") else cut
+        return result
 
     return wrapper  # type: ignore[return-value]
 
@@ -952,7 +964,7 @@ def _ods_repeat(raw: str | None) -> int:
         return 1
 
 
-def warm_parquet_for(url: str) -> Path | None:
+def warm_parquet_for(url: str, fmt: str | None = None) -> Path | None:
     """Return the cached Parquet for this URL, or None — never touches the network.
 
     Lets a caller ask "have we already read this?" without paying for a HEAD
@@ -960,13 +972,34 @@ def warm_parquet_for(url: str) -> Path | None:
     portal about it again.
     """
     try:
-        hit = get_cache().get_by_url(url)
+        hit = get_cache().get_by_url(url, fmt)
     except OSError:  # pragma: no cover — unreadable cache dir
         return None
     return hit[0] if hit else None
 
 
+# One fetch per (URL, format) at a time in this process. Concurrent first calls
+# each downloaded and converted the same file, and half of them failed renaming
+# the same Parquet into place; with this, the later callers wait and then take
+# the warm path. Weak values, so a lock lives only while someone holds or waits
+# on it, and never outlives the event loop it was used on.
+_fetch_locks: weakref.WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
+    weakref.WeakValueDictionary()
+)
+
+
 async def _ensure_cached_live(
+    url: str,
+    fmt: str,
+    cache: LocalDiskCache | None = None,
+    force_refresh: bool = False,
+) -> tuple[Path, dict[str, Any]]:
+    lock = _fetch_locks.setdefault((url, fmt), asyncio.Lock())
+    async with lock:
+        return await _fetch_or_reuse(url, fmt, cache, force_refresh)
+
+
+async def _fetch_or_reuse(
     url: str,
     fmt: str,
     cache: LocalDiskCache | None = None,
@@ -978,10 +1011,13 @@ async def _ensure_cached_live(
     any network request. Cold path: HEAD → download → transcode → Parquet.
     """
     cache = cache or get_cache()
+    # The format the caller declared. `fmt` itself may be corrected below to
+    # what the bytes are, and the cache has to be found again by what was asked.
+    declared = fmt
 
     # Warm path: URL→key reverse lookup skips HEAD entirely.
     if not force_refresh:
-        url_hit = cache.get_by_url(url)
+        url_hit = cache.get_by_url(url, declared)
         if url_hit is not None:
             cached_path, key = url_hit
             logger.info("cache URL-HIT key=%s size=%d", key, cached_path.stat().st_size)
@@ -994,8 +1030,10 @@ async def _ensure_cached_live(
 
     # Cold path (or forced refresh): HEAD to compute version key.
     etag, last_mod = await _head_metadata(url)
-    key = build_cache_key(url, etag=etag, last_modified=last_mod)
-    cached = cache.get(key)
+    key = build_cache_key(url, etag=etag, last_modified=last_mod, fmt=declared)
+    # A refresh skips this too: a server that sends no ETag or Last-Modified
+    # gives the same key for new bytes, and the old copy would win again.
+    cached = None if force_refresh else cache.get(key)
     if cached is not None:
         logger.info("cache HIT key=%s size=%d", key, cached.stat().st_size)
         return cached, {"cache": "hit", "key": key, **cache.provenance(key)}
@@ -1285,7 +1323,10 @@ async def _ensure_cached_live(
         # file parsed into a shape that cannot be right. Saying so is not
         # optional in an audit tool — and it is stored, not just returned,
         # because every later call reads this entry from the warm path.
-        provenance: dict[str, Any] = {}
+        # Stored with the entry, so every later hit says how old the copy is.
+        provenance: dict[str, Any] = {
+            "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds")
+        }
         if resolved_from:
             provenance["resolved_from"] = resolved_from
         if warning:
@@ -1294,7 +1335,11 @@ async def _ensure_cached_live(
             provenance["format_corrected"] = format_corrected
         if source_sha256:
             provenance["source_sha256"] = source_sha256
-        cache.finalize(key, url=url, provenance=provenance)  # URL for warm-path lookups
+        if truncated:
+            provenance["source_truncated"] = True
+            provenance["source_bytes"] = bytes_written
+        # URL and format for warm-path lookups
+        cache.finalize(key, url=url, provenance=provenance, fmt=declared)
         logger.info(
             "cache STORE key=%s parquet=%d source=%d",
             key,
@@ -1439,12 +1484,13 @@ async def get_resource_schema(
     url: str,
     fmt: str | None,
     sample_rows: int = SCHEMA_SAMPLE_ROWS,
+    refresh: bool = False,
 ) -> dict[str, Any]:
     kind = classify_format(fmt)
     if kind is None:
         return {"error": f"Format '{fmt}' not supported"}
     try:
-        parquet, meta = await ensure_cached(url, kind)
+        parquet, meta = await ensure_cached(url, kind, force_refresh=refresh)
     except (httpx.HTTPError, AnalyticsError, duckdb.Error) as e:
         return _load_error(e, url)
 
@@ -1630,6 +1676,7 @@ def _filter_measure(
     val: Any,
     types: dict[str, str] | None,
     notes: list[dict[str, Any]] | None,
+    con: duckdb.DuckDBPyConnection | None = None,
 ) -> str:
     """Decide how a comparison should read a column, and say so.
 
@@ -1654,19 +1701,28 @@ def _filter_measure(
     if isinstance(val, bool):  # bool is an int in Python; not a measurement
         return quoted
     if isinstance(val, (int, float)):
+        how: dict[str, Any] = (
+            _number_style(con, quoted)
+            if con is not None
+            else {"style": "thousands_comma", "expr": _as_number(quoted), "fields": {}, "say": ""}
+        )
         if notes is not None:
-            notes.append(
-                {
-                    "column": col,
-                    "coerced": True,
-                    "where": "filter",
-                    "note": (
-                        f"'{col}' is stored as text in this file and was compared as a "
-                        "number. Values that do not read as numbers do not match."
-                    ),
-                }
-            )
-        return _as_number(quoted)
+            note: dict[str, Any] = {
+                "column": col,
+                "coerced": True,
+                "where": "filter",
+                "note": (
+                    f"'{col}' is stored as text in this file and was compared as a "
+                    "number. Values that do not read as numbers do not match."
+                ),
+            }
+            note.update(how["fields"])
+            if how["style"] == "ambiguous":
+                note["note"] = f"'{col}': {how['say']} No row matches this filter."
+            elif how["say"]:
+                note["note"] += " " + how["say"]
+            notes.append(note)
+        return str(how["expr"])
 
     if isinstance(val, str) and notes is not None:
         stripped = val.strip()
@@ -1696,6 +1752,7 @@ def _build_filter_clause(
     available: list[str] | None = None,
     types: dict[str, str] | None = None,
     notes: list[dict[str, Any]] | None = None,
+    con: duckdb.DuckDBPyConnection | None = None,
 ) -> str:
     col = f.get("col")
     op = f.get("op", "=")
@@ -1744,7 +1801,7 @@ def _build_filter_clause(
         return f"{q} ILIKE '%{esc}' ESCAPE '\\'"
     # Comparison ops.
     cmp_op = "<>" if op == "!=" else op
-    measured = _filter_measure(col, q, op, val, types, notes)
+    measured = _filter_measure(col, q, op, val, types, notes, con)
     return f"{measured} {cmp_op} {_quote_literal(val)}"
 
 
@@ -1753,10 +1810,11 @@ def _build_where(
     available: list[str] | None = None,
     types: dict[str, str] | None = None,
     notes: list[dict[str, Any]] | None = None,
+    con: duckdb.DuckDBPyConnection | None = None,
 ) -> str:
     if not filters:
         return ""
-    parts = [_build_filter_clause(f, available, types, notes) for f in filters]
+    parts = [_build_filter_clause(f, available, types, notes, con) for f in filters]
     return "WHERE " + " AND ".join(parts)
 
 
@@ -1993,9 +2051,229 @@ _SUSPICIOUS_SOURCE_BYTES = 100_000
 _SUSPICIOUS_ROWS = 5
 
 
-def _as_number(quoted: str) -> str:
+# The same column written the other way round: `1.234,56` and `78,10`. The dots
+# go first, then the comma becomes the decimal point.
+_DECIMAL_COMMA_CLEAN = (
+    "NULLIF(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE({c}, '.', ''), ',', '.'),"
+    " CHR(160), ''), 'RD$', ''), '$', '')), '')"
+)
+
+# Currency and padding stripped, separators left alone: what the convention
+# checks below look at.
+_SYMBOLS_CLEAN = (
+    "NULLIF(TRIM(REPLACE(REPLACE(REPLACE({c}, CHR(160), ''), 'RD$', ''), '$', '')), '')"
+)
+
+# What one value proves about its column. A separator followed by exactly three
+# digits may group thousands; followed by one, two, or four or more (`12,5`,
+# `78,10`, `3,1416`), or after a leading 0 (`0,234`), it can only be decimal.
+# So `78,10` and `1.234,56` mean a decimal comma; `40,000.00`, `1,234,567` and
+# `56.78` mean a decimal point. `1,234` proves nothing on its own: it is 1234 in
+# a payroll and 1.234 in a price index.
+_PROVES_DECIMAL_COMMA = r"-?\d{1,3}(\.\d{3})+,\d+|-?\d{1,3}(\.\d{3}){2,}|-?\d+,\d+"
+_PROVES_DECIMAL_DOT = r"-?\d{1,3}(,\d{3})+\.\d+|-?\d{1,3}(,\d{3}){2,}|-?\d+\.\d+"
+_COMMA_GROUPS = r"-?[1-9]\d{0,2}(,\d{3})+"
+_DOT_GROUPS = r"-?[1-9]\d{0,2}(\.\d{3})+"
+_AMBIGUOUS_COMMA = r"-?[1-9]\d{0,2},\d{3}"
+_PLAIN_INTEGER = r"-?\d+"
+_DECIMAL_COMMA_SHAPE = r"-?(\d{1,3}(\.\d{3})+|\d+)(,\d+)?"
+
+# A column whose proving values show both conventions is read in the one that
+# holds at least this share of them; the rest are stray cells, each reread or
+# excluded and counted. Below it the column is a real conflict and is refused.
+# 2% bounds what a stray can cost, and the files that really mix two
+# conventions sit far lower (a price list at 73%, a column of salaries at 55%).
+_DOMINANT_SHARE = 0.98
+
+# A stray cell takes the other convention's reading when that reading lies within
+# this factor of the column's median and the dominant reading does not. The two
+# readings of a cell differ by 10, 100 or 1000 times.
+_STRAY_RANGE = 10.0
+
+
+def _proof_sql(quoted: str) -> tuple[str, str]:
+    """SQL predicates: this cell can only have a decimal comma / a decimal point."""
+    s = _SYMBOLS_CLEAN.format(c=quoted)
+    return (
+        f"(regexp_full_match({s}, '{_PROVES_DECIMAL_COMMA}') "
+        f"AND NOT regexp_full_match({s}, '{_COMMA_GROUPS}'))",
+        f"(regexp_full_match({s}, '{_PROVES_DECIMAL_DOT}') "
+        f"AND NOT regexp_full_match({s}, '{_DOT_GROUPS}'))",
+    )
+
+
+def _file_style(con: duckdb.DuckDBPyConnection, quoted: str) -> str | None:
+    """The convention every other text column of the file agrees on, if any."""
+    others = [
+        _raw_quote(c)
+        for c, t in con.execute("SELECT column_name, column_type FROM (DESCRIBE data)").fetchall()
+        if t == "VARCHAR" and _raw_quote(c) != quoted
+    ]
+    if not others:
+        return None
+    counts = [f"count(*) FILTER (WHERE {p})" for q in others for p in _proof_sql(q)]
+    row = con.execute(f"SELECT {', '.join(counts)} FROM data").fetchone() or ()
+    votes = {
+        "decimal_comma" if comma > dot else "thousands_comma"
+        for comma, dot in zip(row[::2], row[1::2], strict=True)
+        if comma + dot and max(comma, dot) / (comma + dot) >= _DOMINANT_SHARE
+    }
+    return votes.pop() if len(votes) == 1 else None
+
+
+_SEPARATOR_NAME = {"decimal_comma": ",", "thousands_comma": "."}
+
+
+def _number_style(con: duckdb.DuckDBPyConnection, quoted: str, where: str = "") -> dict[str, Any]:
+    """How to read this text column as a number, judged on all its values.
+
+    Per column, because a cell cannot answer it. `thousands_comma` is what every
+    column got before, and stays the answer whenever nothing contradicts it.
+    Returns `style`, `expr` (the SQL), `fields` for the coercion note and `say`,
+    the sentence explaining any choice made; for `ambiguous`, `say` is why the
+    column was refused. Counts of stray cells honour `where`.
+    """
+    s = _SYMBOLS_CLEAN.format(c=quoted)
+    comma_sql, dot_sql = _proof_sql(quoted)
+    row = con.execute(
+        f"SELECT count(*) FILTER (WHERE {comma_sql}), count(*) FILTER (WHERE {dot_sql}), "
+        f"count(*) FILTER (WHERE regexp_full_match({s}, '{_AMBIGUOUS_COMMA}')), "
+        f"count(*) FILTER (WHERE regexp_full_match({s}, '{_PLAIN_INTEGER}') "
+        f"AND abs(TRY_CAST({s} AS DOUBLE)) >= 1000), "
+        f"count(DISTINCT length(ltrim({s}, '-'))) "
+        f"FILTER (WHERE regexp_full_match({s}, '{_PLAIN_INTEGER}')) FROM data"
+    ).fetchone()
+    comma, dot, ambiguous, plain_big, plain_lengths = row or (0, 0, 0, 0, 0)
+
+    def plain(style: str, fields: dict[str, Any] | None = None, say: str = "") -> dict[str, Any]:
+        return {
+            "style": style,
+            "expr": _as_number(quoted, style),
+            "fields": fields or {},
+            "say": say,
+        }
+
+    if comma and dot:
+        share = max(comma, dot) / (comma + dot)
+        if share >= _DOMINANT_SHARE:
+            style = "decimal_comma" if comma > dot else "thousands_comma"
+            stray = dot_sql if comma > dot else comma_sql
+            return _dominant(con, quoted, style, stray, share, where)
+        return {
+            "style": "ambiguous",
+            "expr": _as_number(quoted, "ambiguous"),
+            "fields": {"ambiguous_separator": True},
+            "say": (
+                f"the column mixes both conventions: {comma} value(s) can only have a "
+                f"decimal comma (like '78,10') and {dot} only a decimal point (like "
+                "'40,000.00'), and neither is a clear majority. It was left out of this "
+                "result rather than guessed. If you know the convention, read it with "
+                "query_resource and an explicit REPLACE and CAST."
+            ),
+        }
+    if comma:
+        return plain("decimal_comma", {"decimal_separator": ","})
+    if dot or not ambiguous:
+        return plain("thousands_comma")
+
+    # Every comma is of the `1,234` kind: settle it from the column, then the file.
+    doubt = "Values such as '1,234' could have a thousands comma or a decimal comma"
+    if plain_big or plain_lengths >= 2:
+        return plain(
+            "thousands_comma",
+            {"decimal_separator": ".", "separator_rule": "column_evidence"},
+            f"{doubt}; the same column holds whole numbers written without a separator "
+            "(from 1,000 up, or of several lengths), so the comma was read as a "
+            "thousands separator.",
+        )
+    file_style = _file_style(con, quoted)
+    if file_style:
+        name = "comma" if file_style == "decimal_comma" else "point"
+        return plain(
+            file_style,
+            {"decimal_separator": _SEPARATOR_NAME[file_style], "separator_rule": "file"},
+            f"{doubt}; the other number columns of this file use a decimal {name}, so "
+            "this one was read the same way.",
+        )
+    return plain(
+        "thousands_comma",
+        {"assumed_separator": "thousands_comma", "separator_rule": "assumed"},
+        f"{doubt}, and nothing in the column or the file settles it. The comma was "
+        "assumed to be a thousands separator, the usual one for counts on this portal; "
+        "if this column holds measures with three decimals, those values are 1,000 "
+        "times too large.",
+    )
+
+
+def _dominant(
+    con: duckdb.DuckDBPyConnection,
+    quoted: str,
+    style: str,
+    stray: str,
+    share: float,
+    where: str,
+) -> dict[str, Any]:
+    """Read a column in its dominant convention and reread its stray cells.
+
+    A stray cell, written the other way, takes the other reading only when that
+    one lies near the column's median and the dominant one does not; otherwise
+    it is excluded. Both counts go in the note.
+    """
+    other = "thousands_comma" if style == "decimal_comma" else "decimal_comma"
+    dom, alt = _as_number(quoted, style), _as_number(quoted, other)
+    row = con.execute(
+        f"SELECT median(abs({dom})) FROM data WHERE NOT {stray} AND {dom} <> 0"
+    ).fetchone()
+    centre = row[0] if row else None
+    reread = "NULL"
+    if centre:
+        near = f"BETWEEN {centre / _STRAY_RANGE!r} AND {centre * _STRAY_RANGE!r}"
+        reread = (
+            f"CASE WHEN abs({alt}) {near} AND NOT coalesce(abs({dom}) {near}, false) THEN {alt} END"
+        )
+    expr = f"CASE WHEN {stray} THEN {reread} ELSE {dom} END"
+    counts = con.execute(
+        f"SELECT count(*) FILTER (WHERE {expr} IS NOT NULL), count(*) FROM data "
+        f"{_and_where(where, stray)}"
+    ).fetchone() or (0, 0)
+    reinterpreted, excluded = counts[0], counts[1] - counts[0]
+    sep = _SEPARATOR_NAME[style]
+    name = "comma" if style == "decimal_comma" else "point"
+    return {
+        "style": style,
+        "expr": expr,
+        "fields": {
+            "decimal_separator": sep,
+            "separator_rule": "dominant",
+            "reinterpreted": reinterpreted,
+            "excluded_other_convention": excluded,
+        },
+        "say": (
+            f"The column mixes both conventions, but {share:.1%} of the values that show "
+            f"one have a decimal {name}, so it was read with '{sep}' as the decimal "
+            f"separator. Of the cells written the other way, {reinterpreted} were reread "
+            "in the other convention because only that reading falls in the column's "
+            f"range, and {excluded} were excluded."
+        ),
+    }
+
+
+_STYLE_CLEAN = {"thousands_comma": _NUMERIC_TEXT_CLEAN, "decimal_comma": _DECIMAL_COMMA_CLEAN}
+
+
+def _as_number(quoted: str, style: str = "thousands_comma") -> str:
     """SQL reading a text column as a number, NULL where it cannot."""
-    return f"TRY_CAST({_NUMERIC_TEXT_CLEAN.format(c=quoted)} AS DOUBLE)"
+    if style == "ambiguous":
+        # Dropping only the `1,234` cells would drop exactly the large values and
+        # return a total biased low, so the whole column reads as NULL.
+        return "CAST(NULL AS DOUBLE)"
+    cast = f"TRY_CAST({_STYLE_CLEAN[style].format(c=quoted)} AS DOUBLE)"
+    if style == "decimal_comma":
+        # Dots are removed, so they must sit between groups of three: `75.000.00`
+        # would otherwise become 7,500,000.
+        s = _SYMBOLS_CLEAN.format(c=quoted)
+        return f"CASE WHEN regexp_full_match({s}, '{_DECIMAL_COMMA_SHAPE}') THEN {cast} END"
+    return cast
 
 
 def _and_where(where: str, condition: str) -> str:
@@ -2026,7 +2304,15 @@ def _numeric_ref(
     if _is_numeric_type(types.get(col_name, "")):
         return quoted, None
 
-    expr = _as_number(quoted)
+    how = _number_style(con, quoted, where)
+    expr = how["expr"]
+    if how["style"] == "ambiguous":
+        return expr, {
+            "column": col_name,
+            "coerced": False,
+            "ambiguous_separator": True,
+            "note": f"'{col_name}': {how['say']}",
+        }
     row = con.execute(f"SELECT count({quoted}), count({expr}) FROM data {where}").fetchone()
     non_null, usable = (row or (0, 0))[0], (row or (0, 0))[1]
     if not non_null or usable / non_null < _COERCION_MIN_RATIO:
@@ -2065,6 +2351,9 @@ def _numeric_ref(
             f"'{col_name}' is stored as text in this file but every value read as a "
             "number. Nothing was excluded."
         )
+    report.update(how["fields"])
+    if how["say"]:
+        report["note"] += " " + how["say"]
     return expr, report
 
 
@@ -2112,7 +2401,7 @@ async def quantiles_resource(
 
             filter_notes: list[dict[str, Any]] = []
             try:
-                where = _build_where(filters, available, _column_types(con), filter_notes)
+                where = _build_where(filters, available, _column_types(con), filter_notes, con)
             except AnalyticsError as e:
                 return {"error": str(e)}
 
@@ -2231,7 +2520,7 @@ async def find_duplicates_resource(
             available = _open_view(con, parquet)
             filter_notes: list[dict[str, Any]] = []
             try:
-                where = _build_where(filters, available, _column_types(con), filter_notes)
+                where = _build_where(filters, available, _column_types(con), filter_notes, con)
             except AnalyticsError as e:
                 return {"error": str(e)}
 
@@ -2319,7 +2608,7 @@ async def detect_outliers_resource(
             available = _open_view(con, parquet)
             filter_notes: list[dict[str, Any]] = []
             try:
-                where = _build_where(filters, available, _column_types(con), filter_notes)
+                where = _build_where(filters, available, _column_types(con), filter_notes, con)
             except AnalyticsError as e:
                 return {"error": str(e)}
 
@@ -2553,7 +2842,7 @@ async def save_query_to_csv(
                     except AnalyticsError as e:
                         return {"error": str(e)}
                 try:
-                    where = _build_where(filters, available, _column_types(con), filter_notes)
+                    where = _build_where(filters, available, _column_types(con), filter_notes, con)
                 except AnalyticsError as e:
                     return {"error": str(e)}
                 try:
@@ -2629,7 +2918,7 @@ async def filter_resource(
                 select_clause = ", ".join(_quote_ident(c, available) for c in columns)
             filter_notes: list[dict[str, Any]] = []
             try:
-                where = _build_where(filters, available, _column_types(con), filter_notes)
+                where = _build_where(filters, available, _column_types(con), filter_notes, con)
                 order = _build_order_by(order_by, available)
             except AnalyticsError as e:
                 return {"error": str(e)}
@@ -2706,7 +2995,7 @@ async def aggregate_resource(
             # 3 excluded" against a January total that only saw 20 values.
             filter_notes: list[dict[str, Any]] = []
             try:
-                where = _build_where(filters, available, types, filter_notes)
+                where = _build_where(filters, available, types, filter_notes, con)
             except AnalyticsError as e:
                 return {"error": str(e)}
             # Resolve each measure once, so a column aggregated three ways is
