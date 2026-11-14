@@ -2090,6 +2090,12 @@ _DOMINANT_SHARE = 0.98
 # readings of a cell differ by 10, 100 or 1000 times.
 _STRAY_RANGE = 10.0
 
+# Below that share, a column whose minority is a handful of cells in thousands
+# of values is still read in its majority: with two cells against one the share
+# says nothing, and refusing the column lost 8,751 stock counts over one `2,5`.
+_FEW_STRAYS = 3
+_FEW_STRAYS_SHARE = 0.001
+
 
 def _proof_sql(quoted: str) -> tuple[str, str]:
     """SQL predicates: this cell can only have a decimal comma / a decimal point."""
@@ -2141,9 +2147,9 @@ def _number_style(con: duckdb.DuckDBPyConnection, quoted: str, where: str = "") 
         f"count(*) FILTER (WHERE regexp_full_match({s}, '{_PLAIN_INTEGER}') "
         f"AND abs(TRY_CAST({s} AS DOUBLE)) >= 1000), "
         f"count(DISTINCT length(ltrim({s}, '-'))) "
-        f"FILTER (WHERE regexp_full_match({s}, '{_PLAIN_INTEGER}')) FROM data"
+        f"FILTER (WHERE regexp_full_match({s}, '{_PLAIN_INTEGER}')), count({quoted}) FROM data"
     ).fetchone()
-    comma, dot, ambiguous, plain_big, plain_lengths = row or (0, 0, 0, 0, 0)
+    comma, dot, ambiguous, plain_big, plain_lengths, values = row or (0, 0, 0, 0, 0, 0)
 
     def plain(style: str, fields: dict[str, Any] | None = None, say: str = "") -> dict[str, Any]:
         return {
@@ -2155,10 +2161,26 @@ def _number_style(con: duckdb.DuckDBPyConnection, quoted: str, where: str = "") 
 
     if comma and dot:
         share = max(comma, dot) / (comma + dot)
-        if share >= _DOMINANT_SHARE:
+        few = min(comma, dot)
+        if share >= _DOMINANT_SHARE or (
+            # Only towards the decimal point, which leaves `1.234` cells as they read,
+            # and `1,234` cells only when plain integers from 1,000 up back the reading.
+            few <= _FEW_STRAYS
+            and few <= _FEW_STRAYS_SHARE * values
+            and dot >= 2 * comma
+            and (not ambiguous or plain_big > 0)
+        ):
             style = "decimal_comma" if comma > dot else "thousands_comma"
             stray = dot_sql if comma > dot else comma_sql
-            return _dominant(con, quoted, style, stray, share, where)
+            name = "comma" if style == "decimal_comma" else "point"
+            lead = (
+                f"The column mixes both conventions, but {share:.1%} of the values that show "
+                f"one have a decimal {name}"
+                if share >= _DOMINANT_SHARE
+                else f"Only {few} of {values} values are written with the other convention, "
+                f"against {max(comma, dot)} with a decimal {name}"
+            )
+            return _dominant(con, quoted, style, stray, lead, where)
         return {
             "style": "ambiguous",
             "expr": _as_number(quoted, "ambiguous"),
@@ -2210,7 +2232,7 @@ def _dominant(
     quoted: str,
     style: str,
     stray: str,
-    share: float,
+    lead: str,
     where: str,
 ) -> dict[str, Any]:
     """Read a column in its dominant convention and reread its stray cells.
@@ -2238,7 +2260,6 @@ def _dominant(
     ).fetchone() or (0, 0)
     reinterpreted, excluded = counts[0], counts[1] - counts[0]
     sep = _SEPARATOR_NAME[style]
-    name = "comma" if style == "decimal_comma" else "point"
     return {
         "style": style,
         "expr": expr,
@@ -2249,8 +2270,7 @@ def _dominant(
             "excluded_other_convention": excluded,
         },
         "say": (
-            f"The column mixes both conventions, but {share:.1%} of the values that show "
-            f"one have a decimal {name}, so it was read with '{sep}' as the decimal "
+            f"{lead}, so it was read with '{sep}' as the decimal "
             f"separator. Of the cells written the other way, {reinterpreted} were reread "
             "in the other convention because only that reading falls in the column's "
             f"range, and {excluded} were excluded."

@@ -1781,6 +1781,84 @@ async def test_a_column_with_both_conventions_is_reported_with_the_counts(
     assert "2 only a decimal point" in report["note"]
 
 
+def _stock(i: int) -> int:
+    return 1000 + i if i % 13 == 0 else i % 40
+
+
+def _stock_column(strays: list[str], points: int = 2, rows: int = 3000) -> str:
+    """A stock count: plain integers, `1,234` thousands, a few `53.64` and strays."""
+    vals = [str(_stock(i)) if i % 9 else f"{1 + i % 9},{i % 1000:03d}" for i in range(rows)]
+    vals += ["53.64"] * points + strays
+    return "id;existencia\n" + "".join(f"{i};{v}\n" for i, v in enumerate(vals))
+
+
+async def test_one_stray_cell_does_not_refuse_a_large_column(httpx_mock, tmp_cache_dir):
+    """Thousands of stock counts, two `53.64` and one `2,5`.
+
+    Two cells against one is no 98% share, so the whole column used to be
+    refused over a single cell. With so few cells on either side the share says
+    little; the stray cell is set aside and counted, and the `1,234` cells are
+    read as thousands because the column also holds plain integers from 1,000 up.
+    """
+    url = _csv_endpoint(httpx_mock, "existencia", _stock_column(["2,5"]))
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "existencia", "fn": "sum"}])
+    assert "error" not in out, out
+    vals = [_stock(i) if i % 9 else (1 + i % 9) * 1000 + i % 1000 for i in range(3000)]
+    assert out["rows"][0][0] == pytest.approx(sum(vals) + 2 * 53.64)
+    report = out["numeric_coercion"][0]
+    assert report["separator_rule"] == "dominant"
+    assert report["decimal_separator"] == "."
+    assert report["excluded_other_convention"] == 1
+    assert "ambiguous_separator" not in report
+    assert "1 of 3003 values" in report["note"]
+
+
+async def test_a_thin_majority_against_the_column_evidence_is_still_refused(
+    httpx_mock, tmp_cache_dir
+):
+    """Two `12,5` against one `3.75` would make `1,234` mean 1.234, while plain
+    integers from 1,000 up in the same column say it means 1234. Two cells cannot
+    settle that, so the column stays refused."""
+    vals = [f"{1 + i % 9},{i % 1000:03d}" if i % 2 else str(1000 + i) for i in range(3000)]
+    vals += ["12,5", "12,5", "3.75"]
+    body = "id;v\n" + "".join(f"{i};{v}\n" for i, v in enumerate(vals))
+    url = _csv_endpoint(httpx_mock, "delgada", body)
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "v", "fn": "sum"}])
+    assert out["rows"][0][0] is None
+    assert out["numeric_coercion"][0]["ambiguous_separator"] is True
+
+
+@pytest.mark.parametrize(
+    ("bulk", "strays"),
+    [
+        # `86.799` reads 86799 with a decimal comma: two `86,34` cannot decide that.
+        ([f"{80 + i % 9}.{i % 1000:03d}" for i in range(3000)], ["86,34", "86,34", "86.7"]),
+        # small integers of several lengths are no evidence that `1,234` is 1234
+        (
+            [f"{1 + i % 9},{i % 1000:03d}" if i % 2 else str(i % 100) for i in range(3000)],
+            ["53.64", "53.64", "2,5"],
+        ),
+    ],
+)
+async def test_a_thin_majority_never_rescales_the_bulk_of_a_column(
+    httpx_mock, tmp_cache_dir, bulk, strays
+):
+    body = "id;v\n" + "".join(f"{i};{v}\n" for i, v in enumerate(bulk + strays))
+    url = _csv_endpoint(httpx_mock, "escala", body)
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "v", "fn": "sum"}])
+    assert out["rows"][0][0] is None
+    assert out["numeric_coercion"][0]["ambiguous_separator"] is True
+
+
+async def test_more_than_three_stray_cells_still_need_the_share(httpx_mock, tmp_cache_dir):
+    """The exception covers a handful of cells; four are a pattern, so the 98%
+    share applies and the column is refused."""
+    url = _csv_endpoint(httpx_mock, "cuatro", _stock_column(["2,5"] * 4, points=8, rows=5000))
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "existencia", "fn": "sum"}])
+    assert out["rows"][0][0] is None
+    assert out["numeric_coercion"][0]["ambiguous_separator"] is True
+
+
 async def test_a_numeric_filter_uses_the_column_convention(separators_endpoint, tmp_cache_dir):
     out = await analytics.filter_resource(
         separators_endpoint,
