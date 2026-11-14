@@ -23,7 +23,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
     one, the column is read in it. Each cell written the other way is reread
     in the other convention when only that reading falls within ten times the
     column's median, and excluded otherwise; `reinterpreted` and
-    `excluded_other_convention` give both counts.
+    `excluded_other_convention` give both counts. Below that share, a column
+    is still read with a decimal point when decimal-comma values appear in at
+    most three cells and at most 0.1% of its values, decimal-point values are
+    at least twice as many, and any `1,234` cells are backed by whole numbers
+    from 1,000 up in the same column; the note then gives the stray count
+    against the column's size. One `2,5` among 8,751 stock counts no longer
+    refuses the column.
   - `column_evidence`, `file`, `assumed`: a column whose commas are all of the
     `1,234` kind is read with a thousands comma when the same column holds
     whole numbers written plainly from 1,000 up or of several lengths; else
