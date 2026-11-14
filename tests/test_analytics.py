@@ -1632,28 +1632,136 @@ async def test_number_convention_is_decided_per_column(separators_endpoint, tmp_
     assert "decimal_separator" not in reports["grande"]
 
 
-async def test_a_column_of_ambiguous_commas_is_reported_not_guessed(
+async def test_a_column_of_ambiguous_commas_is_read_as_thousands_and_says_so(
     separators_endpoint, tmp_cache_dir
 ):
-    """`1,234` is 1234 or 1.234, and nothing else in the column says which."""
+    """`1,234` is 1234 or 1.234, and nothing in the column or the file settles
+    it: the other columns disagree with each other. The thousands comma is the
+    usual one for counts on the portal, so it is used, and the reply says it was
+    assumed."""
     out = await analytics.aggregate_resource(
         separators_endpoint,
         "csv",
         aggregations=[{"col": "dudoso", "fn": "sum", "alias": "total"}],
     )
     assert "error" not in out, out
-    assert out["rows"][0][0] is None
+    assert out["rows"][0][0] == pytest.approx(1234 + 5678 + 12500)
     report = out["numeric_coercion"][0]
     assert report["column"] == "dudoso"
-    assert report["ambiguous_separator"] is True
-    assert report["coerced"] is False
-    assert "1,234" in report["note"]
+    assert report["assumed_separator"] == "thousands_comma"
+    assert report["separator_rule"] == "assumed"
+    assert "ambiguous_separator" not in report
+    assert "assumed" in report["note"]
 
     out = await analytics.filter_resource(
-        separators_endpoint, "csv", filters=[{"col": "dudoso", "op": ">", "val": 0}]
+        separators_endpoint, "csv", filters=[{"col": "dudoso", "op": ">", "val": 5000}]
     )
-    assert out["rows"] == []
-    assert out["numeric_coercion"][0]["ambiguous_separator"] is True
+    assert len(out["rows"]) == 2
+    assert out["numeric_coercion"][0]["assumed_separator"] == "thousands_comma"
+
+
+def _csv_endpoint(httpx_mock, name: str, body: str) -> str:
+    url = f"https://example.test/{name}.csv"
+    httpx_mock.add_response(url=url, method="HEAD", headers={"etag": name})
+    httpx_mock.add_response(url=url, method="GET", content=body.encode())
+    return url
+
+
+async def test_a_dominant_convention_reads_the_column_and_rereads_stray_cells(
+    httpx_mock, tmp_cache_dir
+):
+    """A payroll written `18,533.33` with two cells written the other way.
+
+    `26171,14` read with a thousands comma is 2,617,114, more than a hundred
+    times the typical salary; read with a decimal comma it is 26171.14, inside
+    the range, so it is reread and counted. `2,5` is 25 or 2.5, and neither is
+    a salary, so it is left out and counted. The column used to come back NULL.
+    """
+    salaries = [f"{15 + i % 10},{i % 1000:03d}.33" for i in range(200)]
+    body = "id;sueldo\n" + "".join(f"{i};{v}\n" for i, v in enumerate(salaries))
+    body += "200;26171,14\n201;2,5\n"
+    url = _csv_endpoint(httpx_mock, "nomina", body)
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "sueldo", "fn": "sum"}])
+    assert "error" not in out, out
+    expected = sum(float(v.replace(",", "")) for v in salaries) + 26171.14
+    assert out["rows"][0][0] == pytest.approx(expected)
+    report = out["numeric_coercion"][0]
+    assert report["separator_rule"] == "dominant"
+    assert report["decimal_separator"] == "."
+    assert report["reinterpreted"] == 1
+    assert report["excluded_other_convention"] == 1
+    assert report["values_excluded"] == 1
+    assert "ambiguous_separator" not in report
+
+
+async def test_a_dominant_decimal_comma_rereads_a_stray_decimal_point(httpx_mock, tmp_cache_dir):
+    """The mirror image: `30.000,00` throughout and one `40,000.00`, which the
+    dominant reading turns into 40."""
+    values = [f"{25 + i % 10}.{i % 1000:03d},00" for i in range(200)]
+    body = "id;monto\n" + "".join(f"{i};{v}\n" for i, v in enumerate(values))
+    body += "200;40,000.00\n"
+    url = _csv_endpoint(httpx_mock, "monto_coma", body)
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "monto", "fn": "sum"}])
+    expected = sum(float(v.replace(".", "").replace(",", ".")) for v in values) + 40000
+    assert out["rows"][0][0] == pytest.approx(expected)
+    report = out["numeric_coercion"][0]
+    assert report["decimal_separator"] == ","
+    assert report["reinterpreted"] == 1
+    assert report["excluded_other_convention"] == 0
+
+    out = await analytics.filter_resource(
+        url, "csv", filters=[{"col": "monto", "op": ">", "val": 39000}], columns=["id"]
+    )
+    assert out["rows"] == [[200]]
+    assert out["numeric_coercion"][0]["separator_rule"] == "dominant"
+
+
+async def test_a_decimal_comma_column_does_not_glue_misplaced_dots(httpx_mock, tmp_cache_dir):
+    """`75.000.00` is a typo for 75 000; removing every dot made it 7,500,000."""
+    body = "id;v\n" + "".join(f"{i};1.234,50\n" for i in range(10)) + "10;75.000.00\n"
+    url = _csv_endpoint(httpx_mock, "puntos", body)
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "v", "fn": "sum"}])
+    assert out["rows"][0][0] == pytest.approx(12345.0)
+    assert out["numeric_coercion"][0]["values_excluded"] == 1
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("12,5", 12.5), ("78,10", 78.1), ("3,1416", 3.1416), ("0,234", 0.234)],
+)
+async def test_digits_after_the_separator_decide_a_decimal_comma(
+    httpx_mock, tmp_cache_dir, value, expected
+):
+    """One, two or four digits after a comma, or a number starting `0,`, can
+    only be a decimal comma, so the `1,500` next to it is 1.5."""
+    url = _csv_endpoint(httpx_mock, "digitos", f"id;v\n1;{value}\n2;1,500\n")
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "v", "fn": "sum"}])
+    assert out["rows"][0][0] == pytest.approx(expected + 1.5)
+    assert out["numeric_coercion"][0]["decimal_separator"] == ","
+
+
+async def test_plain_integers_above_a_thousand_settle_an_ambiguous_column(
+    httpx_mock, tmp_cache_dir
+):
+    """`2500` written plainly next to `1,234`: the column holds thousands, and
+    nothing is assumed."""
+    url = _csv_endpoint(httpx_mock, "conteo", "id;n\n1;1,234\n2;2500\n3;350\n")
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "n", "fn": "sum"}])
+    assert out["rows"][0][0] == pytest.approx(1234 + 2500 + 350)
+    report = out["numeric_coercion"][0]
+    assert report["separator_rule"] == "column_evidence"
+    assert "assumed_separator" not in report
+
+
+async def test_the_file_convention_settles_an_ambiguous_column(httpx_mock, tmp_cache_dir):
+    """Every other number in the file has a decimal comma, so `1,234` is 1.234."""
+    url = _csv_endpoint(httpx_mock, "archivo", "id;precio;peso\n1;78,10;1,234\n2;95,30;2,500\n")
+    out = await analytics.aggregate_resource(url, "csv", [{"col": "peso", "fn": "sum"}])
+    assert out["rows"][0][0] == pytest.approx(1.234 + 2.5)
+    report = out["numeric_coercion"][0]
+    assert report["separator_rule"] == "file"
+    assert report["decimal_separator"] == ","
+    assert "assumed_separator" not in report
 
 
 async def test_a_column_with_both_conventions_is_reported_with_the_counts(

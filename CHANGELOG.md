@@ -12,12 +12,26 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   text column as a number removed every comma, so `78,10` became 7810 and a
   water-quality index averaged 8,736 instead of 87.36, with a coercion note
   saying every value read cleanly. The convention is now decided per column
-  from all its values: `78,10` and `1.234,56` mean a decimal comma, and
-  `40,000.00` and `1,234,567` mean a decimal point, as before. A column whose
-  commas could mean either (`1,234` with nothing else to settle it, or both
-  conventions at once) is left out of the figure and reported with
-  `ambiguous_separator: true` in `numeric_coercion`. Filters follow the same
-  rule. A decimal-comma column is marked `decimal_separator: ","`.
+  from all its values: one, two or four or more digits after a comma
+  (`12,5`, `78,10`, `3,1416`), a leading `0,`, or `1.234,56` mean a decimal
+  comma, and `40,000.00` and `1,234,567` mean a decimal point, as before. A
+  column marked `decimal_separator: ","` was read with a decimal comma; in it,
+  a value whose dots do not separate groups of three (`75.000.00`) is
+  excluded and listed. Filters follow the same rule, and `numeric_coercion` says which rule
+  decided in `separator_rule`:
+  - `dominant`: when 98% or more of the values that show a convention use
+    one, the column is read in it. Each cell written the other way is reread
+    in the other convention when only that reading falls within ten times the
+    column's median, and excluded otherwise; `reinterpreted` and
+    `excluded_other_convention` give both counts.
+  - `column_evidence`, `file`, `assumed`: a column whose commas are all of the
+    `1,234` kind is read with a thousands comma when the same column holds
+    whole numbers written plainly from 1,000 up or of several lengths; else
+    in the convention every other number column of the file agrees on; else
+    with a thousands comma, the usual one for counts on the portal, marked
+    `assumed_separator: "thousands_comma"`.
+  - A column where both conventions are well represented is left out of the
+    figure and reported with `ambiguous_separator: true`.
 - **A cached file says when it was downloaded, and can be refreshed.** After
   the first download every call read the cached copy, with no date on it and
   no way for a caller to replace it, so a file republished at the same URL

@@ -1701,7 +1701,11 @@ def _filter_measure(
     if isinstance(val, bool):  # bool is an int in Python; not a measurement
         return quoted
     if isinstance(val, (int, float)):
-        style, why = _number_style(con, quoted) if con is not None else ("thousands_comma", "")
+        how: dict[str, Any] = (
+            _number_style(con, quoted)
+            if con is not None
+            else {"style": "thousands_comma", "expr": _as_number(quoted), "fields": {}, "say": ""}
+        )
         if notes is not None:
             note: dict[str, Any] = {
                 "column": col,
@@ -1712,13 +1716,13 @@ def _filter_measure(
                     "number. Values that do not read as numbers do not match."
                 ),
             }
-            if style == "decimal_comma":
-                note["decimal_separator"] = ","
-            elif style == "ambiguous":
-                note["ambiguous_separator"] = True
-                note["note"] = f"'{col}': {why} No row matches this filter."
+            note.update(how["fields"])
+            if how["style"] == "ambiguous":
+                note["note"] = f"'{col}': {how['say']} No row matches this filter."
+            elif how["say"]:
+                note["note"] += " " + how["say"]
             notes.append(note)
-        return _as_number(quoted, style)
+        return str(how["expr"])
 
     if isinstance(val, str) and notes is not None:
         stripped = val.strip()
@@ -2060,51 +2064,198 @@ _SYMBOLS_CLEAN = (
     "NULLIF(TRIM(REPLACE(REPLACE(REPLACE({c}, CHR(160), ''), 'RD$', ''), '$', '')), '')"
 )
 
-# What one value proves about its column. `78,10` and `1.234,56` can only have
-# a decimal comma; `40,000.00`, `1,234,567` and `56.78` can only have a decimal
-# point. `1,234` proves nothing: it is 1234 in a payroll and 1.234 in a price
-# index, and a single cell cannot tell which file it came from.
+# What one value proves about its column. A separator followed by exactly three
+# digits may group thousands; followed by one, two, or four or more (`12,5`,
+# `78,10`, `3,1416`), or after a leading 0 (`0,234`), it can only be decimal.
+# So `78,10` and `1.234,56` mean a decimal comma; `40,000.00`, `1,234,567` and
+# `56.78` mean a decimal point. `1,234` proves nothing on its own: it is 1234 in
+# a payroll and 1.234 in a price index.
 _PROVES_DECIMAL_COMMA = r"-?\d{1,3}(\.\d{3})+,\d+|-?\d{1,3}(\.\d{3}){2,}|-?\d+,\d+"
 _PROVES_DECIMAL_DOT = r"-?\d{1,3}(,\d{3})+\.\d+|-?\d{1,3}(,\d{3}){2,}|-?\d+\.\d+"
-_COMMA_GROUPS = r"-?\d{1,3}(,\d{3})+"
-_DOT_GROUPS = r"-?\d{1,3}(\.\d{3})+"
-_AMBIGUOUS_COMMA = r"-?\d{1,3},\d{3}"
+_COMMA_GROUPS = r"-?[1-9]\d{0,2}(,\d{3})+"
+_DOT_GROUPS = r"-?[1-9]\d{0,2}(\.\d{3})+"
+_AMBIGUOUS_COMMA = r"-?[1-9]\d{0,2},\d{3}"
+_PLAIN_INTEGER = r"-?\d+"
+_DECIMAL_COMMA_SHAPE = r"-?(\d{1,3}(\.\d{3})+|\d+)(,\d+)?"
+
+# A column whose proving values show both conventions is read in the one that
+# holds at least this share of them; the rest are stray cells, each reread or
+# excluded and counted. Below it the column is a real conflict and is refused.
+# 2% bounds what a stray can cost, and the files that really mix two
+# conventions sit far lower (a price list at 73%, a column of salaries at 55%).
+_DOMINANT_SHARE = 0.98
+
+# A stray cell takes the other convention's reading when that reading lies within
+# this factor of the column's median and the dominant reading does not. The two
+# readings of a cell differ by 10, 100 or 1000 times.
+_STRAY_RANGE = 10.0
 
 
-def _number_style(con: duckdb.DuckDBPyConnection, quoted: str) -> tuple[str, str]:
-    """Which separator is the decimal one in this column, judged on all its values.
+def _proof_sql(quoted: str) -> tuple[str, str]:
+    """SQL predicates: this cell can only have a decimal comma / a decimal point."""
+    s = _SYMBOLS_CLEAN.format(c=quoted)
+    return (
+        f"(regexp_full_match({s}, '{_PROVES_DECIMAL_COMMA}') "
+        f"AND NOT regexp_full_match({s}, '{_COMMA_GROUPS}'))",
+        f"(regexp_full_match({s}, '{_PROVES_DECIMAL_DOT}') "
+        f"AND NOT regexp_full_match({s}, '{_DOT_GROUPS}'))",
+    )
+
+
+def _file_style(con: duckdb.DuckDBPyConnection, quoted: str) -> str | None:
+    """The convention every other text column of the file agrees on, if any."""
+    others = [
+        _raw_quote(c)
+        for c, t in con.execute("SELECT column_name, column_type FROM (DESCRIBE data)").fetchall()
+        if t == "VARCHAR" and _raw_quote(c) != quoted
+    ]
+    if not others:
+        return None
+    counts = [f"count(*) FILTER (WHERE {p})" for q in others for p in _proof_sql(q)]
+    row = con.execute(f"SELECT {', '.join(counts)} FROM data").fetchone() or ()
+    votes = {
+        "decimal_comma" if comma > dot else "thousands_comma"
+        for comma, dot in zip(row[::2], row[1::2], strict=True)
+        if comma + dot and max(comma, dot) / (comma + dot) >= _DOMINANT_SHARE
+    }
+    return votes.pop() if len(votes) == 1 else None
+
+
+_SEPARATOR_NAME = {"decimal_comma": ",", "thousands_comma": "."}
+
+
+def _number_style(con: duckdb.DuckDBPyConnection, quoted: str, where: str = "") -> dict[str, Any]:
+    """How to read this text column as a number, judged on all its values.
 
     Per column, because a cell cannot answer it. `thousands_comma` is what every
     column got before, and stays the answer whenever nothing contradicts it.
-    Returns the style and, when it is `ambiguous`, the sentence saying why.
+    Returns `style`, `expr` (the SQL), `fields` for the coercion note and `say`,
+    the sentence explaining any choice made; for `ambiguous`, `say` is why the
+    column was refused. Counts of stray cells honour `where`.
     """
     s = _SYMBOLS_CLEAN.format(c=quoted)
+    comma_sql, dot_sql = _proof_sql(quoted)
     row = con.execute(
-        f"SELECT count(*) FILTER (WHERE regexp_full_match({s}, '{_PROVES_DECIMAL_COMMA}') "
-        f"AND NOT regexp_full_match({s}, '{_COMMA_GROUPS}')), "
-        f"count(*) FILTER (WHERE regexp_full_match({s}, '{_PROVES_DECIMAL_DOT}') "
-        f"AND NOT regexp_full_match({s}, '{_DOT_GROUPS}')), "
-        f"count(*) FILTER (WHERE regexp_full_match({s}, '{_AMBIGUOUS_COMMA}')) FROM data"
+        f"SELECT count(*) FILTER (WHERE {comma_sql}), count(*) FILTER (WHERE {dot_sql}), "
+        f"count(*) FILTER (WHERE regexp_full_match({s}, '{_AMBIGUOUS_COMMA}')), "
+        f"count(*) FILTER (WHERE regexp_full_match({s}, '{_PLAIN_INTEGER}') "
+        f"AND abs(TRY_CAST({s} AS DOUBLE)) >= 1000), "
+        f"count(DISTINCT length(ltrim({s}, '-'))) "
+        f"FILTER (WHERE regexp_full_match({s}, '{_PLAIN_INTEGER}')) FROM data"
     ).fetchone()
-    comma, dot, ambiguous = row or (0, 0, 0)
-    if comma and not dot:
-        return "decimal_comma", ""
+    comma, dot, ambiguous, plain_big, plain_lengths = row or (0, 0, 0, 0, 0)
+
+    def plain(style: str, fields: dict[str, Any] | None = None, say: str = "") -> dict[str, Any]:
+        return {
+            "style": style,
+            "expr": _as_number(quoted, style),
+            "fields": fields or {},
+            "say": say,
+        }
+
     if comma and dot:
-        why = (
-            f"the column mixes both conventions: {comma} value(s) can only have a decimal "
-            f"comma (like '78,10') and {dot} only a decimal point (like '40,000.00')."
+        share = max(comma, dot) / (comma + dot)
+        if share >= _DOMINANT_SHARE:
+            style = "decimal_comma" if comma > dot else "thousands_comma"
+            stray = dot_sql if comma > dot else comma_sql
+            return _dominant(con, quoted, style, stray, share, where)
+        return {
+            "style": "ambiguous",
+            "expr": _as_number(quoted, "ambiguous"),
+            "fields": {"ambiguous_separator": True},
+            "say": (
+                f"the column mixes both conventions: {comma} value(s) can only have a "
+                f"decimal comma (like '78,10') and {dot} only a decimal point (like "
+                "'40,000.00'), and neither is a clear majority. It was left out of this "
+                "result rather than guessed. If you know the convention, read it with "
+                "query_resource and an explicit REPLACE and CAST."
+            ),
+        }
+    if comma:
+        return plain("decimal_comma", {"decimal_separator": ","})
+    if dot or not ambiguous:
+        return plain("thousands_comma")
+
+    # Every comma is of the `1,234` kind: settle it from the column, then the file.
+    doubt = "Values such as '1,234' could have a thousands comma or a decimal comma"
+    if plain_big or plain_lengths >= 2:
+        return plain(
+            "thousands_comma",
+            {"decimal_separator": ".", "separator_rule": "column_evidence"},
+            f"{doubt}; the same column holds whole numbers written without a separator "
+            "(from 1,000 up, or of several lengths), so the comma was read as a "
+            "thousands separator.",
         )
-    elif ambiguous and not dot:
-        why = (
-            "values such as '1,234' could have a thousands comma or a decimal comma, "
-            "and the rest of the column does not settle which."
+    file_style = _file_style(con, quoted)
+    if file_style:
+        name = "comma" if file_style == "decimal_comma" else "point"
+        return plain(
+            file_style,
+            {"decimal_separator": _SEPARATOR_NAME[file_style], "separator_rule": "file"},
+            f"{doubt}; the other number columns of this file use a decimal {name}, so "
+            "this one was read the same way.",
         )
-    else:
-        return "thousands_comma", ""
-    return "ambiguous", (
-        f"{why} It was left out of this result rather than guessed. If you know the "
-        "convention, read it with query_resource and an explicit REPLACE and CAST."
+    return plain(
+        "thousands_comma",
+        {"assumed_separator": "thousands_comma", "separator_rule": "assumed"},
+        f"{doubt}, and nothing in the column or the file settles it. The comma was "
+        "assumed to be a thousands separator, the usual one for counts on this portal; "
+        "if this column holds measures with three decimals, those values are 1,000 "
+        "times too large.",
     )
+
+
+def _dominant(
+    con: duckdb.DuckDBPyConnection,
+    quoted: str,
+    style: str,
+    stray: str,
+    share: float,
+    where: str,
+) -> dict[str, Any]:
+    """Read a column in its dominant convention and reread its stray cells.
+
+    A stray cell, written the other way, takes the other reading only when that
+    one lies near the column's median and the dominant one does not; otherwise
+    it is excluded. Both counts go in the note.
+    """
+    other = "thousands_comma" if style == "decimal_comma" else "decimal_comma"
+    dom, alt = _as_number(quoted, style), _as_number(quoted, other)
+    row = con.execute(
+        f"SELECT median(abs({dom})) FROM data WHERE NOT {stray} AND {dom} <> 0"
+    ).fetchone()
+    centre = row[0] if row else None
+    reread = "NULL"
+    if centre:
+        near = f"BETWEEN {centre / _STRAY_RANGE!r} AND {centre * _STRAY_RANGE!r}"
+        reread = (
+            f"CASE WHEN abs({alt}) {near} AND NOT coalesce(abs({dom}) {near}, false) THEN {alt} END"
+        )
+    expr = f"CASE WHEN {stray} THEN {reread} ELSE {dom} END"
+    counts = con.execute(
+        f"SELECT count(*) FILTER (WHERE {expr} IS NOT NULL), count(*) FROM data "
+        f"{_and_where(where, stray)}"
+    ).fetchone() or (0, 0)
+    reinterpreted, excluded = counts[0], counts[1] - counts[0]
+    sep = _SEPARATOR_NAME[style]
+    name = "comma" if style == "decimal_comma" else "point"
+    return {
+        "style": style,
+        "expr": expr,
+        "fields": {
+            "decimal_separator": sep,
+            "separator_rule": "dominant",
+            "reinterpreted": reinterpreted,
+            "excluded_other_convention": excluded,
+        },
+        "say": (
+            f"The column mixes both conventions, but {share:.1%} of the values that show "
+            f"one have a decimal {name}, so it was read with '{sep}' as the decimal "
+            f"separator. Of the cells written the other way, {reinterpreted} were reread "
+            "in the other convention because only that reading falls in the column's "
+            f"range, and {excluded} were excluded."
+        ),
+    }
 
 
 _STYLE_CLEAN = {"thousands_comma": _NUMERIC_TEXT_CLEAN, "decimal_comma": _DECIMAL_COMMA_CLEAN}
@@ -2116,7 +2267,13 @@ def _as_number(quoted: str, style: str = "thousands_comma") -> str:
         # Dropping only the `1,234` cells would drop exactly the large values and
         # return a total biased low, so the whole column reads as NULL.
         return "CAST(NULL AS DOUBLE)"
-    return f"TRY_CAST({_STYLE_CLEAN[style].format(c=quoted)} AS DOUBLE)"
+    cast = f"TRY_CAST({_STYLE_CLEAN[style].format(c=quoted)} AS DOUBLE)"
+    if style == "decimal_comma":
+        # Dots are removed, so they must sit between groups of three: `75.000.00`
+        # would otherwise become 7,500,000.
+        s = _SYMBOLS_CLEAN.format(c=quoted)
+        return f"CASE WHEN regexp_full_match({s}, '{_DECIMAL_COMMA_SHAPE}') THEN {cast} END"
+    return cast
 
 
 def _and_where(where: str, condition: str) -> str:
@@ -2147,14 +2304,14 @@ def _numeric_ref(
     if _is_numeric_type(types.get(col_name, "")):
         return quoted, None
 
-    style, why = _number_style(con, quoted)
-    expr = _as_number(quoted, style)
-    if style == "ambiguous":
+    how = _number_style(con, quoted, where)
+    expr = how["expr"]
+    if how["style"] == "ambiguous":
         return expr, {
             "column": col_name,
             "coerced": False,
             "ambiguous_separator": True,
-            "note": f"'{col_name}': {why}",
+            "note": f"'{col_name}': {how['say']}",
         }
     row = con.execute(f"SELECT count({quoted}), count({expr}) FROM data {where}").fetchone()
     non_null, usable = (row or (0, 0))[0], (row or (0, 0))[1]
@@ -2194,8 +2351,9 @@ def _numeric_ref(
             f"'{col_name}' is stored as text in this file but every value read as a "
             "number. Nothing was excluded."
         )
-    if style == "decimal_comma":
-        report["decimal_separator"] = ","
+    report.update(how["fields"])
+    if how["say"]:
+        report["note"] += " " + how["say"]
     return expr, report
 
 
